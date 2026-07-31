@@ -7,6 +7,9 @@
  */
 
 import { argv, exit } from "node:process";
+import { loadEnv } from "./env.js";
+// Load .env (GitHub App credentials) before anything that reads auth.
+loadEnv();
 import { migrateRepo } from "./github.js";
 import { Manifest } from "@api-migrator/engine";
 
