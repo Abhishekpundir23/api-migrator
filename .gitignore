@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Target repos are disposable local test fixtures, not part of the product
+targets/
+
+# Logs & misc
+*.log
+.DS_Store
+.env
+.env.*
