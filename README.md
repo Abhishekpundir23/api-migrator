@@ -29,11 +29,20 @@ Monorepo built up phase by phase (see `Build plan`):
 ```
 packages/
 ├── engine/    # migration engine: manifest -> scanner -> transformer -> verifier -> reporter
-├── app/       # GitHub App: clone, transform, open PRs        (Phase 2)
-├── console/   # Next.js provider console                      (Phase 4)
-└── db/        # campaign/repo/run schema                       (Phase 3)
+├── app/       # GitHub integration: clone, transform, open PRs   (Phase 2 — DONE)
+├── console/   # Next.js provider console                          (Phase 4)
+└── db/        # campaign/repo/run schema                          (Phase 3)
 prototypes/    # the original single-file engine, kept for reference
 ```
+
+The `app` package (`packages/app`) runs the full per-repo workflow: shallow-clone → engine pipeline → commit → push → open a PR whose body is the engine's markdown report. It authenticated via `gh` for the pilot; the same workflow authenticates as a registered GitHub App installation via Octokit `auth-app` (the auth wrapper is the only change).
+
+```bash
+# open a real migration PR in a repo (pilot auth via gh)
+npx tsx packages/app/src/cli.ts <owner/repo>
+```
+
+**Phase 2 gate (passed):** ran against a sandbox repo and opened a real PR — [example](https://github.com/Abhishekpundir23/api-migrator-sandbox-1785523050/pull/1) — whose diff exactly matches the engine's verified output and whose body is the rendered migration report.
 
 The engine maps to the plan's pipeline (manifest → scanner → transformer → verifier → reporter). `packages/engine` implements the full pipeline as a callable, programmatic TypeScript library:
 
