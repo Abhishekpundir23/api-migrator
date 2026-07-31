@@ -14,6 +14,23 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** Options controlling verification, including dependency installation. */
+export interface VerifyOptions {
+  /**
+   * If true, run `npm install` before type-checking when node_modules is absent
+   * (e.g. on a fresh shallow clone). Default false — installs are slow and
+   * mutate the repo, so this is opt-in.
+   */
+  install?: boolean;
+  /**
+   * Extra args passed to `npm install` (e.g. ["--legacy-peer-deps"]).
+   * Defaults to ["--legacy-peer-deps","--no-audit","--no-fund"] because
+   * breaking-change migrations frequently tighten peer deps and break installs
+   * (we hit exactly this with inngest v4 needing typescript>=5.8.0).
+   */
+  installArgs?: string[];
+}
+
 /** One tsc error line, parsed. */
 export interface TypeError {
   file: string;
@@ -64,15 +81,48 @@ function parseTscErrors(stdout: string): TypeError[] {
  * Capture the current type errors of a repo (the baseline).
  * Returns null if type-checking can't run.
  */
-export function captureBaseline(repoPath: string): Promise<TypeError[] | null> {
-  return runTsc(repoPath).then((r) => (r.skipped ? null : r.after));
+export function captureBaseline(repoPath: string, opts: VerifyOptions = {}): Promise<TypeError[] | null> {
+  return runTsc(repoPath, opts).then((r) => (r.skipped ? null : r.after));
+}
+
+/**
+ * Install dependencies if requested and node_modules is absent.
+ * Returns true if deps are available after this call (or were already there).
+ */
+export function installDeps(repoPath: string, opts: VerifyOptions = {}): { ok: boolean; reason?: string } {
+  const pkgPath = join(repoPath, "package.json");
+  if (!existsSync(pkgPath)) return { ok: false, reason: "no package.json" };
+  // Already installed? Nothing to do.
+  if (existsSync(join(repoPath, "node_modules"))) return { ok: true };
+  if (!opts.install) return { ok: false, reason: "node_modules absent; install not requested" };
+
+  const args = ["install", ...(opts.installArgs ?? ["--legacy-peer-deps", "--no-audit", "--no-fund"])];
+  try {
+    execFileSync("npm", args, {
+      cwd: repoPath,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 300_000,
+    });
+    return { ok: true };
+  } catch (e: any) {
+    return {
+      ok: false,
+      reason: `npm install failed: ${(e.stderr?.toString() ?? e.message ?? "").slice(0, 200)}`,
+    };
+  }
 }
 
 /** Run tsc --noEmit in the repo and parse errors. */
-export function runTsc(repoPath: string): Promise<VerifyResult> {
+export function runTsc(repoPath: string, opts: VerifyOptions = {}): Promise<VerifyResult> {
   const pkgPath = join(repoPath, "package.json");
   if (!existsSync(pkgPath)) {
     return Promise.resolve(skipped("no package.json"));
+  }
+  // Optionally install deps if node_modules is absent (fresh clone case).
+  const installed = installDeps(repoPath, opts);
+  if (!installed.ok) {
+    return Promise.resolve(skipped(installed.reason ?? "dependencies unavailable"));
   }
   // Need a local typescript to type-check; if it's absent we can't verify here.
   const hasTs = existsSync(join(repoPath, "node_modules", "typescript", "package.json"));
@@ -108,8 +158,12 @@ export function runTsc(repoPath: string): Promise<VerifyResult> {
  * Verify: compare post-transform errors against a captured baseline.
  * `ok` is true iff the transform introduced no new errors.
  */
-export function verify(repoPath: string, baseline: TypeError[] | null): Promise<VerifyResult> {
-  return runTsc(repoPath).then((r) => {
+export function verify(
+  repoPath: string,
+  baseline: TypeError[] | null,
+  opts: VerifyOptions = {}
+): Promise<VerifyResult> {
+  return runTsc(repoPath, opts).then((r) => {
     if (r.skipped) return r;
     const base = baseline ?? [];
     const baseSet = new Set(base.map(signature));

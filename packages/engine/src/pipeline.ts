@@ -18,7 +18,7 @@ import type { Manifest } from "./manifest.js";
 import { findSdkFiles } from "./scanner.js";
 import { applyInngestV3ToV4 } from "./transforms/inngest-v3-to-v4.js";
 import { applyKnockV0ToV1 } from "./transforms/knock-v0-to-v1.js";
-import { captureBaseline, verify } from "./verifier.js";
+import { captureBaseline, verify, type VerifyOptions } from "./verifier.js";
 import { buildReport } from "./reporter.js";
 import type { ReportEntry, ReportSink } from "./types.js";
 import type { MigrationReport } from "./reporter.js";
@@ -28,6 +28,12 @@ export interface RunMigrationOptions {
   writeChanges?: boolean;
   /** Skip type verification (e.g. repo has no TS). Default false. */
   skipVerify?: boolean;
+  /**
+   * Verification options. Set `install: true` to run `npm install` before
+   * type-checking on fresh clones (otherwise verification skips when
+   * node_modules is absent). Passed to captureBaseline + verify.
+   */
+  verify?: VerifyOptions;
 }
 
 export interface RunMigrationResult {
@@ -57,7 +63,7 @@ export async function runMigration(
   let baseline = null;
   if (!skipVerify) {
     try {
-      baseline = await captureBaseline(repoPath);
+      baseline = await captureBaseline(repoPath, opts.verify);
     } catch {
       baseline = null; // verification is best-effort
     }
@@ -79,7 +85,7 @@ export async function runMigration(
     verification = skippedVerification();
   } else {
     try {
-      verification = await verify(repoPath, baseline);
+      verification = await verify(repoPath, baseline, opts.verify);
     } catch {
       verification = skippedVerification("verification threw");
     }

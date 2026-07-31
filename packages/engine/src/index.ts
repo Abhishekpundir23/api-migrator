@@ -11,6 +11,6 @@ export { applyKnockV0ToV1, default as knockTransform } from "./transforms/knock-
 export { findInngestFiles, findSdkFiles, isDirectory, type ScannedFile, type ScanOptions } from "./scanner.js";
 export { Manifest, PeerFloor, TransformId, type LoadedManifest } from "./manifest.js";
 export { runMigration, type RunMigrationOptions, type RunMigrationResult } from "./pipeline.js";
-export { captureBaseline, runTsc, verify, hasTestScript, type TypeError, type VerifyResult } from "./verifier.js";
+export { captureBaseline, runTsc, verify, installDeps, hasTestScript, type TypeError, type VerifyResult, type VerifyOptions } from "./verifier.js";
 export { buildReport, reportToMarkdown, type MigrationReport } from "./reporter.js";
 export type { ReportEntry, ReportSink, API, FileInfo } from "./types.js";

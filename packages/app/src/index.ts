@@ -10,3 +10,10 @@ export {
   type RunCampaignInput,
   type CampaignRunSummary,
 } from "./campaign/runner.js";
+export {
+  resolveAuth,
+  readAppCredentials,
+  isAppMode,
+  type AppCredentials,
+  type AuthResult,
+} from "./auth.js";

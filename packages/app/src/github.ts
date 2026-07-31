@@ -2,28 +2,28 @@
  * GitHub integration — turns an engine MigrationReport into a real pull request.
  *
  * Workflow per repo:
- *   1. Shallow-clone the repo to a temp working copy.
- *   2. Create a migration branch.
- *   3. Run the engine pipeline (writes changes to the working copy).
- *   4. Commit + push the branch.
- *   5. Open a PR with the engine's markdown body.
+ *   1. Resolve auth (GitHub App in production; gh CLI in pilot — see auth.ts).
+ *   2. Shallow-clone the repo to a temp working copy (token embedded in URL).
+ *   3. Create a migration branch.
+ *   4. Run the engine pipeline (writes changes to the working copy).
+ *   5. Commit + push the branch (author = the auth actor).
+ *   6. Open a PR via Octokit with the engine's markdown body.
  *
- * AUTH: Today this authenticates via `gh` (the local CLI) for the pilot. The
- * exact same workflow authenticates as a GitHub App installation via Octokit's
- * `auth-app` — only the auth wrapper changes. See AppAuth (stubbed) for the
- * production path.
+ * AUTH: All auth decisions live in auth.ts. This module is auth-mode-agnostic —
+ * it just asks resolveAuth(slug) and uses the token + actor + octokit it gets.
  */
 
-import { execSync, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMigration, reportToMarkdown, type Manifest, type MigrationReport } from "@api-migrator/engine";
+import { resolveAuth } from "./auth.js";
 
 export interface MigrateRepoInput {
-  /** Full clone URL, e.g. https://github.com/owner/repo.git */
+  /** Full clone URL WITHOUT credentials, e.g. https://github.com/owner/repo.git */
   cloneUrl: string;
-  /** "owner/repo" slug, used for the PR API. */
+  /** "owner/repo" slug, used for auth + the PR API. */
   slug: string;
   /** Default branch to branch from, e.g. "main". */
   baseBranch: string;
@@ -39,40 +39,46 @@ export interface MigrateRepoResult {
   prUrl: string | null;
   /** Did the engine change any files? */
   changed: boolean;
+  /** Error message if the migration failed before producing a report. */
+  error?: string;
 }
 
 /**
- * Run a migration and open a PR for a single repo. Uses `gh` for auth in the
- * pilot; the Octokit calls below are the App-equivalent.
+ * Run a migration and open a PR for a single repo.
  */
 export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoResult> {
   const { cloneUrl, slug, baseBranch, manifest, branch } = input;
 
+  // 1. Resolve auth for this repo (App or gh).
+  const auth = await resolveAuth(slug);
+
   const workdir = mkdtempSync(join(tmpdir(), "api-migrator-"));
   try {
-    // 1. Shallow clone (depth 1 keeps it fast; we only need HEAD).
-    gitExec(["clone", "--depth", "1", "--branch", baseBranch, cloneUrl, "repo"], workdir);
+    // 2. Shallow clone with credentials embedded in the URL (works for both
+    //    App tokens and gh tokens).
+    const authedUrl = withCredentials(cloneUrl, auth.token, auth.mode);
+    gitExec(["clone", "--depth", "1", "--branch", baseBranch, authedUrl, "repo"], workdir);
     const repoPath = join(workdir, "repo");
 
-    // 2. Run the engine pipeline, writing changes.
+    // 3. Run the engine pipeline, writing changes.
     const { report } = await runMigration(manifest, repoPath, { writeChanges: true });
 
     if (report.changedFiles.length === 0) {
       return { report, prUrl: null, changed: false };
     }
 
-    // 3. Branch + commit + push. Commit as the migrator bot identity.
+    // 4. Branch + commit + push. Commit as the resolved actor (App bot or user).
     gitExec(["checkout", "-b", branch], repoPath);
     gitExec(["add", "-A"], repoPath);
     gitExec(
-      ["-c", "user.name=api-migrator[bot]", "-c", "user.email=bot@api-migrator.dev", "commit", "-m", commitMessage(manifest)],
+      ["-c", `user.name=${auth.actor}`, "-c", `user.email=${actorEmail(auth.actor)}`, "commit", "-m", commitMessage(manifest)],
       repoPath
     );
     gitExec(["push", "origin", branch], repoPath);
 
-    // 4. Open the PR via gh (pilot auth). Production: octokit.pulls.create.
-    const body = reportToMarkdown(report);
-    const prUrl = openPr(slug, branch, baseBranch, prTitle(manifest), body);
+    // 5. Open the PR via Octokit (works in both App and gh modes).
+    const body = reportToMarkdown(report) + authFooter(auth.mode);
+    const prUrl = await openPr(auth.octokit, slug, branch, baseBranch, prTitle(manifest), body);
 
     return { report, prUrl, changed: true };
   } finally {
@@ -88,23 +94,38 @@ function gitExec(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
-// --- PR via gh (pilot auth) --------------------------------------------------
+/** Embed the token into a clone URL. x-access-token is the conventional user. */
+function withCredentials(url: string, token: string, mode: "github-app" | "gh-cli"): string {
+  // https://github.com/owner/repo.git -> https://x-access-token:TOKEN@github.com/owner/repo.git
+  return url.replace("https://", `https://x-access-token:${encodeURIComponent(token)}@`);
+}
 
-function openPr(slug: string, head: string, base: string, title: string, body: string): string {
-  // Write body to a temp file to avoid shell-escaping a large markdown blob.
-  const bodyFile = join(tmpdir(), `pr-body-${Date.now()}.md`);
-  writeFileSync(bodyFile, body);
-  try {
-    const out = execSync(
-      `gh pr create --repo ${slug} --head ${head} --base ${base} --title "${title.replace(/"/g, '\\"')}" --body-file "${bodyFile}"`,
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
-    ).trim();
-    return out; // the PR url
-  } finally {
-    try {
-      rmSync(bodyFile, { force: true });
-    } catch {}
-  }
+/** Map an actor to a noreply email for the commit author. */
+function actorEmail(actor: string): string {
+  if (actor.endsWith("[bot]")) return `${actor}@users.noreply.github.com`;
+  return `${actor}@users.noreply.github.com`;
+}
+
+// --- PR via Octokit (both modes) --------------------------------------------
+
+async function openPr(
+  octokit: import("@octokit/rest").Octokit,
+  slug: string,
+  head: string,
+  base: string,
+  title: string,
+  body: string
+): Promise<string> {
+  const [owner, repo] = slug.split("/");
+  const { data } = await octokit.pulls.create({
+    owner: owner!,
+    repo: repo!,
+    head,
+    base,
+    title,
+    body,
+  });
+  return data.html_url;
 }
 
 function commitMessage(manifest: Manifest): string {
@@ -114,14 +135,9 @@ function prTitle(manifest: Manifest): string {
   return `${manifest.name} — automated migration`;
 }
 
-// --- AppAuth (production path, stubbed) -------------------------------------
-//
-// When wired, a GitHub App installation yields a token per-repo via Octokit:
-//
-//   import { createAppAuth } from "@octokit/auth-app";
-//   import { Octokit } from "@octokit/rest";
-//   const app = new Octokit({ authStrategy: createAppAuth, auth: { appId, privateKey, installationId } });
-//   const { data: { token } } = await app.auth({ type: "installation" });
-//
-// Then clone with that token embedded in the URL, and use octokit.pulls.create
-// instead of `gh pr create`. The migrateRepo() body above is identical.
+/** A footer noting how the PR was generated — useful for transparency. */
+function authFooter(mode: "github-app" | "gh-cli"): string {
+  return mode === "github-app"
+    ? "\n\n---\n_Generated by the api-migrator GitHub App._"
+    : "\n\n---\n_Generated by api-migrator (pilot auth)._";
+}
