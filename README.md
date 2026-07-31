@@ -28,14 +28,21 @@ Monorepo built up phase by phase (see `Build plan`):
 
 ```
 packages/
-├── engine/    # migration engine: scanner + transformer (+ manifest/verifier/reporter in Phase 1)
+├── engine/    # migration engine: manifest -> scanner -> transformer -> verifier -> reporter
 ├── app/       # GitHub App: clone, transform, open PRs        (Phase 2)
 ├── console/   # Next.js provider console                      (Phase 4)
 └── db/        # campaign/repo/run schema                       (Phase 3)
 prototypes/    # the original single-file engine, kept for reference
 ```
 
-The engine maps to the plan's pipeline (manifest → scanner → transformer → verifier → reporter). Today `packages/engine` implements the scanner + transformer as a callable, programmatic library (no `npx`, no broken cross-process report).
+The engine maps to the plan's pipeline (manifest → scanner → transformer → verifier → reporter). `packages/engine` implements the full pipeline as a callable, programmatic TypeScript library:
+
+- **`manifest.ts`** — Zod schema for a migration campaign (provider, package, peer floors, transform set).
+- **`scanner.ts`** — finds files using the target SDK (Inngest-specific identifiers, to avoid false positives on `res.send()` etc.).
+- **`transforms/inngest-v3-to-v4.ts`** — the deterministic AST transform set.
+- **`verifier.ts`** — runs `tsc --noEmit`, diffing post-transform errors against a **pre-transform baseline** so migration-introduced errors are distinguished from pre-existing ones.
+- **`reporter.ts`** — assembles a structured `MigrationReport` + a markdown PR body.
+- **`pipeline.ts`** — `runMigration(manifest, repoPath)` ties it together; the single entry point the GitHub App calls per repo.
 
 ## Run
 
@@ -47,6 +54,18 @@ npx tsx packages/engine/src/cli.ts <repo-path>
 
 # apply the changes in place
 npx tsx packages/engine/src/cli.ts <repo-path> --write
+
+# run the full pipeline (manifest-driven) as a programmatic gate test
+npx tsx packages/engine/src/gate.ts
+```
+
+### Programmatic use
+
+```ts
+import { runMigration, reportToMarkdown } from "@api-migrator/engine";
+
+const { report } = await runMigration(manifest, repoPath, { writeChanges: true });
+const prBody = reportToMarkdown(report); // post as the PR description
 ```
 
 ## Deliberately not built yet

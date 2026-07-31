@@ -1,11 +1,15 @@
 /**
  * Public entry point for the @api-migrator/engine package.
  *
- * Today (Phase 0/1) this exposes the Inngest v3→v4 transform plus the scanner.
- * Phase 1's pipeline will add a manifest-driven `runMigration` that the GitHub
- * App calls per-repo.
+ * The engine takes a Manifest + a repo path and returns a structured
+ * MigrationReport. Phase 1 ships the Inngest v3->v4 transform set; the
+ * transformSet field on the manifest selects which set runs.
  */
 
 export { applyInngestV3ToV4, default as inngestTransform } from "./transforms/inngest-v3-to-v4.js";
 export { findInngestFiles, isDirectory, type ScannedFile, type ScanOptions } from "./scanner.js";
-export type { ReportEntry, ReportSink } from "./types.js";
+export { Manifest, PeerFloor, TransformId, type LoadedManifest } from "./manifest.js";
+export { runMigration, type RunMigrationOptions, type RunMigrationResult } from "./pipeline.js";
+export { captureBaseline, runTsc, verify, hasTestScript, type TypeError, type VerifyResult } from "./verifier.js";
+export { buildReport, reportToMarkdown, type MigrationReport } from "./reporter.js";
+export type { ReportEntry, ReportSink, API, FileInfo } from "./types.js";
