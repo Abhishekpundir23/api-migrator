@@ -1,0 +1,23 @@
+{
+  "name": "api-migrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "API Migration Campaigns as a Service — find affected customer code, deliver tested, reviewable migration pull requests.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "engine": "tsx packages/engine/src/cli.ts",
+    "test": "echo \"(no tests yet)\" && exit 0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "tsx": "^4.19.0"
+  }
+}

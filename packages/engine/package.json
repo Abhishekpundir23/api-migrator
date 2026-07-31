@@ -1,0 +1,22 @@
+{
+  "name": "@api-migrator/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jscodeshift": "^17.3.0",
+    "recast": "^0.23.11",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/jscodeshift": "^17.0.0"
+  }
+}

@@ -22,18 +22,31 @@ This goes beyond what Dependabot does: Dependabot bumps the dependency manifest;
 | F1 | `new Inngest({id})` missing `isDev`/`signingKey` | flagged for review |
 | F2 | `event.user` usage (removed in v4) | flagged for review |
 
-## Architecture
+## Architecture (in progress)
 
-Maps to the plan's "internal migration engine" (manifest → scanner → transformer → verifier → reporter):
+Monorepo built up phase by phase (see `Build plan`):
 
-- `engine/inngest-v3-to-v4.js` — **Transformer** (the codemod)
-- `engine/run-migration.js` — **Scanner** + driver + report
+```
+packages/
+├── engine/    # migration engine: scanner + transformer (+ manifest/verifier/reporter in Phase 1)
+├── app/       # GitHub App: clone, transform, open PRs        (Phase 2)
+├── console/   # Next.js provider console                      (Phase 4)
+└── db/        # campaign/repo/run schema                       (Phase 3)
+prototypes/    # the original single-file engine, kept for reference
+```
+
+The engine maps to the plan's pipeline (manifest → scanner → transformer → verifier → reporter). Today `packages/engine` implements the scanner + transformer as a callable, programmatic library (no `npx`, no broken cross-process report).
 
 ## Run
 
 ```bash
-# clone a target repo into targets/, then:
-node engine/run-migration.js targets/<repo>
+npm install
+
+# scan + run the Inngest v3->v4 transform against a repo (dry-run by default)
+npx tsx packages/engine/src/cli.ts <repo-path>
+
+# apply the changes in place
+npx tsx packages/engine/src/cli.ts <repo-path> --write
 ```
 
 ## Deliberately not built yet

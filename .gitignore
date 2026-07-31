@@ -9,3 +9,6 @@ targets/
 .DS_Store
 .env
 .env.*
+
+# TS incremental build info
+*.tsbuildinfo
