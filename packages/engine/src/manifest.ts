@@ -34,7 +34,7 @@ export const Manifest = z.object({
   /** The provider/slug this campaign belongs to, e.g. "inngest". */
   provider: z.string(),
   /** Engine-internal key selecting which transform set to run. */
-  transformSet: z.enum(["inngest-v3-to-v4"]),
+  transformSet: z.enum(["inngest-v3-to-v4", "knock-v0-to-v1"]),
   /** Package being upgraded. */
   package: z.object({
     name: z.string(),

@@ -7,7 +7,8 @@
  */
 
 export { applyInngestV3ToV4, default as inngestTransform } from "./transforms/inngest-v3-to-v4.js";
-export { findInngestFiles, isDirectory, type ScannedFile, type ScanOptions } from "./scanner.js";
+export { applyKnockV0ToV1, default as knockTransform } from "./transforms/knock-v0-to-v1.js";
+export { findInngestFiles, findSdkFiles, isDirectory, type ScannedFile, type ScanOptions } from "./scanner.js";
 export { Manifest, PeerFloor, TransformId, type LoadedManifest } from "./manifest.js";
 export { runMigration, type RunMigrationOptions, type RunMigrationResult } from "./pipeline.js";
 export { captureBaseline, runTsc, verify, hasTestScript, type TypeError, type VerifyResult } from "./verifier.js";

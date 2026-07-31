@@ -8,9 +8,9 @@ This goes beyond what Dependabot does: Dependabot bumps the dependency manifest;
 
 ## What works today
 
-- **Target:** Inngest TypeScript SDK, **v3 → v4** (a second provider's migration is the Phase 5 task).
-- **Engine:** deterministic AST transforms (jscodeshift / recast) for mechanical changes; structural changes are flagged for human review, not auto-applied.
-- **Verified:** migrated code type-checks clean against `inngest@4.14.0`.
+- **Two providers, one engine:** Inngest TypeScript SDK **v3 → v4** and Knock Node.js SDK **v0.x → v1.0** run through the same manifest-driven pipeline — proving the engine is provider-agnostic, not Inngest-specific. A new provider is just a new transform file + a manifest entry.
+- **Engine:** deterministic AST transforms (jscodeshift / recast, with a per-extension parser so TypeScript type annotations parse) for mechanical changes; structural changes are flagged for human review, not auto-applied.
+- **Verified:** Inngest-migrated code type-checks clean against `inngest@4.14.0`.
 - **Full flow:** create a campaign in the web console → run it across repos → real migration PRs open.
 
 ## Architecture
@@ -31,8 +31,10 @@ The workspace packages (`engine`, `db`, `app`) ship **compiled `dist/` JS** — 
 Maps to the plan's pipeline (manifest → scanner → transformer → verifier → reporter), implemented as a callable, programmatic TypeScript library:
 
 - **`manifest.ts`** — Zod schema for a migration campaign (provider, package, peer floors, transform set).
-- **`scanner.ts`** — finds files using the target SDK (Inngest-specific identifiers, to avoid false positives on `res.send()` etc.).
-- **`transforms/inngest-v3-to-v4.ts`** — the deterministic AST transform set.
+- **`scanner.ts`** — finds files using the target SDK, with **per-provider usage patterns** selected by the manifest's `transformSet` (provider-specific identifiers, to avoid false positives on `res.send()` etc.).
+- **`transforms/inngest-v3-to-v4.ts`** — the Inngest deterministic AST transform set.
+- **`transforms/knock-v0-to-v1.ts`** — the Knock deterministic AST transform set (second provider).
+- **`transforms/parser.ts`** — picks the babel parser (`ts`/`tsx`/`babel`) per file extension, so TypeScript type annotations parse correctly.
 - **`verifier.ts`** — runs `tsc --noEmit`, diffing post-transform errors against a **pre-transform baseline** so migration-introduced errors are distinguished from pre-existing ones.
 - **`reporter.ts`** — assembles a structured `MigrationReport` + a markdown PR body.
 - **`pipeline.ts`** — `runMigration(manifest, repoPath)` ties it together; the single entry point the campaign runner calls per repo.
@@ -76,10 +78,10 @@ const prBody = reportToMarkdown(report); // post as the PR description
 | 2 — GitHub | real PR opened from code (correct diff + report body) |
 | 3 — Campaigns + DB | DB-backed campaign persists run rows |
 | 4 — Console | campaign created + run + PR opened through the web UI |
+| 5 — Second provider | Knock v0→v1 runs through the same pipeline as Inngest (provider-agnostic) |
 
 ## Not built yet
 
-- A second provider's migration (proving the engine is provider-agnostic, not Inngest-only) — Phase 5.
 - Registered GitHub App auth (today uses `gh` for pilot auth; the Octokit `auth-app` path is documented inline — only the auth wrapper differs).
 - Auto-merge (always human review), multi-language support beyond TS, auto-generating manifests from docs alone.
 

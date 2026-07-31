@@ -15,8 +15,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Manifest } from "./manifest.js";
-import { findInngestFiles } from "./scanner.js";
+import { findSdkFiles } from "./scanner.js";
 import { applyInngestV3ToV4 } from "./transforms/inngest-v3-to-v4.js";
+import { applyKnockV0ToV1 } from "./transforms/knock-v0-to-v1.js";
 import { captureBaseline, verify } from "./verifier.js";
 import { buildReport } from "./reporter.js";
 import type { ReportEntry, ReportSink } from "./types.js";
@@ -45,9 +46,8 @@ export async function runMigration(
   const writeChanges = opts.writeChanges ?? false;
   const skipVerify = opts.skipVerify ?? false;
 
-  // 1. Scan for affected files. (Phase 1 only knows the Inngest set; a real
-  //    registry dispatches on manifest.transformSet — see transforms/registry.)
-  const scanned = findInngestFiles(repoPath);
+  // 1. Scan for affected files using the provider-specific usage patterns.
+  const scanned = findSdkFiles(repoPath, manifest.transformSet);
   const entries: ReportEntry[] = [];
   const sink: ReportSink = { push: (e) => entries.push(e) };
   const changedFiles: string[] = [];
@@ -105,6 +105,8 @@ function applyTransformSet(
   switch (manifest.transformSet) {
     case "inngest-v3-to-v4":
       return applyInngestV3ToV4(source, filePath, sink);
+    case "knock-v0-to-v1":
+      return applyKnockV0ToV1(source, filePath, sink);
     default: {
       // Compile-time exhaustiveness check; if a new set is added to the union
       // without a case here, tsc errors.

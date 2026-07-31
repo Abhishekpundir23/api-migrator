@@ -24,8 +24,9 @@
 import { type API, type FileInfo } from "jscodeshift";
 import * as jscodeshift from "jscodeshift";
 import type { ReportSink } from "../types.js";
+import { parseWithParser, toSource } from "./parser.js";
 
-// jscodeshift is exported as a callable function with attached builders.
+// Builders/j helpers (the parser-specific root comes from parseWithParser).
 const j: any = (jscodeshift as any).default ?? (jscodeshift as any);
 
 /**
@@ -38,7 +39,7 @@ export function applyInngestV3ToV4(
   filePath: string,
   sink: ReportSink
 ): string | null {
-  const root = j(source);
+  const root = parseWithParser(filePath, source);
 
   const report = (code: string, kind: "applied" | "review", message: string, loc: any) => {
     sink.push({ file: filePath, kind, code, message, line: loc?.start?.line ?? null });
@@ -51,7 +52,7 @@ export function applyInngestV3ToV4(
   flagMissingIsDev(filePath, root, j, report);
   flagEventUser(filePath, root, j, report);
 
-  return applied > 0 ? (root.toSource({ quote: "double" }) as string) : null;
+  return applied > 0 ? toSource(root) : null;
 }
 
 /** The same transform exported in jscodeshift's expected signature, for CLI use. */
@@ -86,9 +87,12 @@ function migrateCreateFunctionTrigger(file: string, root: any, j: J, report: Rep
         return;
       }
 
-      // Only treat the 2nd arg as a trigger if it looks like one.
+      // Only treat the 2nd arg as a trigger if it looks like one. babel parsers
+      // emit ObjectProperty for object-literal members.
       const isTrigger = triggerArg.properties.some(
-        (p: any) => p.type === "Property" && ["event", "cron"].includes(p.key.name)
+        (p: any) =>
+          (p.type === "Property" || p.type === "ObjectProperty") &&
+          ["event", "cron"].includes(p.key.name)
       );
       if (!isTrigger) return;
 
@@ -107,10 +111,14 @@ function migrateCreateFunctionTrigger(file: string, root: any, j: J, report: Rep
 
 /**
  * T2: serveHost -> serveOrigin rename inside object literals.
+ *
+ * Note: babel-family parsers (ts/tsx/babel — used via parseWithParser) emit
+ * ObjectProperty nodes for object-literal members, not the recast `Property`
+ * type. Match ObjectProperty.
  */
 function migrateServeHost(_file: string, root: any, j: J, report: ReportFn): number {
   let applied = 0;
-  root.find(j.Property, { key: { name: "serveHost" } }).forEach((path: any) => {
+  root.find(j.ObjectProperty, { key: { name: "serveHost" } }).forEach((path: any) => {
     path.node.key.name = "serveOrigin";
     report("T2", "applied", "serveHost renamed to serveOrigin", path.node.loc);
     applied++;
@@ -123,10 +131,11 @@ function migrateServeHost(_file: string, root: any, j: J, report: ReportFn): num
  */
 function migrateStreaming(_file: string, root: any, j: J, report: ReportFn): number {
   let applied = 0;
-  root.find(j.Property, { key: { name: "streaming" } }).forEach((path: any) => {
+  root.find(j.ObjectProperty, { key: { name: "streaming" } }).forEach((path: any) => {
     const v = path.node.value;
-    if (v.type === "Literal" && typeof v.value === "string") {
-      path.node.value = j.literal(true);
+    // babel parsers use StringLiteral, not Literal.
+    if ((v.type === "Literal" || v.type === "StringLiteral") && typeof v.value === "string") {
+      path.node.value = j.booleanLiteral(true);
       report(
         "T3",
         "applied",
@@ -148,7 +157,7 @@ function flagMissingIsDev(_file: string, root: any, j: J, report: ReportFn): voi
     const arg = path.node.arguments[0];
     if (!arg || arg.type !== "ObjectExpression") return;
     const names = arg.properties
-      .filter((p: any) => p.type === "Property")
+      .filter((p: any) => p.type === "Property" || p.type === "ObjectProperty")
       .map((p: any) => p.key.name);
     if (names.includes("isDev") || names.includes("signingKey")) return;
     report(
