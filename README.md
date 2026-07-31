@@ -29,20 +29,25 @@ Monorepo built up phase by phase (see `Build plan`):
 ```
 packages/
 ├── engine/    # migration engine: manifest -> scanner -> transformer -> verifier -> reporter
-├── app/       # GitHub integration: clone, transform, open PRs   (Phase 2 — DONE)
+├── app/       # GitHub integration + campaign runner              (Phase 2/3 — DONE)
 ├── console/   # Next.js provider console                          (Phase 4)
-└── db/        # campaign/repo/run schema                          (Phase 3)
+└── db/        # campaign/repo/run schema + repository layer       (Phase 3 — DONE)
 prototypes/    # the original single-file engine, kept for reference
 ```
 
-The `app` package (`packages/app`) runs the full per-repo workflow: shallow-clone → engine pipeline → commit → push → open a PR whose body is the engine's markdown report. It authenticated via `gh` for the pilot; the same workflow authenticates as a registered GitHub App installation via Octokit `auth-app` (the auth wrapper is the only change).
+The `db` package (`packages/db`) holds the data model — `provider → campaign → repo → migration_run` — via Drizzle ORM over SQLite (portable to Postgres for production). The `app` package's campaign runner persists a run row per repo with status, PR url, and the full report JSON.
 
 ```bash
-# open a real migration PR in a repo (pilot auth via gh)
+# open a real migration PR in one repo (pilot auth via gh)
 npx tsx packages/app/src/cli.ts <owner/repo>
+
+# run a DB-backed campaign across many repos
+SANDBOX_SLUG=owner/repo npx tsx packages/app/src/campaign/gate.ts
 ```
 
-**Phase 2 gate (passed):** ran against a sandbox repo and opened a real PR — [example](https://github.com/Abhishekpundir23/api-migrator-sandbox-1785523050/pull/1) — whose diff exactly matches the engine's verified output and whose body is the rendered migration report.
+**Phase 2 gate (passed):** opened a real PR — [example](https://github.com/Abhishekpundir23/api-migrator-sandbox-1785523050/pull/1) — whose diff matches the engine's verified output and whose body is the rendered report.
+
+**Phase 3 gate (passed):** a DB-backed campaign created a provider + campaign, ran against a repo, opened a PR, and persisted a `migration_run` row with `pr_opened` status — [example](https://github.com/Abhishekpundir23/api-migrator-sandbox3-1785523414/pull/1).
 
 The engine maps to the plan's pipeline (manifest → scanner → transformer → verifier → reporter). `packages/engine` implements the full pipeline as a callable, programmatic TypeScript library:
 

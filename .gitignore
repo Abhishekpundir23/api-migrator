@@ -12,3 +12,4 @@ targets/
 
 # TS incremental build info
 *.tsbuildinfo
+data/

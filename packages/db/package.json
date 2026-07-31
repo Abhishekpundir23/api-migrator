@@ -1,20 +1,21 @@
 {
-  "name": "@api-migrator/app",
+  "name": "@api-migrator/db",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "migrate": "tsx src/cli.ts"
+    "migrate": "tsx src/migrate.ts"
   },
   "dependencies": {
-    "@api-migrator/engine": "*",
-    "@api-migrator/db": "*",
-    "@octokit/rest": "^21.0.0"
+    "drizzle-orm": "^0.45.0",
+    "better-sqlite3": "^13.0.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.0.0",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "drizzle-kit": "^0.31.0"
   }
 }
