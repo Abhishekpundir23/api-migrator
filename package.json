@@ -11,8 +11,11 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b",
+    "build": "npm run build --workspaces --if-present",
+    "build:packages": "npm run build --workspace @api-migrator/engine --workspace @api-migrator/db --workspace @api-migrator/app",
+    "build:console": "npm run build --workspace @api-migrator/console",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "console": "npm run dev --workspace @api-migrator/console",
     "engine": "tsx packages/engine/src/cli.ts",
     "test": "echo \"(no tests yet)\" && exit 0"
   },

@@ -9,8 +9,12 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "composite": true,
-    "noEmit": true
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": false,
+    "outDir": "dist",
+    "rootDir": "src"
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

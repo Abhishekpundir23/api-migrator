@@ -24,8 +24,11 @@ export interface QueueOptions {
 /**
  * Run a batch of migration jobs with bounded concurrency.
  * Returns one result per job (failures captured, not thrown).
+ *
+ * Lower-level than campaign/runner.runCampaign (which wires DB persistence);
+ * exported as runCampaignJobs to avoid a name clash.
  */
-export async function runCampaign(
+export async function runCampaignJobs(
   jobs: MigrationJob[],
   opts: QueueOptions = {}
 ): Promise<MigrationJobResult[]> {

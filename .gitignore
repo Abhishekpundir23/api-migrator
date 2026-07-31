@@ -13,3 +13,7 @@ targets/
 # TS incremental build info
 *.tsbuildinfo
 data/
+
+# built package output
+**/dist/
+**/.next/
