@@ -17,6 +17,7 @@ export {
   LocalVerificationRunner, DockerVerificationRunner,
   type TypeError, type VerifyResult, type VerifyOptions, type CheckResult,
   type VerificationChecks, type VerificationRunner, type RunnerCommand, type RunnerResult,
+  type RunnerTemporaryFile,
 } from "./verifier.js";
 export { buildReport, reportToMarkdown, type MigrationReport } from "./reporter.js";
 export type { ReportEntry, ReportSink, API, FileInfo } from "./types.js";

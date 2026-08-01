@@ -5,11 +5,14 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   lstatSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   readlinkSync,
   realpathSync,
+  rmSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   detectPackageManager,
@@ -48,6 +51,8 @@ export interface VerificationChecks {
 export interface RunnerCommand {
   command: string;
   args: string[];
+  /** Stable, non-sensitive arguments used in reports and preflight hashing. */
+  displayArgs?: string[];
   timeoutMs: number;
   /**
    * Install uses Docker's ordinary bridge network; this is not an egress
@@ -65,9 +70,18 @@ export interface RunnerResult {
   timedOut: boolean;
 }
 
+export interface RunnerTemporaryFile {
+  /** Opaque writable path in the runner's filesystem namespace. */
+  path: string;
+  /** Release host resources; disposable runners may implement this as a no-op. */
+  cleanup(): void;
+}
+
 /** Injectable runner for tests and alternative production sandboxes. */
 export interface VerificationRunner {
   readonly kind: string;
+  /** Allocate isolated writable storage outside the repository mount. */
+  createTemporaryFile(name: string): RunnerTemporaryFile;
   run(repoPath: string, command: RunnerCommand): RunnerResult;
 }
 
@@ -96,6 +110,8 @@ export interface VerifyOptions {
   runLint?: boolean;
   /** Run a repository-authored typecheck script as an additional, strict check. */
   runTypecheckScript?: boolean;
+  /** Repository-relative source files that the trusted compiler must select. */
+  requiredFiles?: string[];
   /** Explicit environment for repository-controlled commands. Never merged with process.env. */
   env?: NodeJS.ProcessEnv;
   installTimeoutMs?: number;
@@ -133,6 +149,7 @@ export interface InstallResult {
 }
 
 const TS_ERROR = /^(.+?)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.*)$/;
+const TS_GLOBAL_ERROR = /^error\s+(TS\d+):\s+(.*)$/;
 const MAX_OUTPUT = 24_000;
 const DEFAULT_DOCKER_IMAGE =
   "node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46";
@@ -147,6 +164,15 @@ const COMPILER_ENTRY_POLICY = {
 
 export class LocalVerificationRunner implements VerificationRunner {
   readonly kind = "local-unsafe";
+
+  createTemporaryFile(name: string): RunnerTemporaryFile {
+    const fileName = temporaryFileName(name);
+    const root = mkdtempSync(join(tmpdir(), "api-migrator-runner-"));
+    return {
+      path: join(root, fileName),
+      cleanup: () => rmSync(root, { recursive: true, force: true }),
+    };
+  }
 
   run(repoPath: string, command: RunnerCommand): RunnerResult {
     const result = spawnSync(command.command, command.args, {
@@ -181,6 +207,15 @@ export class DockerVerificationRunner implements VerificationRunner {
       pidsLimit: options.pidsLimit ?? 256,
     };
     this.executeDocker = executeDocker ?? executeDockerCommand;
+  }
+
+  createTemporaryFile(name: string): RunnerTemporaryFile {
+    return {
+      // Each docker run receives a fresh /tmp tmpfs, so no host cleanup or
+      // cross-command state can survive the container.
+      path: `/tmp/api-migrator-${randomUUID()}-${temporaryFileName(name)}`,
+      cleanup: () => {},
+    };
   }
 
   run(repoPath: string, command: RunnerCommand): RunnerResult {
@@ -249,19 +284,183 @@ function executeDockerCommand(args: string[], timeoutMs: number): RunnerResult {
 
 export function parseTscErrors(output: string): TypeError[] {
   const out: TypeError[] = [];
-  for (const line of output.split("\n")) {
+  let current: TypeError | undefined;
+  for (const line of output.split(/\r?\n/)) {
     const match = line.match(TS_ERROR);
-    if (!match) continue;
-    out.push({
-      file: match[1]!,
-      line: Number(match[2]),
-      col: Number(match[3]),
-      code: match[4]!,
-      message: match[5]!,
-      raw: line,
-    });
+    if (match) {
+      current = {
+        file: match[1]!,
+        line: Number(match[2]),
+        col: Number(match[3]),
+        code: match[4]!,
+        message: match[5]!,
+        raw: line,
+      };
+      out.push(current);
+      continue;
+    }
+    if (current && /^[\t ]+\S/.test(line)) {
+      current.message += `\n${line}`;
+      current.raw += `\n${line}`;
+      continue;
+    }
+    if (line.trim().length === 0) continue;
+    current = undefined;
   }
   return out;
+}
+
+function globalTscErrorCodes(output: string): string[] {
+  const codes = new Set<string>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(TS_GLOBAL_ERROR);
+    if (match) codes.add(match[1]!);
+  }
+  return [...codes];
+}
+
+function hasUnclassifiedTscOutput(stdout: string, stderr: string): boolean {
+  // The official CLI writes diagnostics to stdout. Stderr indicates a Node,
+  // Docker, or compiler-process failure even if source diagnostics were emitted
+  // first. For non-pretty output, diagnostic message chains use indented
+  // continuation lines after a location-bearing or global diagnostic.
+  if (stderr.trim().length > 0) return true;
+  let insideDiagnostic = false;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.trim().length === 0) continue;
+    if (TS_ERROR.test(line) || TS_GLOBAL_ERROR.test(line)) {
+      insideDiagnostic = true;
+      continue;
+    }
+    if (insideDiagnostic && /^[\t ]+\S/.test(line)) continue;
+    return true;
+  }
+  return false;
+}
+
+function temporaryFileName(name: string): string {
+  if (!/^[a-z0-9][a-z0-9.-]{0,80}$/i.test(name)) {
+    throw new Error("runner temporary filename is invalid");
+  }
+  return name;
+}
+
+function configurationTscErrorCodes(errors: readonly TypeError[]): string[] {
+  const codes = new Set<string>();
+  for (const error of errors) {
+    // TypeScript points invalid root, extended, and referenced project
+    // configuration at JSON files. Such diagnostics mean the compiler did not
+    // establish a trustworthy program and cannot be baseline-exempted.
+    if (/\.json$/i.test(error.file.replace(/\\/g, "/"))) codes.add(error.code);
+  }
+  return [...codes];
+}
+
+function inspectTypeScriptConfig(
+  repoPath: string,
+  runner: VerificationRunner,
+  opts: VerifyOptions
+): { ok: boolean; reason?: string; check: CheckResult } {
+  const command = {
+    command: runner.kind === "docker" ? "/usr/local/bin/node" : process.execPath,
+    args: ["./node_modules/typescript/bin/tsc", "--showConfig", "--pretty", "false"],
+  };
+  const before = repositoryDigest(repoPath);
+  const raw = runner.run(repoPath, {
+    ...command,
+    timeoutMs: opts.typecheckTimeoutMs ?? 120_000,
+    network: "none",
+    env: childEnvironment(opts.env, false),
+  });
+  const check = commandCheck(command, raw);
+  if (before !== repositoryDigest(repoPath)) {
+    const reason = "trusted compiler configuration inspection modified the repository tree";
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
+  if (raw.spawnError || raw.timedOut || raw.exitCode !== 0) {
+    const reason = raw.spawnError
+      ? `compiler configuration inspection spawn failed: ${raw.spawnError}`
+      : raw.timedOut
+        ? "compiler configuration inspection timed out"
+        : `compiler configuration inspection exited ${raw.exitCode ?? "without status"}`;
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
+  if (raw.stderr.trim().length > 0) {
+    const reason = "compiler configuration inspection emitted unexpected stderr";
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
+
+  let config: any;
+  try {
+    config = JSON.parse(raw.stdout);
+  } catch {
+    const reason = "compiler configuration inspection returned invalid JSON";
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    const reason = "compiler configuration inspection returned an invalid configuration";
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
+  if (config.references !== undefined) {
+    if (!Array.isArray(config.references)) {
+      const reason = "compiler configuration inspection returned invalid project references";
+      return { ok: false, reason, check: { ...check, status: "failed", reason } };
+    }
+    if (config.references.length > 0) {
+      const reason = "trusted no-emit verification does not yet support TypeScript project references";
+      return { ok: false, reason, check: { ...check, status: "failed", reason } };
+    }
+  }
+  if (!Array.isArray(config.files) || config.files.length === 0 || config.files.some((file: unknown) => typeof file !== "string")) {
+    const reason = "TypeScript configuration does not select any verifiable source files";
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
+  const selectedFiles = new Set<string>();
+  for (const file of config.files as string[]) {
+    const normalized = compilerSelectedFile(repoPath, runner, file);
+    if (normalized) selectedFiles.add(normalized);
+  }
+  if (selectedFiles.size === 0) {
+    const reason = "TypeScript configuration does not select repository source files";
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
+  for (const required of opts.requiredFiles ?? []) {
+    const normalized = normalizeRepositoryPath(required);
+    if (!normalized) {
+      const reason = "trusted compiler received an invalid required source path";
+      return { ok: false, reason, check: { ...check, status: "failed", reason } };
+    }
+    if (!selectedFiles.has(normalized)) {
+      const reason = `TypeScript configuration excludes required migration source: ${normalized}`;
+      return { ok: false, reason, check: { ...check, status: "failed", reason } };
+    }
+  }
+  return { ok: true, check };
+}
+
+function compilerSelectedFile(
+  repoPath: string,
+  runner: VerificationRunner,
+  file: string
+): string | null {
+  if (isAbsolute(file)) {
+    const hostRelative = relative(repoPath, file).replace(/\\/g, "/");
+    const normalizedHostPath = normalizeRepositoryPath(hostRelative);
+    if (normalizedHostPath) return normalizedHostPath;
+    if (runner.kind === "docker" && file.replace(/\\/g, "/").startsWith("/workspace/")) {
+      return normalizeRepositoryPath(file.replace(/\\/g, "/").slice("/workspace/".length));
+    }
+    return null;
+  }
+  return normalizeRepositoryPath(file);
+}
+
+function normalizeRepositoryPath(file: string): string | null {
+  const normalized = file.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!normalized || normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) return null;
+  const parts = normalized.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..")) return null;
+  return parts.join("/");
 }
 
 /** Install dependencies and update the active lockfile with scripts disabled by default. */
@@ -329,23 +528,76 @@ export async function runTsc(repoPath: string, opts: VerifyOptions = {}): Promis
     return failedVerification(runner.kind, checks, compilerFailure);
   }
 
+  const configInspection = inspectTypeScriptConfig(repoPath, runner, opts);
+  if (!configInspection.ok) {
+    const reason = configInspection.reason ?? "compiler configuration inspection failed";
+    checks.typecheck = configInspection.check;
+    return failedVerification(runner.kind, checks, reason);
+  }
+
+  const before = repositoryDigest(repoPath);
+
   // Bypass the repository-controlled .bin namespace. Docker uses the Node
   // executable from the digest-pinned image and an inspected official package.
+  let buildInfo: RunnerTemporaryFile;
+  try {
+    buildInfo = runner.createTemporaryFile("tsconfig.tsbuildinfo");
+  } catch {
+    const reason = "verification runner could not allocate isolated compiler temporary storage";
+    checks.typecheck = failedCheck(reason);
+    return failedVerification(runner.kind, checks, reason);
+  }
   const command = {
     command: runner.kind === "docker" ? "/usr/local/bin/node" : process.execPath,
-    args: ["./node_modules/typescript/bin/tsc", "--noEmit", "--pretty", "false"],
+    args: [
+      "./node_modules/typescript/bin/tsc",
+      "--noEmit",
+      "--pretty",
+      "false",
+      "--tsBuildInfoFile",
+      buildInfo.path,
+    ],
+    displayArgs: [
+      "./node_modules/typescript/bin/tsc",
+      "--noEmit",
+      "--pretty",
+      "false",
+      "--tsBuildInfoFile",
+      "<runner-temp>/tsconfig.tsbuildinfo",
+    ],
   };
-  const before = repositoryDigest(repoPath);
-  const raw = runner.run(repoPath, {
-    ...command,
-    timeoutMs: opts.typecheckTimeoutMs ?? 120_000,
-    network: "none",
-    env: childEnvironment(opts.env, false),
-  });
+  let raw: RunnerResult;
+  let cleanupFailed = false;
+  try {
+    raw = runner.run(repoPath, {
+      ...command,
+      timeoutMs: opts.typecheckTimeoutMs ?? 120_000,
+      network: "none",
+      env: childEnvironment(opts.env, false),
+    });
+  } finally {
+    try {
+      buildInfo.cleanup();
+    } catch {
+      cleanupFailed = true;
+    }
+  }
   const afterDigest = repositoryDigest(repoPath);
   const output = combinedOutput(raw);
-  const errors = parseTscErrors(output);
+  // Parse the complete bounded process capture. The report output is truncated,
+  // but an early compiler-level diagnostic must never disappear behind a large
+  // set of ordinary source diagnostics.
+  const compilerOutput = `${raw.stdout}${raw.stderr}`;
+  const errors = parseTscErrors(compilerOutput);
+  const globalErrorCodes = globalTscErrorCodes(compilerOutput);
+  const hasUnclassifiedOutput = hasUnclassifiedTscOutput(raw.stdout, raw.stderr);
   checks.typecheck = commandCheck(command, raw);
+
+  if (cleanupFailed) {
+    const reason = "verification runner failed to clean compiler temporary storage";
+    checks.typecheck = { ...checks.typecheck, status: "failed", reason };
+    return failedVerification(runner.kind, checks, reason);
+  }
 
   if (before !== afterDigest) {
     const reason = "trusted compiler invocation modified the repository tree";
@@ -353,12 +605,49 @@ export async function runTsc(repoPath: string, opts: VerifyOptions = {}): Promis
     return failedVerification(runner.kind, checks, reason);
   }
 
-  if (raw.spawnError || raw.timedOut || raw.exitCode == null || (raw.exitCode !== 0 && errors.length === 0)) {
+  if (raw.spawnError || raw.timedOut || raw.exitCode == null) {
     const reason = raw.spawnError
       ? `compiler spawn failed: ${raw.spawnError}`
       : raw.timedOut
         ? "compiler timed out"
-        : `compiler exited ${raw.exitCode ?? "without status"} without parseable TypeScript diagnostics`;
+        : "compiler exited without status";
+    checks.typecheck = { ...checks.typecheck, status: "failed", reason };
+    return failedVerification(runner.kind, checks, reason);
+  }
+
+  if (globalErrorCodes.length > 0) {
+    const displayedCodes = globalErrorCodes.slice(0, 3).join(", ");
+    const suffix = globalErrorCodes.length > 3 ? ", …" : "";
+    const reason = `compiler reported non-file TypeScript diagnostic ${displayedCodes}${suffix}; type-check result is incomplete`;
+    checks.typecheck = { ...checks.typecheck, status: "failed", reason };
+    return failedVerification(runner.kind, checks, reason);
+  }
+
+  const configurationErrorCodes = configurationTscErrorCodes(errors);
+  if (configurationErrorCodes.length > 0) {
+    const displayedCodes = configurationErrorCodes.slice(0, 3).join(", ");
+    const suffix = configurationErrorCodes.length > 3 ? ", …" : "";
+    const reason = `compiler reported configuration diagnostic ${displayedCodes}${suffix}; type-check result is incomplete`;
+    checks.typecheck = { ...checks.typecheck, status: "failed", reason };
+    return failedVerification(runner.kind, checks, reason);
+  }
+
+  if (hasUnclassifiedOutput) {
+    const reason = "compiler emitted unclassified output; type-check result is incomplete";
+    checks.typecheck = { ...checks.typecheck, status: "failed", reason };
+    return failedVerification(runner.kind, checks, reason);
+  }
+
+  if (raw.exitCode === 0 && errors.length > 0) {
+    const reason = "compiler exited successfully despite reporting TypeScript errors";
+    checks.typecheck = { ...checks.typecheck, status: "failed", reason };
+    return failedVerification(runner.kind, checks, reason);
+  }
+
+  if (![0, 1, 2].includes(raw.exitCode) || (raw.exitCode !== 0 && errors.length === 0)) {
+    const reason = raw.exitCode !== 0 && errors.length === 0
+      ? `compiler exited ${raw.exitCode} without parseable TypeScript diagnostics`
+      : `compiler exited with unexpected status ${raw.exitCode}`;
     checks.typecheck = { ...checks.typecheck, status: "failed", reason };
     return failedVerification(runner.kind, checks, reason);
   }
@@ -391,8 +680,7 @@ export async function verify(
     };
   }
 
-  const baseSet = new Set(baseline.map(signature));
-  const introduced = result.after.filter((error) => !baseSet.has(signature(error)));
+  const introduced = introducedErrors(result.after, baseline);
   result.baseline = baseline;
   result.introduced = introduced;
   result.checks.typecheck = introduced.length === 0
@@ -883,7 +1171,10 @@ function hasScript(repoPath: string, name: string): boolean {
     && script !== 'echo "Error: no test specified" && exit 1';
 }
 
-function commandCheck(command: { command: string; args: string[] }, result: RunnerResult): CheckResult {
+function commandCheck(
+  command: { command: string; args: string[]; displayArgs?: string[] },
+  result: RunnerResult
+): CheckResult {
   const output = combinedOutput(result);
   if (result.spawnError) return failedCheck(`spawn failed: ${result.spawnError}`, command, result, output);
   if (result.timedOut) return failedCheck("command timed out", command, result, output);
@@ -900,8 +1191,8 @@ function combinedOutput(result: RunnerResult): string {
   return `${result.stdout}${result.stderr}`.slice(-MAX_OUTPUT);
 }
 
-function displayCommand(command: { command: string; args: string[] }): string {
-  return [command.command, ...command.args].join(" ");
+function displayCommand(command: { command: string; args: string[]; displayArgs?: string[] }): string {
+  return [command.command, ...(command.displayArgs ?? command.args)].join(" ");
 }
 
 function installFailure(reason: string): InstallResult {
@@ -910,7 +1201,7 @@ function installFailure(reason: string): InstallResult {
 
 function failedCheck(
   reason: string,
-  command?: { command: string; args: string[] },
+  command?: { command: string; args: string[]; displayArgs?: string[] },
   result?: RunnerResult,
   output = ""
 ): CheckResult {
@@ -950,5 +1241,21 @@ function failedVerification(runner: string, checks: VerificationChecks, reason: 
 }
 
 function signature(error: TypeError): string {
-  return `${error.file}:${error.line}:${error.code}:${error.message}`;
+  return `${error.file}:${error.line}:${error.col}:${error.code}:${error.message}`;
+}
+
+function introducedErrors(after: readonly TypeError[], baseline: readonly TypeError[]): TypeError[] {
+  const remaining = new Map<string, number>();
+  for (const error of baseline) {
+    const key = signature(error);
+    remaining.set(key, (remaining.get(key) ?? 0) + 1);
+  }
+  return after.filter((error) => {
+    const key = signature(error);
+    const count = remaining.get(key) ?? 0;
+    if (count === 0) return true;
+    if (count === 1) remaining.delete(key);
+    else remaining.set(key, count - 1);
+    return false;
+  });
 }

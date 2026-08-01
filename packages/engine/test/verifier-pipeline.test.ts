@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   DockerVerificationRunner,
+  LocalVerificationRunner,
   installDeps,
   runMigration,
   runTsc,
@@ -20,6 +21,23 @@ test("default Docker verification image is pinned by digest", () => {
     new DockerVerificationRunner().options.image,
     /^node:22-bookworm-slim@sha256:[a-f0-9]{64}$/
   );
+});
+
+test("verification runners allocate isolated compiler temporary files", () => {
+  const docker = new DockerVerificationRunner();
+  const firstDockerFile = docker.createTemporaryFile("tsconfig.tsbuildinfo");
+  const secondDockerFile = docker.createTemporaryFile("tsconfig.tsbuildinfo");
+  assert.match(firstDockerFile.path, /^\/tmp\/api-migrator-[a-f0-9-]+-tsconfig\.tsbuildinfo$/);
+  assert.notEqual(firstDockerFile.path, secondDockerFile.path);
+  firstDockerFile.cleanup();
+  secondDockerFile.cleanup();
+
+  const localFile = new LocalVerificationRunner().createTemporaryFile("tsconfig.tsbuildinfo");
+  const localRoot = dirname(localFile.path);
+  writeFileSync(localFile.path, "build info");
+  assert.equal(existsSync(localFile.path), true);
+  localFile.cleanup();
+  assert.equal(existsSync(localRoot), false);
 });
 
 test("Docker runner preserves host ownership and force-removes its named container after a timeout", () => {
@@ -66,16 +84,28 @@ class InspectingRunner implements VerificationRunner {
   readonly commands: RunnerCommand[] = [];
   constructor(private readonly failSpawn = false) {}
 
+  createTemporaryFile(name: string) {
+    return { path: `/tmp/api-migrator-test-${name}`, cleanup: () => {} };
+  }
+
   run(repoPath: string, command: RunnerCommand): RunnerResult {
     this.commands.push(command);
     if (command.network === "default" && command.args.includes("install")) {
       writeTrustedCompilerFixture(repoPath);
     }
-    if (command.args.some((arg) => arg.includes("typescript/bin/tsc")) || command.args.includes("typecheck")) {
-      this.observations.push(readFileSync(join(repoPath, "src", "functions.ts"), "utf8"));
-    }
     if (this.failSpawn) {
       return { exitCode: null, stdout: "", stderr: "", spawnError: "ENOENT", timedOut: false };
+    }
+    if (command.args.includes("--showConfig")) {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ compilerOptions: { strict: true }, files: ["./src/functions.ts"] }),
+        stderr: "",
+        timedOut: false,
+      };
+    }
+    if (command.args.some((arg) => arg.includes("typescript/bin/tsc")) || command.args.includes("typecheck")) {
+      this.observations.push(readFileSync(join(repoPath, "src", "functions.ts"), "utf8"));
     }
     return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
   }
@@ -93,6 +123,47 @@ class ForgedTypecheckRunner extends InspectingRunner {
       };
     }
     return result;
+  }
+}
+
+class CompilerResultRunner extends InspectingRunner {
+  constructor(private readonly compilerResult: RunnerResult) {
+    super();
+  }
+
+  override run(repoPath: string, command: RunnerCommand): RunnerResult {
+    const result = super.run(repoPath, command);
+    return command.args.some((arg) => arg.includes("typescript/bin/tsc"))
+      && !command.args.includes("--showConfig")
+      ? this.compilerResult
+      : result;
+  }
+}
+
+class CompilerConfigRunner extends InspectingRunner {
+  constructor(private readonly configResult: RunnerResult) {
+    super();
+  }
+
+  override run(repoPath: string, command: RunnerCommand): RunnerResult {
+    const result = super.run(repoPath, command);
+    return command.args.includes("--showConfig") ? this.configResult : result;
+  }
+}
+
+class TemporaryStorageFailureRunner extends InspectingRunner {
+  constructor(private readonly failure: "allocate" | "cleanup") {
+    super();
+  }
+
+  override createTemporaryFile(name: string) {
+    if (this.failure === "allocate") throw new Error("temporary storage unavailable");
+    return {
+      path: `/tmp/api-migrator-test-${name}`,
+      cleanup: () => {
+        throw new Error("temporary storage cleanup failed");
+      },
+    };
   }
 }
 
@@ -132,12 +203,32 @@ test("dry-run verifies proposed output without mutating source and matches write
   });
 });
 
+test("migration pipeline requires provider and changed sources in the compiler program", async () => {
+  await withRepo(async (repo) => {
+    const runner = new CompilerConfigRunner({
+      exitCode: 0,
+      stdout: JSON.stringify({ files: ["./src/unrelated.ts"] }),
+      stderr: "",
+      timedOut: false,
+    });
+    const result = await runMigration(manifest, repo, {
+      writeChanges: false,
+      verify: { runner, install: true },
+    });
+
+    assert.equal(result.report.verification.ok, false);
+    assert.equal(result.report.verification.skipped, true);
+    assert.match(result.report.verification.skipReason ?? "", /excludes required migration source/);
+    assert.equal(runner.commands.some((command) => command.args.includes("--noEmit")), false);
+  });
+});
+
 test("compiler spawn failures and missing tsconfig fail closed", async () => {
   await withRepo(async (repo) => {
     const failed = await runTsc(repo, { runner: new InspectingRunner(true), install: false });
     assert.equal(failed.ok, false);
     assert.equal(failed.skipped, true);
-    assert.match(failed.skipReason ?? "", /compiler spawn failed/);
+    assert.match(failed.skipReason ?? "", /spawn failed/);
   });
   const noConfig = mkdtempSync(join(tmpdir(), "api-migrator-no-tsconfig-"));
   try {
@@ -148,6 +239,271 @@ test("compiler spawn failures and missing tsconfig fail closed", async () => {
     assert.match(result.skipReason ?? "", /no tsconfig/);
   } finally {
     rmSync(noConfig, { recursive: true, force: true });
+  }
+});
+
+test("compiler temporary-storage failures fail closed", async () => {
+  for (const failure of ["allocate", "cleanup"] as const) {
+    await withRepo(async (repo) => {
+      const runner = new TemporaryStorageFailureRunner(failure);
+      const result = await runTsc(repo, { runner, install: false });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.skipped, true);
+      assert.equal(result.checks.typecheck.status, "failed");
+      assert.match(result.skipReason ?? "", failure === "allocate" ? /could not allocate/ : /failed to clean/);
+      assert.equal(
+        runner.commands.some((command) => command.args.includes("--noEmit")),
+        failure === "cleanup"
+      );
+    });
+  }
+});
+
+test("global compiler diagnostics fail closed even without file diagnostics", async () => {
+  await withRepo(async (repo) => {
+    const result = await runTsc(repo, {
+      runner: new CompilerResultRunner({
+        exitCode: 2,
+        stdout: "error TS5033: Could not write file '/workspace/tsconfig.tsbuildinfo': EROFS\n",
+        stderr: "",
+        timedOut: false,
+      }),
+      install: false,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, true);
+    assert.equal(result.checks.typecheck.status, "failed");
+    assert.equal(result.checks.typecheck.exitCode, 2);
+    assert.match(result.checks.typecheck.output, /TS5033/);
+    assert.match(result.skipReason ?? "", /non-file TypeScript diagnostic TS5033/);
+  });
+});
+
+test("global compiler diagnostics cannot be hidden by baseline-matched file errors", async () => {
+  await withRepo(async (repo) => {
+    const existing = {
+      file: "src/functions.ts",
+      line: 1,
+      col: 1,
+      code: "TS2307",
+      message: "Cannot find module '@upstash/redis' or its corresponding type declarations.",
+      raw: "src/functions.ts(1,1): error TS2307: Cannot find module '@upstash/redis' or its corresponding type declarations.",
+    };
+    const result = await verify(repo, [existing], {
+      runner: new CompilerResultRunner({
+        exitCode: 2,
+        stdout: [
+          "error TS5033: Could not write file '/workspace/tsconfig.tsbuildinfo': EROFS",
+          ...Array.from({ length: 400 }, () => existing.raw),
+          "",
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+      }),
+      install: false,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, true);
+    assert.equal(result.checks.typecheck.status, "failed");
+    assert.match(result.checks.typecheck.output, /TS2307/);
+    assert.doesNotMatch(result.checks.typecheck.output, /TS5033/);
+    assert.match(result.skipReason ?? "", /non-file TypeScript diagnostic TS5033/);
+    assert.notEqual(result.checks.typecheck.reason, "only pre-existing errors remain");
+  });
+});
+
+test("configuration diagnostics cannot become baseline exceptions", async () => {
+  await withRepo(async (repo) => {
+    const configError = {
+      file: "tsconfig.json",
+      line: 1,
+      col: 30,
+      code: "TS5024",
+      message: "Compiler option 'strict' requires a value of type boolean.",
+      raw: "tsconfig.json(1,30): error TS5024: Compiler option 'strict' requires a value of type boolean.",
+    };
+    const result = await verify(repo, [configError], {
+      runner: new CompilerResultRunner({
+        exitCode: 2,
+        stdout: `${configError.raw}\n`,
+        stderr: "",
+        timedOut: false,
+      }),
+      install: false,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, true);
+    assert.equal(result.checks.typecheck.status, "failed");
+    assert.match(result.skipReason ?? "", /configuration diagnostic TS5024/);
+  });
+});
+
+test("solution-style and empty TypeScript roots fail closed", async () => {
+  const configurations = [
+    {
+      config: { files: [], references: [{ path: "./packages/service" }] },
+      reason: /does not yet support TypeScript project references/,
+    },
+    {
+      config: { compilerOptions: { strict: true }, files: [] },
+      reason: /does not select any verifiable source files/,
+    },
+  ];
+
+  for (const { config, reason } of configurations) {
+    await withRepo(async (repo) => {
+      const runner = new CompilerConfigRunner({
+        exitCode: 0,
+        stdout: JSON.stringify(config),
+        stderr: "",
+        timedOut: false,
+      });
+      const result = await runTsc(repo, { runner, install: false });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.skipped, true);
+      assert.match(result.skipReason ?? "", reason);
+      assert.equal(runner.commands.some((command) => command.args.includes("--noEmit")), false);
+    });
+  }
+});
+
+test("trusted compiler must select every required migration source", async () => {
+  await withRepo(async (repo) => {
+    const runner = new CompilerConfigRunner({
+      exitCode: 0,
+      stdout: JSON.stringify({ files: ["./src/unrelated.ts"] }),
+      stderr: "",
+      timedOut: false,
+    });
+    const result = await runTsc(repo, {
+      runner,
+      install: false,
+      requiredFiles: ["src/functions.ts"],
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, true);
+    assert.match(result.skipReason ?? "", /excludes required migration source: src\/functions\.ts/);
+    assert.equal(runner.commands.some((command) => command.args.includes("--noEmit")), false);
+  });
+});
+
+test("baseline-matched file diagnostics remain comparable", async () => {
+  await withRepo(async (repo) => {
+    const headline = "Cannot find module '@upstash/redis' or its corresponding type declarations.";
+    const continuation = "  The imported package could not be resolved.";
+    const existing = {
+      file: "src/functions.ts",
+      line: 1,
+      col: 1,
+      code: "TS2307",
+      message: `${headline}\n${continuation}`,
+      raw: `src/functions.ts(1,1): error TS2307: ${headline}\n${continuation}`,
+    };
+    const result = await verify(repo, [existing], {
+      runner: new CompilerResultRunner({
+        exitCode: 2,
+        stdout: `${existing.raw}\n`,
+        stderr: "",
+        timedOut: false,
+      }),
+      install: false,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.skipped, false);
+    assert.equal(result.checks.typecheck.status, "passed");
+    assert.equal(result.checks.typecheck.reason, "only pre-existing errors remain");
+    assert.deepEqual(result.introduced, []);
+  });
+});
+
+test("baseline comparison includes multiline diagnostic details", async () => {
+  await withRepo(async (repo) => {
+    const headline = "Type 'Input' is not assignable to type 'Output'.";
+    const baseline = {
+      file: "src/functions.ts",
+      line: 1,
+      col: 1,
+      code: "TS2322",
+      message: `${headline}\n  Property 'old' is missing.`,
+      raw: `src/functions.ts(1,1): error TS2322: ${headline}\n  Property 'old' is missing.`,
+    };
+    const result = await verify(repo, [baseline], {
+      runner: new CompilerResultRunner({
+        exitCode: 2,
+        stdout: `src/functions.ts(1,1): error TS2322: ${headline}\n  Property 'new' is missing.\n`,
+        stderr: "",
+        timedOut: false,
+      }),
+      install: false,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, false);
+    assert.equal(result.introduced.length, 1);
+    assert.match(result.introduced[0]?.message ?? "", /Property 'new'/);
+  });
+});
+
+test("compiler crashes cannot hide behind baseline-matched file diagnostics", async () => {
+  await withRepo(async (repo) => {
+    const existing = {
+      file: "src/functions.ts",
+      line: 1,
+      col: 1,
+      code: "TS2307",
+      message: "Cannot find module '@upstash/redis' or its corresponding type declarations.",
+      raw: "src/functions.ts(1,1): error TS2307: Cannot find module '@upstash/redis' or its corresponding type declarations.",
+    };
+    const result = await verify(repo, [existing], {
+      runner: new CompilerResultRunner({
+        exitCode: 1,
+        stdout: `${existing.raw}\n`,
+        stderr: "TypeError: compiler crashed\n    at compile (/trusted/tsc.js:1:1)\n",
+        timedOut: false,
+      }),
+      install: false,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, true);
+    assert.equal(result.checks.typecheck.status, "failed");
+    assert.match(result.skipReason ?? "", /unclassified output/);
+  });
+});
+
+test("baseline comparison is column-aware and count-sensitive", async () => {
+  const baseline = {
+    file: "src/functions.ts",
+    line: 1,
+    col: 1,
+    code: "TS2307",
+    message: "Cannot find module 'missing'.",
+    raw: "src/functions.ts(1,1): error TS2307: Cannot find module 'missing'.",
+  };
+  const variants = [
+    `${baseline.raw}\nsrc/functions.ts(1,2): error TS2307: ${baseline.message}\n`,
+    `${baseline.raw}\n${baseline.raw}\n`,
+  ];
+
+  for (const stdout of variants) {
+    await withRepo(async (repo) => {
+      const result = await verify(repo, [baseline], {
+        runner: new CompilerResultRunner({ exitCode: 2, stdout, stderr: "", timedOut: false }),
+        install: false,
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.skipped, false);
+      assert.equal(result.checks.typecheck.status, "failed");
+      assert.equal(result.introduced.length, 1);
+    });
   }
 });
 
@@ -167,12 +523,14 @@ test("install is isolated from lifecycle scripts and checks lose network access"
     const runner = new InspectingRunner();
     const result = await runTsc(repo, { runner, install: true });
     assert.equal(result.ok, true);
-    assert.equal(runner.commands.length, 2);
+    assert.equal(runner.commands.length, 3);
     assert.equal(runner.commands[0]!.network, "default");
     assert.equal(runner.commands[0]!.args.includes("--ignore-scripts"), true);
     assert.equal(runner.commands[0]!.env.npm_config_ignore_scripts, "true");
     assert.equal(runner.commands[0]!.env.npm_config_cache, "/npm-cache");
+    assert.equal(runner.commands[1]!.args.includes("--showConfig"), true);
     assert.equal(runner.commands[1]!.network, "none");
+    assert.equal(runner.commands[2]!.network, "none");
   });
 });
 
@@ -185,13 +543,20 @@ test("the installed compiler is the only TypeScript oracle and a requested repos
       runTypecheckScript: true,
     });
 
-    assert.equal(runner.commands[0]!.command, process.execPath);
-    assert.deepEqual(runner.commands[0]!.args, [
+    const compilerCommand = runner.commands.find((command) => command.args.includes("--noEmit"))!;
+    assert.equal(compilerCommand.command, process.execPath);
+    assert.deepEqual(compilerCommand.args.slice(0, 4), [
       "./node_modules/typescript/bin/tsc",
       "--noEmit",
       "--pretty",
       "false",
     ]);
+    assert.equal(compilerCommand.args[4], "--tsBuildInfoFile");
+    assert.equal(compilerCommand.args[5], "/tmp/api-migrator-test-tsconfig.tsbuildinfo");
+    assert.match(
+      result.checks.typecheck.command ?? "",
+      /--tsBuildInfoFile <runner-temp>\/tsconfig\.tsbuildinfo$/
+    );
     assert.equal(result.checks.typecheck.status, "passed");
     assert.equal(result.checks.repoTypecheck?.status, "failed");
     assert.equal(result.ok, false);
@@ -422,9 +787,15 @@ test("Docker runner performs an install then an offline typecheck", {
       devDependencies: { typescript: "5.8.3" },
       scripts: { typecheck: "tsc --noEmit" },
     }, null, 2));
-    writeFileSync(join(repo, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+    writeFileSync(join(repo, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { strict: true, incremental: true },
+    }));
     writeFileSync(join(repo, "src", "index.ts"), "export const answer: number = 42;\n");
-    const result = await runTsc(repo, { runner: "docker", install: true });
+    const result = await runTsc(repo, {
+      runner: "docker",
+      install: true,
+      requiredFiles: ["src/index.ts"],
+    });
     const failureDetails = [
       result.skipReason,
       result.checks.install.reason,
@@ -436,9 +807,28 @@ test("Docker runner performs an install then an offline typecheck", {
     assert.equal(result.runner, "docker");
     assert.equal(result.checks.install.status, "passed");
     assert.equal(result.checks.typecheck.status, "passed");
+    assert.equal(existsSync(join(repo, "tsconfig.tsbuildinfo")), false);
     if (typeof process.getuid === "function") {
       assert.equal(lstatSync(join(repo, "package-lock.json")).uid, process.getuid());
     }
+
+    writeFileSync(join(repo, "src", "index.ts"), "export const answer: number = 'wrong';\n");
+    const baseline = await runTsc(repo, {
+      runner: "docker",
+      install: false,
+      requiredFiles: ["src/index.ts"],
+    });
+    assert.equal(baseline.skipped, false);
+    assert.equal(baseline.after.length, 1);
+    const compared = await verify(repo, baseline.after, {
+      runner: "docker",
+      install: false,
+      requiredFiles: ["src/index.ts"],
+    });
+    assert.equal(compared.ok, true, compared.skipReason ?? compared.checks.typecheck.reason);
+    assert.equal(compared.checks.typecheck.status, "passed");
+    assert.equal(compared.checks.typecheck.reason, "only pre-existing errors remain");
+    assert.equal(existsSync(join(repo, "tsconfig.tsbuildinfo")), false);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
