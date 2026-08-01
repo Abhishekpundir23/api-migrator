@@ -45,7 +45,7 @@ SQLite is for local pilot state. Foreign keys are enabled, migrations are idempo
 
 ## Local setup
 
-Requirements: Node.js 20.9+, npm, Git, Docker for isolated verification, and access to repositories you are authorized to test.
+Requirements: Node.js 22+, npm, Git, Docker for isolated verification, and access to repositories you are authorized to test.
 
 ```bash
 npm ci

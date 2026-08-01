@@ -185,9 +185,14 @@ export class DockerVerificationRunner implements VerificationRunner {
 
   run(repoPath: string, command: RunnerCommand): RunnerResult {
     const containerName = `api-migrator-${randomUUID()}`;
+    const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+    const gid = typeof process.getgid === "function" ? process.getgid() : 0;
     const args = [
       "run", "--rm", "--init",
       "--name", containerName,
+      // Match the host process so a capability-free container can access the
+      // bind mount on native Linux and leaves install artifacts host-owned.
+      "--user", `${uid}:${gid}`,
       "--network", command.network === "none" ? "none" : "bridge",
       "--cpus", String(this.options.cpus),
       "--memory", this.options.memory,
@@ -195,7 +200,7 @@ export class DockerVerificationRunner implements VerificationRunner {
       "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges",
       "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
-      "--tmpfs", "/root/.npm:rw,noexec,nosuid,size=512m",
+      "--tmpfs", `/npm-cache:rw,noexec,nosuid,size=512m,mode=0700,uid=${uid},gid=${gid}`,
       "--mount", `type=bind,src=${repoPath},dst=/workspace${command.network === "none" ? ",readonly" : ""}`,
       "--workdir", "/workspace",
     ];
@@ -478,9 +483,10 @@ function childEnvironment(input: NodeJS.ProcessEnv | undefined, lifecycleScripts
     npm_config_audit: "false",
     npm_config_fund: "false",
     npm_config_ignore_scripts: lifecycleScripts ? "false" : "true",
-    // Docker provisions a dedicated, larger tmpfs here. HOME intentionally
-    // remains /tmp, whose smaller tmpfs must not become npm's package cache.
-    npm_config_cache: "/root/.npm",
+    // Docker provisions a dedicated cache tmpfs outside /root. HOME
+    // intentionally remains /tmp, whose smaller tmpfs must not become npm's
+    // package cache.
+    npm_config_cache: "/npm-cache",
     npm_config_registry: "https://registry.npmjs.org/",
     YARN_NPM_REGISTRY_SERVER: "https://registry.npmjs.org/",
     COREPACK_NPM_REGISTRY: "https://registry.npmjs.org/",

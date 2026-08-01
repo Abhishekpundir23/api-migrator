@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,7 +22,7 @@ test("default Docker verification image is pinned by digest", () => {
   );
 });
 
-test("Docker runner force-removes its named container after a timeout", () => {
+test("Docker runner preserves host ownership and force-removes its named container after a timeout", () => {
   const calls: string[][] = [];
   const runner = new DockerVerificationRunner({}, (args) => {
     calls.push([...args]);
@@ -39,8 +39,16 @@ test("Docker runner force-removes its named container after a timeout", () => {
     env: {},
   });
   assert.equal(result.timedOut, true);
-  const name = calls[0]![calls[0]!.indexOf("--name") + 1]!;
+  const runArgs = calls[0]!;
+  const name = runArgs[runArgs.indexOf("--name") + 1]!;
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const expectedGid = typeof process.getgid === "function" ? process.getgid() : 0;
   assert.match(name, /^api-migrator-[a-f0-9-]+$/);
+  assert.equal(runArgs[runArgs.indexOf("--user") + 1], `${expectedUid}:${expectedGid}`);
+  assert.equal(
+    runArgs.includes(`/npm-cache:rw,noexec,nosuid,size=512m,mode=0700,uid=${expectedUid},gid=${expectedGid}`),
+    true
+  );
   assert.deepEqual(calls[1], ["rm", "--force", name]);
 });
 
@@ -163,7 +171,7 @@ test("install is isolated from lifecycle scripts and checks lose network access"
     assert.equal(runner.commands[0]!.network, "default");
     assert.equal(runner.commands[0]!.args.includes("--ignore-scripts"), true);
     assert.equal(runner.commands[0]!.env.npm_config_ignore_scripts, "true");
-    assert.equal(runner.commands[0]!.env.npm_config_cache, "/root/.npm");
+    assert.equal(runner.commands[0]!.env.npm_config_cache, "/npm-cache");
     assert.equal(runner.commands[1]!.network, "none");
   });
 });
@@ -417,10 +425,20 @@ test("Docker runner performs an install then an offline typecheck", {
     writeFileSync(join(repo, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
     writeFileSync(join(repo, "src", "index.ts"), "export const answer: number = 42;\n");
     const result = await runTsc(repo, { runner: "docker", install: true });
-    assert.equal(result.ok, true, result.skipReason ?? result.checks.typecheck.output);
+    const failureDetails = [
+      result.skipReason,
+      result.checks.install.reason,
+      result.checks.install.output,
+      result.checks.typecheck.reason,
+      result.checks.typecheck.output,
+    ].filter(Boolean).join("\n");
+    assert.equal(result.ok, true, failureDetails);
     assert.equal(result.runner, "docker");
     assert.equal(result.checks.install.status, "passed");
     assert.equal(result.checks.typecheck.status, "passed");
+    if (typeof process.getuid === "function") {
+      assert.equal(lstatSync(join(repo, "package-lock.json")).uid, process.getuid());
+    }
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
