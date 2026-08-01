@@ -12,10 +12,10 @@ export default function CampaignsPage() {
         <h1>Campaigns</h1>
         <Link href="/campaigns/new" className="btn">+ New campaign</Link>
       </div>
-      <p className="muted">A campaign migrates your customers&apos; repos for one breaking SDK change.</p>
+      <p className="muted">Operator-only pilot campaigns. Every repository is previewed before a PR can be published.</p>
 
       {campaigns.length === 0 ? (
-        <div className="card muted">No campaigns yet. Create one to start migrating customer repos.</div>
+        <div className="card muted">No campaigns yet. Create one to start previewing approved repositories.</div>
       ) : (
         <table>
           <thead>

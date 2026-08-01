@@ -20,25 +20,23 @@ const DEFAULT_SKIP = new Set([
   "coverage",
 ]);
 
-const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx"]);
+const SOURCE_EXTENSIONS = new Set([
+  ".ts", ".tsx", ".js", ".jsx",
+  ".cts", ".mts", ".cjs", ".mjs",
+]);
 
 /** Usage patterns per provider, selected by the manifest's transformSet. */
 const USAGE_PATTERNS: Record<string, RegExp[]> = {
   "inngest-v3-to-v4": [
-    /\bnew\s+Inngest\s*\(/, //   new Inngest(
-    /\bcreateFunction\s*\(/, //  inngest.createFunction(
-    /\bEventSchemas\b/, //       v3 schema helper
-    /\breferenceFunction\b/, //  v4 helper
-    /\bInngestFunction\b/, //    internal helper
-    /from\s+["']@?inngest/, //   direct import
-    /require\(\s*["']@?inngest/, // require import
+    /(?:from\s+|require\(\s*|import\(\s*)["'](?:inngest(?:\/[^"']*)?|@inngest\/[^"']+)["']/,
+    /\b[A-Za-z_$][\w$]*\.createFunction\s*\(/,
   ],
   "knock-v0-to-v1": [
-    /\bnew\s+Knock\s*\(/, //         new Knock(
-    /\bnotify\s*\(/, //              client.notify(
-    /\bworkflows\.(create|list|update|delete)Schedules\b/, // old schedule methods
-    /from\s+["']@knocklabs\/node/, // direct import
-    /require\(\s*["']@knocklabs\/node/, // require import
+    /(?:from\s+|require\(\s*|import\(\s*)["']@knocklabs\/node(?:\/[^"']*)?["']/,
+    // Configured clients are commonly re-exported from a local wrapper. The
+    // transform does not rewrite these without provenance; it emits a review
+    // blocker when the receiver resolves to a local import.
+    /\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.(?:notify|identify|list|setPreferences|getPreferences|addChannelData|setChannelData)\s*\(/,
   ],
 };
 
@@ -54,12 +52,12 @@ export interface ScannedFile {
   relative: string;
 }
 
-/**
- * Walk `root` and return all source files that look like they use a given SDK.
- * `transformSet` selects the provider-specific usage patterns to match.
- */
-export function findSdkFiles(root: string, transformSet: string, opts: ScanOptions = {}): ScannedFile[] {
-  const patterns = USAGE_PATTERNS[transformSet] ?? [];
+export class SourceScanError extends Error {
+  override name = "SourceScanError";
+}
+
+/** Walk the repository once and return every supported regular source file. */
+export function findSourceFiles(root: string, opts: ScanOptions = {}): ScannedFile[] {
   const skip = opts.skip ?? DEFAULT_SKIP;
   const out: ScannedFile[] = [];
   const stack: string[] = [root];
@@ -69,8 +67,8 @@ export function findSdkFiles(root: string, transformSet: string, opts: ScanOptio
     let entries: import("node:fs").Dirent[];
     try {
       entries = readdirSync(cur, { withFileTypes: true });
-    } catch {
-      continue;
+    } catch (error) {
+      throw new SourceScanError(`Unable to enumerate source directory ${cur}: ${errorMessage(error)}`);
     }
     for (const entry of entries) {
       if (skip.has(entry.name)) continue;
@@ -78,20 +76,40 @@ export function findSdkFiles(root: string, transformSet: string, opts: ScanOptio
       if (entry.isDirectory()) {
         stack.push(full);
       } else if (entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name))) {
-        let text: string;
-        try {
-          text = readFileSync(full, "utf8");
-        } catch {
-          continue;
-        }
-        if (patterns.some((re) => re.test(text))) {
-          out.push({ absolute: full, relative: relative(root, full) });
-        }
+        out.push({ absolute: full, relative: relative(root, full) });
+      } else if (entry.isSymbolicLink() && SOURCE_EXTENSIONS.has(extname(entry.name))) {
+        throw new SourceScanError(
+          `Source-like symbolic link is unsupported: ${relative(root, full)}`
+        );
       }
     }
   }
 
   return out.sort((a, b) => a.relative.localeCompare(b.relative));
+}
+
+/** Select provider-relevant files from an already enumerated source inventory. */
+export function selectSdkFiles(files: readonly ScannedFile[], transformSet: string): ScannedFile[] {
+  const patterns = USAGE_PATTERNS[transformSet] ?? [];
+  const out: ScannedFile[] = [];
+  for (const file of files) {
+    let text: string;
+    try {
+      text = readFileSync(file.absolute, "utf8");
+    } catch (error) {
+      throw new SourceScanError(`Unable to read source file ${file.relative}: ${errorMessage(error)}`);
+    }
+    if (patterns.some((pattern) => pattern.test(text))) out.push(file);
+  }
+  return out;
+}
+
+/**
+ * Walk `root` and return all source files that look like they use a given SDK.
+ * `transformSet` selects the provider-specific usage patterns to match.
+ */
+export function findSdkFiles(root: string, transformSet: string, opts: ScanOptions = {}): ScannedFile[] {
+  return selectSdkFiles(findSourceFiles(root, opts), transformSet);
 }
 
 /**
@@ -109,4 +127,8 @@ export function isDirectory(p: string): boolean {
   } catch {
     return false;
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

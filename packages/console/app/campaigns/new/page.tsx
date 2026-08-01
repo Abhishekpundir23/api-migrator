@@ -9,7 +9,7 @@ const DEFAULT_MANIFEST = JSON.stringify(
     provider: "inngest",
     transformSet: "inngest-v3-to-v4",
     package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
-    peerFloors: [{ name: "typescript", range: ">=5.8.0" }],
+    peerFloors: [{ name: "typescript", range: "^5.8.0" }],
   },
   null,
   2
@@ -48,7 +48,7 @@ export default function NewCampaignPage() {
   return (
     <>
       <h1>New campaign</h1>
-      <p className="muted">Paste a migration manifest (JSON). It is validated against the engine schema.</p>
+      <p className="muted">Paste a migration manifest (JSON). Creating it does not access a repository or publish a PR.</p>
       <form onSubmit={submit}>
         <div className="field">
           <label>Manifest</label>

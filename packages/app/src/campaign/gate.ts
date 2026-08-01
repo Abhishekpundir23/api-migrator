@@ -1,6 +1,6 @@
 /**
  * Phase 3 gate: create a campaign + run it against the sandbox repo via the
- * DB-backed campaign runner, then assert the migration_run row persisted.
+ * DB-backed campaign runner, then assert a non-publishing preview persisted.
  *
  *   SANDBOX_SLUG="owner/repo" tsx packages/app/src/campaign/gate.ts
  */
@@ -10,12 +10,12 @@ import {
   resetDb,
   createProvider,
   createCampaign,
-  getCampaign,
   listRunsForCampaign,
   campaignRollup,
 } from "@api-migrator/db";
 import { runCampaign } from "./runner.js";
 import { Manifest } from "@api-migrator/engine";
+import { safeErrorMessage } from "../security.js";
 
 function assert(cond: boolean, msg: string) {
   if (!cond) {
@@ -43,7 +43,7 @@ async function main() {
     provider: "inngest",
     transformSet: "inngest-v3-to-v4",
     package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
-    peerFloors: [{ name: "typescript", range: ">=5.8.0" }],
+    peerFloors: [{ name: "typescript", range: "^5.8.0" }],
   };
   const campaign = createCampaign({
     providerId: provider.id,
@@ -55,7 +55,12 @@ async function main() {
 
   // 2. Run against the sandbox repo.
   console.log(`\nRunning campaign against ${slug}...\n`);
-  const summary = await runCampaign({ campaignId: campaign.id, repoSlugs: [slug], concurrency: 1 });
+  const summary = await runCampaign({
+    campaignId: campaign.id,
+    repoSlugs: [slug],
+    concurrency: 1,
+    publication: { mode: "preview" },
+  });
 
   console.log("=== Assertions ===");
   assert(summary.total === 1, "campaign processed 1 repo");
@@ -68,17 +73,20 @@ async function main() {
   console.log(`  status : ${run.status}`);
   console.log(`  pr_url : ${run.prUrl}`);
   console.log(`  summary: ${run.summary}`);
-  assert(run.status === "pr_opened", "run status is pr_opened");
-  assert(Boolean(run.prUrl), "run has a PR url");
+  assert(
+    ["preview_ready", "blocked", "no_changes"].includes(run.status),
+    "run finished as a non-publishing preview"
+  );
+  assert(!run.prUrl, "preview did not open a PR");
   assert(Boolean(run.report), "run stored the full report JSON");
 
   console.log(`\n=== Campaign rollup ===`);
   console.log(JSON.stringify(campaignRollup(campaign.id), null, 2));
 
-  console.log("\n✅ Phase 3 gate passed.");
+  console.log("\n✅ Phase 3 preview gate passed.");
 }
 
-main().catch((e) => {
-  console.error(e);
+main().catch((error) => {
+  console.error(safeErrorMessage(error));
   process.exit(1);
 });

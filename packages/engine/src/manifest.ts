@@ -1,54 +1,79 @@
-/**
- * Migration manifest — the declarative description of a migration campaign.
- *
- * A provider authors one manifest per breaking change (e.g. "Inngest v3->v4").
- * The engine reads it, finds affected repos, and applies the listed transforms.
- * This is what makes the engine provider-agnostic: a new SDK migration is a new
- * manifest, not new engine code.
- *
- * The manifest also captures peer-dependency floors — the lesson from the
- * prototype, where bumping inngest alone broke installs because v4 requires
- * typescript>=5.8.0. The verifier uses these to decide what else must move.
- */
+/** Runtime-validated migration campaign manifests. */
 
 import { z } from "zod";
 
-/** Identifier of a single transform or review-flag, e.g. "T1" or "F2". */
-export const TransformId = z.string().min(1);
+export const TRANSFORM_ALLOWLIST = {
+  "inngest-v3-to-v4": [
+    "T1", "T2", "T3", "T4",
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10",
+    "F11", "F12", "F13",
+  ],
+  "knock-v0-to-v1": [
+    "K1", "K2", "K3", "K4", "K5",
+    "KF1", "KF2", "KF3", "KF4", "KF5", "KF6",
+  ],
+} as const;
+
+export type TransformSet = keyof typeof TRANSFORM_ALLOWLIST;
+
+/** Identifier of a transform or review detector. */
+export const TransformId = z.string().trim().min(1);
 
 /** A package version floor that must be satisfied for the migration to verify. */
 export const PeerFloor = z.object({
-  /** Package name, e.g. "typescript" or "inngest". */
-  name: z.string(),
-  /** Semver range the package must satisfy, e.g. ">=5.8.0". */
-  range: z.string(),
-});
+  name: z.string().trim().min(1),
+  range: z.string().trim().min(1),
+}).strict();
+
+const ManifestBase = z.object({
+  name: z.string().trim().min(1),
+  provider: z.string().trim().min(1),
+  transformSet: z.enum(["inngest-v3-to-v4", "knock-v0-to-v1"]),
+  package: z.object({
+    name: z.string().trim().min(1),
+    from: z.string().trim().min(1),
+    to: z.string().trim().min(1),
+  }).strict(),
+  peerFloors: z.array(PeerFloor).default([]),
+  /** Omit to enable the complete audited set. An explicit empty list enables none. */
+  transforms: z.array(TransformId).optional(),
+  notes: z.string().optional(),
+}).strict();
 
 /**
- * A manifest. Authored as YAML or JSON by the provider; validated with Zod
- * before the engine runs anything.
+ * Provider-authored manifest schema. Unknown fields and unknown transform ids
+ * are rejected before the repository is copied, installed, or modified.
  */
-export const Manifest = z.object({
-  /** Human-readable name, e.g. "Inngest TypeScript SDK v3 -> v4". */
-  name: z.string(),
-  /** The provider/slug this campaign belongs to, e.g. "inngest". */
-  provider: z.string(),
-  /** Engine-internal key selecting which transform set to run. */
-  transformSet: z.enum(["inngest-v3-to-v4", "knock-v0-to-v1"]),
-  /** Package being upgraded. */
-  package: z.object({
-    name: z.string(),
-    from: z.string(), // e.g. "^3.0.0"
-    to: z.string(), // e.g. "^4.0.0"
-  }),
-  /** Additional packages whose versions must move for the upgrade to verify. */
-  peerFloors: z.array(PeerFloor).default([]),
-  /** Transform ids the provider has opted into. Defaults to all in the set. */
-  transforms: z.array(TransformId).optional(),
-  /** Free-text notes rendered into the PR body. */
-  notes: z.string().optional(),
+export const Manifest = ManifestBase.superRefine((manifest, ctx) => {
+  const allowed = new Set<string>(TRANSFORM_ALLOWLIST[manifest.transformSet]);
+  for (const [index, id] of (manifest.transforms ?? []).entries()) {
+    if (!allowed.has(id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["transforms", index],
+        message: `Unknown transform id ${JSON.stringify(id)} for ${manifest.transformSet}`,
+      });
+    }
+  }
+  const duplicatePeers = manifest.peerFloors
+    .map((peer) => peer.name)
+    .filter((name, index, all) => all.indexOf(name) !== index);
+  if (duplicatePeers.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["peerFloors"],
+      message: `Duplicate peer floor(s): ${[...new Set(duplicatePeers)].join(", ")}`,
+    });
+  }
 });
-export type Manifest = z.infer<typeof Manifest>;
 
-/** A validated manifest plus the package's own (resolved) module path. */
+export type Manifest = z.infer<typeof Manifest>;
 export type LoadedManifest = Manifest;
+
+export function parseManifest(input: unknown): Manifest {
+  return Manifest.parse(input);
+}
+
+export function enabledTransforms(manifest: Manifest): ReadonlySet<string> {
+  return new Set(manifest.transforms ?? TRANSFORM_ALLOWLIST[manifest.transformSet]);
+}

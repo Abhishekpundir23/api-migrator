@@ -6,11 +6,17 @@
  * transformSet field on the manifest selects which set runs.
  */
 
-export { applyInngestV3ToV4, default as inngestTransform } from "./transforms/inngest-v3-to-v4.js";
+export { applyInngestV3ToV4, inngestBehavioralReviewEntries, default as inngestTransform } from "./transforms/inngest-v3-to-v4.js";
 export { applyKnockV0ToV1, default as knockTransform } from "./transforms/knock-v0-to-v1.js";
-export { findInngestFiles, findSdkFiles, isDirectory, type ScannedFile, type ScanOptions } from "./scanner.js";
-export { Manifest, PeerFloor, TransformId, type LoadedManifest } from "./manifest.js";
+export { findInngestFiles, findSdkFiles, findSourceFiles, selectSdkFiles, isDirectory, SourceScanError, type ScannedFile, type ScanOptions } from "./scanner.js";
+export { Manifest, PeerFloor, TransformId, TRANSFORM_ALLOWLIST, parseManifest, enabledTransforms, type LoadedManifest, type TransformSet } from "./manifest.js";
 export { runMigration, type RunMigrationOptions, type RunMigrationResult } from "./pipeline.js";
-export { captureBaseline, runTsc, verify, installDeps, hasTestScript, type TypeError, type VerifyResult, type VerifyOptions } from "./verifier.js";
+export { updateManifestDependencies, detectPackageManager, findLockfiles, DependencyUpdateError, type DependencyUpdateResult, type PackageManager } from "./dependencies.js";
+export {
+  captureBaseline, runTsc, verify, installDeps, hasTestScript, parseTscErrors,
+  LocalVerificationRunner, DockerVerificationRunner,
+  type TypeError, type VerifyResult, type VerifyOptions, type CheckResult,
+  type VerificationChecks, type VerificationRunner, type RunnerCommand, type RunnerResult,
+} from "./verifier.js";
 export { buildReport, reportToMarkdown, type MigrationReport } from "./reporter.js";
 export type { ReportEntry, ReportSink, API, FileInfo } from "./types.js";

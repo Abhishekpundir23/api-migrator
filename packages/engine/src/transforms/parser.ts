@@ -13,8 +13,12 @@ const jsc: any = (jscodeshift as any).default ?? (jscodeshift as any);
 
 const PARSER_BY_EXT: Record<string, string> = {
   ".ts": "ts",
+  ".cts": "ts",
+  ".mts": "ts",
   ".tsx": "tsx",
   ".js": "babel",
+  ".cjs": "babel",
+  ".mjs": "babel",
   ".jsx": "babel",
 };
 

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_MIGRATOR_DB_PATH: /tmp/api-migrator-ci.db
+      OPERATOR_USERNAME: ci-operator
+      OPERATOR_PASSWORD: ci-only-password
+      OPERATOR_APPROVAL_SECRET: ci-only-approval-secret-32-bytes-minimum
+      API_MIGRATOR_DOCKER_TEST: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run ci
