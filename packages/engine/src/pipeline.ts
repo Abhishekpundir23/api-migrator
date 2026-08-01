@@ -56,12 +56,18 @@ export async function runMigration(
 
   try {
     const workPath = writeChanges ? repoPath : copyRepository(repoPath, temporaryRoots, "proposed");
+    const sourceFiles = findSourceFiles(workPath);
+    const sdkMatchedFiles = selectSdkFiles(sourceFiles, manifest.transformSet);
+    const providerSourceFiles = sdkMatchedFiles.map((file) => file.relative);
     let baseline: Awaited<ReturnType<typeof runTsc>>["after"] | null = null;
     let baselineReason: string | undefined;
 
     if (!skipVerify) {
       const baselinePath = copyRepository(repoPath, temporaryRoots, "baseline");
-      const baselineResult = await runTsc(baselinePath, opts.verify);
+      const baselineResult = await runTsc(
+        baselinePath,
+        withRequiredVerificationFiles(opts.verify, providerSourceFiles)
+      );
       baseline = baselineResult.skipped ? null : baselineResult.after;
       baselineReason = baselineResult.skipReason;
     }
@@ -72,8 +78,6 @@ export async function runMigration(
     // Package and peer-floor updates are mandatory, not optional transforms.
     const dependencyResult = updateManifestDependencies(workPath, manifest, sink);
 
-    const sourceFiles = findSourceFiles(workPath);
-    const sdkMatchedFiles = selectSdkFiles(sourceFiles, manifest.transformSet);
     // Configured clients can arrive through wrappers, aliases, or computed
     // calls whose syntax defeats regex discovery. Parse every supported source
     // file so unresolved provider usage becomes a review blocker.
@@ -100,7 +104,11 @@ export async function runMigration(
     if (skipVerify) {
       verification = skippedVerification("verification explicitly skipped by caller");
     } else {
-      verification = await verify(workPath, baseline, opts.verify);
+      verification = await verify(
+        workPath,
+        baseline,
+        withRequiredVerificationFiles(opts.verify, [...providerSourceFiles, ...sourceChanges])
+      );
       if (baseline == null && baselineReason) {
         verification.skipReason = `baseline unavailable: ${baselineReason}`;
         verification.ok = false;
@@ -199,6 +207,16 @@ function lockChanged(repoPath: string, file: string, initial: Map<string, Buffer
   const absolute = join(repoPath, file);
   if (!before) return existsSync(absolute);
   return !existsSync(absolute) || !before.equals(readRootLockfile(repoPath, file));
+}
+
+function withRequiredVerificationFiles(
+  opts: VerifyOptions | undefined,
+  requiredFiles: readonly string[]
+): VerifyOptions {
+  return {
+    ...opts,
+    requiredFiles: [...new Set([...(opts?.requiredFiles ?? []), ...requiredFiles])].sort(),
+  };
 }
 
 function assertRepository(repoPath: string): void {
