@@ -19,6 +19,7 @@ import {
   withApprovalRunLock,
   withRunLock,
 } from "../../../../../lib/run-lock";
+import { buildPublishHttpDecision } from "../../../../../lib/publication-response";
 
 export const dynamic = "force-dynamic";
 // PRs involve real git work; allow a long request.
@@ -112,10 +113,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           return published;
         }
       );
-      return NextResponse.json(
-        { mode: "publish", summary: { campaignId: id, total: results.length, results } },
-        { status: 201 }
+      const response = buildPublishHttpDecision(
+        { campaignId: id, total: results.length, results },
+        approval.preflights,
+        approvedBy
       );
+      return NextResponse.json(response.body, { status: response.status });
     }
 
     throw new HttpInputError("action must be preview or publish");

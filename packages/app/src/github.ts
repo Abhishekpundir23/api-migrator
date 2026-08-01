@@ -442,6 +442,7 @@ export async function inspectRemotePublicationState(
   expectedBaseSha: string,
   expectedTreeSha: string
 ): Promise<{ sha: string | null; pullRequest: OpenPullRequestIdentity | null; pushRequired: boolean }> {
+  await assertRemoteBaseMatchesApproval(auth, repository, baseBranch, expectedBaseSha);
   let sha: string | null;
   try {
     const { data } = await auth.octokit.git.getRef({
@@ -496,10 +497,14 @@ export async function reconcilePr(
   title: string,
   body: string,
   current: OpenPullRequestIdentity | null,
-  expectedHeadSha: string
+  expectedHeadSha: string,
+  expectedBaseSha: string
 ): Promise<string> {
   if (!/^[a-f0-9]{40,64}$/.test(expectedHeadSha)) {
     throw new Error("Invalid expected migration commit id");
+  }
+  if (!/^[a-f0-9]{40,64}$/.test(expectedBaseSha)) {
+    throw new Error("Invalid expected base commit id");
   }
   try {
     if (current) {
@@ -511,8 +516,8 @@ export async function reconcilePr(
         body,
         base,
       });
-      if (data.head?.sha !== expectedHeadSha || data.base?.ref !== base) {
-        throw new Error("Existing pull request head or base changed during reconciliation");
+      if (data.head?.sha !== expectedHeadSha || data.base?.ref !== base || data.base?.sha !== expectedBaseSha) {
+        throw new Error("Existing pull request head or approved base changed during reconciliation");
       }
       return data.html_url;
     }
@@ -525,9 +530,9 @@ export async function reconcilePr(
       title,
       body,
     });
-    if (data.head?.sha !== expectedHeadSha || data.base?.ref !== base) {
+    if (data.head?.sha !== expectedHeadSha || data.base?.ref !== base || data.base?.sha !== expectedBaseSha) {
       await closeNewPullRequestBestEffort(auth, repository, data.number);
-      throw new Error("New pull request head or base changed during reconciliation");
+      throw new Error("New pull request head or approved base changed during reconciliation");
     }
     return data.html_url;
   } catch (error) {
@@ -556,7 +561,8 @@ export async function reconcilePrWithAudit(
       title,
       body,
       current,
-      audit.headSha
+      audit.headSha,
+      audit.baseSha
     );
   } catch (error) {
     const message = safeErrorMessage(error, [auth.token]);
@@ -564,6 +570,26 @@ export async function reconcilePrWithAudit(
       `Migration branch ${audit.branch} is present but pull request reconciliation failed: ${message}`,
       audit
     );
+  }
+}
+
+async function assertRemoteBaseMatchesApproval(
+  auth: AuthResult,
+  repository: GitHubRepository,
+  baseBranch: string,
+  expectedBaseSha: string
+): Promise<void> {
+  try {
+    const { data } = await auth.octokit.git.getRef({
+      owner: repository.owner,
+      repo: repository.repo,
+      ref: `heads/${baseBranch}`,
+    });
+    if (data.object.sha !== expectedBaseSha) {
+      throw new Error("base branch advanced after the approved preview");
+    }
+  } catch (error) {
+    throw new Error(`Could not verify approved base branch: ${safeErrorMessage(error, [auth.token])}`);
   }
 }
 

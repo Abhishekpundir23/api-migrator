@@ -83,8 +83,17 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
       });
       const data = (await res.json()) as RunResponse;
       if (!res.ok) {
+        if (data.summary) {
+          setResults(data.summary.results ?? []);
+          // The approval was consumed once publication acquired the run lock.
+          // Outcome failures require a fresh preview before any retry.
+          setApprovalToken(null);
+          setConfirmationPhrase(null);
+          setConfirmation("");
+        }
         setError(data.error ?? "publication failed");
         setBusy(null);
+        router.refresh();
         return;
       }
       setResults(data.summary?.results ?? []);

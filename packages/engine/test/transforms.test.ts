@@ -612,6 +612,28 @@ helper.run();`,
   assert.equal(result.entries.some((entry) => entry.kind === "review"), false);
 });
 
+test("a direct send through an imported Inngest client does not create a provenance blocker", () => {
+  const direct = collect((entries) => applyInngestV3ToV4(
+    `import { inngest } from "@/inngest/client";
+await inngest.send({ name: "demo/run", data: { id: "1" } });`,
+    "src/send.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["T1"])
+  ));
+  assert.equal(direct.value, null);
+  assert.equal(direct.entries.some((entry) => entry.kind === "review"), false);
+
+  const computed = collect((entries) => applyInngestV3ToV4(
+    `import { inngest } from "@/inngest/client";
+const method = "send";
+await inngest[method]({ name: "demo/run", data: { id: "1" } });`,
+    "src/send.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["T1"])
+  ));
+  assert.equal(computed.entries.some((entry) => entry.kind === "review"), true);
+});
+
 test("client-named path aliases and re-exports remain blocking review items", () => {
   const pathAlias = collect((entries) => applyInngestV3ToV4(
     `import * as state from "$lib/client";
