@@ -23,6 +23,14 @@ test("default Docker verification image is pinned by digest", () => {
   );
 });
 
+test("Docker npm-cache capacity remains bounded and cannot inject tmpfs options", () => {
+  assert.equal(new DockerVerificationRunner().options.npmCacheSize, "1536m");
+  assert.throws(
+    () => new DockerVerificationRunner({ npmCacheSize: "1g,exec" }),
+    /npm cache size/
+  );
+});
+
 test("verification runners allocate isolated compiler temporary files", () => {
   const docker = new DockerVerificationRunner();
   const firstDockerFile = docker.createTemporaryFile("tsconfig.tsbuildinfo");
@@ -64,9 +72,10 @@ test("Docker runner preserves host ownership and force-removes its named contain
   assert.match(name, /^api-migrator-[a-f0-9-]+$/);
   assert.equal(runArgs[runArgs.indexOf("--user") + 1], `${expectedUid}:${expectedGid}`);
   assert.equal(
-    runArgs.includes(`/npm-cache:rw,noexec,nosuid,size=512m,mode=0700,uid=${expectedUid},gid=${expectedGid}`),
+    runArgs.includes(`/npm-cache:rw,noexec,nosuid,size=1536m,mode=0700,uid=${expectedUid},gid=${expectedGid}`),
     true
   );
+  assert.equal(runArgs[runArgs.indexOf("--memory") + 1], "3g");
   assert.deepEqual(calls[1], ["rm", "--force", name]);
 });
 

@@ -948,8 +948,8 @@ function directClientReferencesAreSafe(
 
 /**
  * A proven client may only remain at its declaration/import, be called through
- * a direct non-computed method, or be supplied as serve({ client }). Any other
- * reference can alias, replace, or otherwise obscure createFunction.
+ * an allowlisted direct non-computed method, or be supplied as serve({ client }).
+ * Any other reference can alias, replace, or otherwise obscure createFunction.
  */
 function clientReferencesAreSafe(
   root: any,
@@ -1021,11 +1021,13 @@ function isClearlyNonReferenceIdentifier(path: any): boolean {
     || ((parent.type === "BreakStatement" || parent.type === "ContinueStatement") && parent.label === path.node);
 }
 
+const SAFE_DIRECT_CLIENT_METHODS = new Set(["createFunction", "send"]);
+
 function isDirectClientMethodCallReference(path: any): boolean {
   const memberPath = path.parentPath;
   const member = memberPath?.node;
   return member?.type === "MemberExpression" && member.object === path.node && !member.computed
-    && propertyName(member.property) === "createFunction" && isDirectMemberCall(memberPath);
+    && SAFE_DIRECT_CLIENT_METHODS.has(propertyName(member.property) ?? "") && isDirectMemberCall(memberPath);
 }
 
 function isServeClientReference(path: any, bindings: Bindings): boolean {

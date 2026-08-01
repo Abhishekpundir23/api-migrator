@@ -90,6 +90,8 @@ export interface DockerRunnerOptions {
   cpus?: number;
   memory?: string;
   pidsLimit?: number;
+  /** Bounded, per-command npm cache tmpfs. */
+  npmCacheSize?: string;
 }
 
 /** Injectable Docker CLI boundary used by cleanup regression tests. */
@@ -203,8 +205,9 @@ export class DockerVerificationRunner implements VerificationRunner {
     this.options = {
       image: options.image ?? DEFAULT_DOCKER_IMAGE,
       cpus: options.cpus ?? 2,
-      memory: options.memory ?? "2g",
+      memory: options.memory ?? "3g",
       pidsLimit: options.pidsLimit ?? 256,
+      npmCacheSize: dockerSize(options.npmCacheSize ?? "1536m", "npm cache"),
     };
     this.executeDocker = executeDocker ?? executeDockerCommand;
   }
@@ -235,7 +238,7 @@ export class DockerVerificationRunner implements VerificationRunner {
       "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges",
       "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
-      "--tmpfs", `/npm-cache:rw,noexec,nosuid,size=512m,mode=0700,uid=${uid},gid=${gid}`,
+      "--tmpfs", `/npm-cache:rw,noexec,nosuid,size=${this.options.npmCacheSize},mode=0700,uid=${uid},gid=${gid}`,
       "--mount", `type=bind,src=${repoPath},dst=/workspace${command.network === "none" ? ",readonly" : ""}`,
       "--workdir", "/workspace",
     ];
@@ -261,6 +264,13 @@ export class DockerVerificationRunner implements VerificationRunner {
       }
     }
   }
+}
+
+function dockerSize(value: string, label: string): string {
+  if (!/^[1-9]\d*(?:[kmgt])?$/i.test(value)) {
+    throw new Error(`${label} size must be a positive Docker size such as 1536m or 2g`);
+  }
+  return value;
 }
 
 function executeDockerCommand(args: string[], timeoutMs: number): RunnerResult {

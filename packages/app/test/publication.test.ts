@@ -294,9 +294,9 @@ test("an identical immutable remote branch skips push and reuses the matching PR
     mode: "github-app",
     octokit: {
       git: {
-        getRef: async () => {
-          calls.push("getRef");
-          return { data: { object: { sha: "c".repeat(40) } } };
+        getRef: async ({ ref }: { ref: string }) => {
+          calls.push(`getRef:${ref}`);
+          return { data: { object: { sha: ref === "heads/main" ? "d".repeat(40) : "c".repeat(40) } } };
         },
         getCommit: async () => {
           calls.push("getCommit");
@@ -322,7 +322,7 @@ test("an identical immutable remote branch skips push and reuses the matching PR
             data: {
               html_url: "https://github.com/owner/repo/pull/27",
               head: { sha: "c".repeat(40) },
-              base: { ref: "main" },
+              base: { ref: "main", sha: "d".repeat(40) },
             },
           };
         },
@@ -352,15 +352,23 @@ test("an identical immutable remote branch skips push and reuses the matching PR
     "Migration",
     "Evidence",
     remote.pullRequest,
-    remote.sha!
+    remote.sha!,
+    "d".repeat(40)
   );
   assert.equal(url, "https://github.com/owner/repo/pull/27");
-  assert.deepEqual(calls, ["getRef", "getCommit", "list", "update:27"]);
+  assert.deepEqual(calls, [
+    "getRef:heads/main",
+    "getRef:heads/codex/api-migrator/inngest-abc",
+    "getCommit",
+    "list",
+    "update:27",
+  ]);
 });
 
 test("PR reconciliation rejects head races and closes only a mismatched newly created PR", async () => {
   const repository = parseRepositorySlug("owner/repo");
   const expectedHead = "a".repeat(40);
+  const expectedBase = "c".repeat(40);
   const existingUpdates: Array<Record<string, unknown>> = [];
   const existingAuth = {
     token: "secret-token",
@@ -374,7 +382,7 @@ test("PR reconciliation rejects head races and closes only a mismatched newly cr
             data: {
               html_url: "https://github.com/owner/repo/pull/27",
               head: { sha: "b".repeat(40) },
-              base: { ref: "main" },
+              base: { ref: "main", sha: expectedBase },
             },
           };
         },
@@ -391,9 +399,10 @@ test("PR reconciliation rejects head races and closes only a mismatched newly cr
       "Migration",
       "Evidence",
       { number: 27, htmlUrl: "https://github.com/owner/repo/pull/27", baseBranch: "main" },
-      expectedHead
+      expectedHead,
+      expectedBase
     ),
-    /Existing pull request head or base changed/
+    /Existing pull request head or approved base changed/
   );
   assert.equal(existingUpdates.length, 1);
   assert.equal(existingUpdates[0]?.state, undefined, "a pre-existing PR must never be auto-closed");
@@ -413,7 +422,7 @@ test("PR reconciliation rejects head races and closes only a mismatched newly cr
               number: 41,
               html_url: "https://github.com/owner/repo/pull/41",
               head: { sha: expectedHead },
-              base: { ref: "release" },
+              base: { ref: "main", sha: "d".repeat(40) },
             },
           };
         },
@@ -434,9 +443,10 @@ test("PR reconciliation rejects head races and closes only a mismatched newly cr
       "Migration",
       "Evidence",
       null,
-      expectedHead
+      expectedHead,
+      expectedBase
     ),
-    /New pull request head or base changed/
+    /New pull request head or approved base changed/
   );
   assert.equal(createCalls.length, 1);
   assert.deepEqual(closeCalls, [{
@@ -546,7 +556,9 @@ test("an open PR never authorizes reuse of a branch with different content", asy
     mode: "github-app",
     octokit: {
       git: {
-        getRef: async () => ({ data: { object: { sha: "a".repeat(40) } } }),
+        getRef: async ({ ref }: { ref: string }) => ({
+          data: { object: { sha: ref === "heads/main" ? "b".repeat(40) : "a".repeat(40) } },
+        }),
         getCommit: async () => ({
           data: {
             sha: "a".repeat(40),
@@ -591,7 +603,9 @@ test("an orphan branch is recoverable only for the exact approved tree and base 
     mode: "github-app",
     octokit: {
       git: {
-        getRef: async () => ({ data: { object: { sha: branchSha } } }),
+        getRef: async ({ ref }: { ref: string }) => ({
+          data: { object: { sha: ref === "heads/main" ? baseSha : branchSha } },
+        }),
         getCommit: async () => ({
           data: {
             sha: branchSha,
@@ -607,7 +621,7 @@ test("an orphan branch is recoverable only for the exact approved tree and base 
             number: 31,
             html_url: "https://github.com/owner/repo/pull/31",
             head: { sha: branchSha },
-            base: { ref: "main" },
+            base: { ref: "main", sha: baseSha },
           },
         }),
       },
@@ -633,7 +647,8 @@ test("an orphan branch is recoverable only for the exact approved tree and base 
       "Migration",
       "Evidence",
       recovered.pullRequest,
-      recovered.sha!
+      recovered.sha!,
+      baseSha
     ),
     "https://github.com/owner/repo/pull/31"
   );
@@ -660,4 +675,35 @@ test("an orphan branch is recoverable only for the exact approved tree and base 
     ),
     /does not match the approved artifact and base/
   );
+});
+
+test("remote publication state rejects an advanced base before inspecting or creating the migration branch", async () => {
+  const repository = parseRepositorySlug("owner/repo");
+  let branchInspected = false;
+  const auth = {
+    token: "secret-token",
+    actor: "api-migrator[bot]",
+    mode: "github-app",
+    octokit: {
+      git: {
+        getRef: async ({ ref }: { ref: string }) => {
+          if (ref !== "heads/main") branchInspected = true;
+          return { data: { object: { sha: "f".repeat(40) } } };
+        },
+      },
+    },
+  } as unknown as AuthResult;
+
+  await assert.rejects(
+    inspectRemotePublicationState(
+      auth,
+      repository,
+      "codex/api-migrator/inngest-abc",
+      "main",
+      "b".repeat(40),
+      "c".repeat(40)
+    ),
+    /base branch advanced after the approved preview/
+  );
+  assert.equal(branchInspected, false);
 });
