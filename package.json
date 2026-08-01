@@ -5,22 +5,32 @@
   "description": "API Migration Campaigns as a Service — find affected customer code, deliver tested, reviewable migration pull requests.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9.0"
   },
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "build:packages": "npm run build --workspace @api-migrator/engine --workspace @api-migrator/db --workspace @api-migrator/app",
+    "build": "npm run build:packages && npm run build:console",
+    "build:packages": "npm run build --workspace @api-migrator/engine && npm run build --workspace @api-migrator/db && npm run build --workspace @api-migrator/app",
     "build:console": "npm run build --workspace @api-migrator/console",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run build:packages && npm run typecheck:workspaces",
+    "typecheck:workspaces": "npm run typecheck --workspaces --if-present",
     "console": "npm run dev --workspace @api-migrator/console",
-    "engine": "tsx packages/engine/src/cli.ts",
-    "test": "echo \"(no tests yet)\" && exit 0"
+    "migrate": "npm run migrate --workspace @api-migrator/app --",
+    "db:migrate": "npm run migrate --workspace @api-migrator/db --",
+    "test": "npm run build:packages && npm run test:workspaces",
+    "test:workspaces": "npm run test --workspaces --if-present",
+    "ci": "npm run build:packages && npm run typecheck:workspaces && npm run test:workspaces && npm run build:console"
   },
   "devDependencies": {
     "typescript": "^5.8.0",
     "tsx": "^4.19.0"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.25",
+      "sharp": "0.35.3"
+    }
   }
 }

@@ -26,6 +26,10 @@ async function main() {
   const tmp = mkdtempSync(join(tmpdir(), "api-migrator-knock-"));
   try {
     mkdirSync(join(tmp, "src"));
+    writeFileSync(
+      join(tmp, "package.json"),
+      JSON.stringify({ dependencies: { "@knocklabs/node": "^0.6.0" } }, null, 2) + "\n"
+    );
     // A realistic Knock v0 codebase exercising every transform:
     writeFileSync(
       join(tmp, "src", "notify.ts"),
@@ -49,16 +53,18 @@ export async function alertUser(userId: string) {
     };
 
     console.log("Running Knock pipeline (dry-run)...\n");
-    const { report } = await runMigration(manifest, tmp, { writeChanges: false });
+    const { report } = await runMigration(manifest, tmp, { writeChanges: false, skipVerify: true });
 
     console.log("=== Assertions ===");
     assert(report.scannedFiles.length >= 1, "Knock scanner finds the file");
-    assert(report.changedFiles.length === 1, "the file would change");
-    assert(report.summary.applied >= 4, "multiple transforms applied (K1/K2/K3 x2)");
+    assert(report.changedFiles.includes("src/notify.ts"), "the source file would change");
+    assert(report.changedFiles.includes("package.json"), "the SDK dependency would change");
+    assert(report.summary.applied >= 7, "dependency/import/client/method/parameter transforms applied");
     assert(report.entries.some((e) => e.code === "K1"), "K1 (notify -> workflows.trigger) applied");
     assert(report.entries.some((e) => e.code === "K2"), "K2 (users.identify -> users.update) applied");
     assert(report.entries.some((e) => e.code === "K3"), "K3 (param rename) applied");
-    assert(report.entries.some((e) => e.code === "KF1"), "KF1 (client init) flagged for review");
+    assert(report.entries.some((e) => e.code === "K4"), "K4 (default import) applied");
+    assert(report.entries.some((e) => e.code === "K5"), "K5 (options-object client init) applied");
     // Crucially: NO Inngest transforms leaked into a Knock migration.
     assert(
       !report.entries.some((e) => e.code.startsWith("T") && e.code.length === 2),

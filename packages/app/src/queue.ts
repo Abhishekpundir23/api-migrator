@@ -7,15 +7,23 @@
  */
 
 import { migrateRepo, type MigrateRepoInput, type MigrateRepoResult } from "./github.js";
+import { safeErrorMessage } from "./security.js";
 
-export interface MigrationJob extends MigrateRepoInput {
+export interface MigrationJob extends Omit<MigrateRepoInput, "publication"> {
   id: string;
+  /** This non-durable queue is preview-only; publishing must use runCampaign. */
+  publication?: { mode: "preview" };
 }
 
-export interface MigrationJobResult extends MigrateRepoResult {
-  id: string;
-  error?: string;
-}
+export type MigrationJobResult =
+  | (MigrateRepoResult & { id: string })
+  | {
+      id: string;
+      report: import("@api-migrator/engine").MigrationReport;
+      prUrl: null;
+      changed: false;
+      error: string;
+    };
 
 export interface QueueOptions {
   concurrency?: number;
@@ -32,6 +40,11 @@ export async function runCampaignJobs(
   jobs: MigrationJob[],
   opts: QueueOptions = {}
 ): Promise<MigrationJobResult[]> {
+  // Validate the complete batch before starting any work. A JavaScript caller
+  // can bypass the TypeScript shape, so keep the runtime check fail-closed too.
+  if (jobs.some((job) => (job as MigrateRepoInput).publication?.mode === "publish")) {
+    throw new Error("Publishing requires the DB-backed runCampaign workflow; runCampaignJobs is preview-only");
+  }
   const concurrency = Math.max(1, opts.concurrency ?? 2);
   const results: MigrationJobResult[] = new Array(jobs.length);
 
@@ -51,7 +64,7 @@ export async function runCampaignJobs(
           report: emptyReport(job.manifest),
           prUrl: null,
           changed: false,
-          error: e?.message ?? String(e),
+          error: safeErrorMessage(e),
         };
       }
     }
@@ -62,12 +75,33 @@ export async function runCampaignJobs(
 }
 
 function emptyReport(manifest: MigrationJob["manifest"]): import("@api-migrator/engine").MigrationReport {
+  const skippedCheck = {
+    status: "skipped" as const,
+    command: null,
+    exitCode: null,
+    output: "",
+    reason: "job failed before verification",
+  };
   return {
     manifest: { name: manifest.name, provider: manifest.provider },
     scannedFiles: [],
     changedFiles: [],
     entries: [],
-    verification: { ok: true, baseline: [], after: [], introduced: [], skipped: true, skipReason: "job failed" },
+    verification: {
+      ok: false,
+      baseline: [],
+      after: [],
+      introduced: [],
+      skipped: true,
+      skipReason: "job failed",
+      runner: "not-started",
+      checks: {
+        install: { ...skippedCheck },
+        typecheck: { ...skippedCheck },
+        test: { ...skippedCheck },
+        lint: { ...skippedCheck },
+      },
+    },
     summary: { applied: 0, review: 0, changedFiles: 0, introducedErrors: 0, verified: "skipped" },
   };
 }

@@ -1,90 +1,127 @@
 # API Migrator
 
-> When an API provider ships a breaking SDK upgrade, find affected customer code and deliver tested, reviewable migration pull requests.
+API Migrator is an operator-reviewed pilot for upgrading application code when an API provider ships a breaking TypeScript SDK release.
 
-**Status:** working platform prototype. The engine, GitHub integration, campaign DB, and provider console are all built and gated. See the gates table below.
+**Current status:** internal pilot prototype. It is suitable for approved test repositories and carefully supervised pilots. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
 
-This goes beyond what Dependabot does: Dependabot bumps the dependency manifest; this rewrites the **application code** that calls the upgraded API, then opens a reviewable PR per customer repo.
+The first product goal is deliberately narrow: create a complete, verified migration preview for one repository, let a human review it, and publish a PR only after explicit approval. It never auto-merges.
 
-## What works today
+## Safety model
 
-- **Two providers, one engine:** Inngest TypeScript SDK **v3 → v4** and Knock Node.js SDK **v0.x → v1.0** run through the same manifest-driven pipeline — proving the engine is provider-agnostic, not Inngest-specific. A new provider is just a new transform file + a manifest entry.
-- **Engine:** deterministic AST transforms (jscodeshift / recast, with a per-extension parser so TypeScript type annotations parse) for mechanical changes; structural changes are flagged for human review, not auto-applied.
-- **Verified:** Inngest-migrated code type-checks clean against `inngest@4.14.0`.
-- **Full flow:** create a campaign in the web console → run it across repos → real migration PRs open.
+Publishing is a separate action from analysis:
 
-## Architecture
+1. An authenticated local operator enters up to 10 approved `owner/repo` slugs.
+2. **Preview** clones and analyzes each repository without pushing a branch or opening a PR.
+3. Unsafe or incomplete results are blocked. A publishable result receives a preflight ID bound to the repository, base commit, target branch, manifest, verification report, and the exact changed-file bytes and modes.
+4. The console issues a signed, short-lived approval token and asks the operator to type an exact confirmation phrase.
+5. **Publish** reruns the repository and opens a PR only if the exact artifact fingerprint still matches. A stale base, changed output, failed/skipped verification, or unresolved manual-review item fails closed. Verification failures cannot be overridden; the CLI can record a reasoned operator acknowledgment for manual-review items only.
 
-```
+The console adds several guardrails around that flow:
+
+- server-side HTTP Basic authentication; credentials are not included in client JavaScript;
+- localhost-only access by default;
+- 32 KiB JSON request limit, strict GitHub slug validation, a 10-repository batch limit, and a concurrency cap;
+- one active migration batch per console process;
+- signed approval tokens that expire after 10 minutes and reject replay within the running console process;
+- no unsafe override exposed in the web UI.
+
+HTTP Basic authentication is only appropriate on loopback or behind TLS. Do not enable remote access over plain HTTP.
+
+## What is implemented
+
+The repository is a TypeScript workspace with four packages:
+
+```text
 packages/
-├── engine/    # migration engine: manifest -> scanner -> transformer -> verifier -> reporter
-├── app/       # GitHub integration + campaign runner
-├── console/   # Next.js provider console
-└── db/        # campaign/repo/run schema + repository layer
-prototypes/    # the original single-file engine, kept for reference
+├── engine/    # manifest, scanner, deterministic transforms, verifier, report
+├── app/       # safe preview/publish orchestration and GitHub integration
+├── db/        # SQLite campaign, repository, and run records
+└── console/   # local Next.js operator console
 ```
 
-The workspace packages (`engine`, `db`, `app`) ship **compiled `dist/` JS** — build them once, then the console consumes them as normal packages.
+The engine includes experimental Inngest TypeScript SDK v3→v4 and Knock Node SDK v0→v1 transform sets. These demonstrate the workflow; they are not a claim that arbitrary SDK migrations are supported. Each transform must prove that a matched call belongs to the target SDK, and every provider migration needs its own fixtures and change inventory.
 
-### Engine (`packages/engine`)
+SQLite is for local pilot state. Foreign keys are enabled, migrations are idempotent, and the console stores structured reports and run metadata. Source trees are processed in disposable working directories rather than stored in the database.
 
-Maps to the plan's pipeline (manifest → scanner → transformer → verifier → reporter), implemented as a callable, programmatic TypeScript library:
+## Local setup
 
-- **`manifest.ts`** — Zod schema for a migration campaign (provider, package, peer floors, transform set).
-- **`scanner.ts`** — finds files using the target SDK, with **per-provider usage patterns** selected by the manifest's `transformSet` (provider-specific identifiers, to avoid false positives on `res.send()` etc.).
-- **`transforms/inngest-v3-to-v4.ts`** — the Inngest deterministic AST transform set.
-- **`transforms/knock-v0-to-v1.ts`** — the Knock deterministic AST transform set (second provider).
-- **`transforms/parser.ts`** — picks the babel parser (`ts`/`tsx`/`babel`) per file extension, so TypeScript type annotations parse correctly.
-- **`verifier.ts`** — runs `tsc --noEmit`, diffing post-transform errors against a **pre-transform baseline** so migration-introduced errors are distinguished from pre-existing ones.
-- **`reporter.ts`** — assembles a structured `MigrationReport` + a markdown PR body.
-- **`pipeline.ts`** — `runMigration(manifest, repoPath)` ties it together; the single entry point the campaign runner calls per repo.
-
-### Console (`packages/console`, Next.js)
-
-The provider-facing product surface:
-- `/campaigns` — list of campaigns
-- `/campaigns/new` — create a campaign from a manifest JSON (validated against the engine schema)
-- `/campaigns/[id]` — dashboard: summary stats (PRs opened / merged / failed), a "run migration" form (paste repo slugs → opens real PRs), and the per-repo run table with PR links
-- API: `POST /api/campaigns`, `GET /api/campaigns/[id]`, `POST /api/campaigns/[id]/runs`
-
-## Run
+Requirements: Node.js 20.9+, npm, Git, Docker for isolated verification, and access to repositories you are authorized to test.
 
 ```bash
-npm install
-npm run build:packages      # build engine, db, app -> dist/
-
-# CLI: migrate one repo (opens a real PR via gh)
-npx tsx packages/app/src/cli.ts <owner/repo>
-
-# Console: full web UI to create campaigns and run them across repos
-npm run console             # http://localhost:3000
+npm ci
+cp .env.example .env
 ```
 
-### Programmatic use
+Replace all operator secrets in `.env`. `OPERATOR_APPROVAL_SECRET` must contain at least 32 bytes and should be independent of the password. Relative `API_MIGRATOR_DB_PATH` values are resolved from the repository root so the database command, CLI, and console use the same file.
 
-```ts
-import { runMigration, reportToMarkdown } from "@api-migrator/engine";
+Initialize the local database and validate the checkout:
 
-const { report } = await runMigration(manifest, repoPath, { writeChanges: true });
-const prBody = reportToMarkdown(report); // post as the PR description
+```bash
+npm run db:migrate
+npm run ci
 ```
 
-## Gates passed
+Start the loopback operator console:
 
-| Phase | Gate |
-|-------|------|
-| 0 — Foundation | monorepo type-checks clean; reproduces prototype result |
-| 1 — Engine | full pipeline; report + markdown |
-| 2 — GitHub | real PR opened from code (correct diff + report body) |
-| 3 — Campaigns + DB | DB-backed campaign persists run rows |
-| 4 — Console | campaign created + run + PR opened through the web UI |
-| 5 — Second provider | Knock v0→v1 runs through the same pipeline as Inngest (provider-agnostic) |
+```bash
+npm run console
+```
 
-## Not built yet
+Open [http://localhost:3000](http://localhost:3000) and enter the configured operator username and password when the browser prompts.
 
-- Registered GitHub App auth (today uses `gh` for pilot auth; the Octokit `auth-app` path is documented inline — only the auth wrapper differs).
-- Auto-merge (always human review), multi-language support beyond TS, auto-generating manifests from docs alone.
+### GitHub credentials
 
-## Reference
+Public-repository previews first use anonymous, credential-free cloning. For private-repository previews and all publishing, set `API_MIGRATOR_AUTH_MODE=github-app`, configure a GitHub App with access only to approved repositories, then set `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, and (optionally) `GH_APP_INSTALLATION_ID`. Private previews fall back to those credentials only when that mode was explicitly configured. Preview does not grant permission to publish; the signed preflight and typed approval are still required.
 
-- Inngest v3→v4 migration guide: https://www.inngest.com/docs/reference/typescript/v4/migrations/v3-to-v4
+For a local pilot on repositories you control, `API_MIGRATOR_AUTH_MODE=gh-cli` explicitly opts into the current `gh` CLI identity. That mode is rejected when `NODE_ENV=production`; there is no implicit credential fallback.
+
+Do not place a personal token in repository URLs, command arguments, reports, or database errors. GitHub credentials are absent from verification subprocesses. Verification uses a Git-free working tree and a digest-pinned Docker image; compiler, test, and lint checks have no network and a read-only repository mount. Dependency installation uses ordinary Docker bridge networking after rejecting custom registry configuration and non-registry lock sources, with lifecycle scripts disabled. This is policy validation, not network-level egress filtering, so the pilot remains limited to operator-approved repositories. Before accepting hostile multi-tenant input, move installation and checks to a dedicated, egress-filtered disposable VM or job runner.
+
+Trusted compiler provenance is deliberately npm-only in this pilot: verification requires npm with `package-lock.json` or `npm-shrinkwrap.json` lockfile version 2 or 3. Repositories selected for pnpm, Yarn, or Bun fail closed until equivalent provenance checks are implemented.
+
+Content-addressed migration branch names and PR head/base checks do not make GitHub refs permanently immutable: collaborators or other integrations may still change or delete a ref after the app checks it. For stronger ongoing protection in GitHub App mode, each pilot repository must have a GitHub ruleset targeting `codex/api-migrator/*` that restricts branch creation, updates, and deletions, with only the migrator App configured as a bypass actor. This ruleset is configured by the repository operator; the App does not need Administration permission. The local `gh-cli` pilot remains a weaker operator-controlled mode unless its explicitly selected identity is granted equivalent narrowly scoped access. Immediately before merge, the operator must confirm that the PR's current head commit still equals the approved head recorded in the PR audit footer and publication result.
+
+Preview the built-in Inngest campaign from the CLI without publishing anything:
+
+```bash
+npm run migrate -- owner/repo
+```
+
+The command prints the preflight ID, exact base commit, blockers, and artifact fingerprint. Publishing requires rerunning it with explicit `--publish`, `--preflight`, and `--approved-by` arguments.
+
+## Commands and automated checks
+
+| Command | What it proves |
+|---|---|
+| `npm run build` | Builds engine, DB, and app before the Next.js console |
+| `npm run typecheck` | Builds package declarations, then type-checks every workspace |
+| `npm test` | Runs the workspace unit and migration-fixture tests that exist in this checkout |
+| `npm run ci` | Runs ordered package builds, type-checks, tests, and the console production build |
+| `npm run db:migrate` | Creates/updates the local SQLite bootstrap schema and indexes |
+| `npm run migrate -- owner/repo` | Generates a non-publishing Inngest migration preview for one approved repository |
+
+GitHub Actions runs `npm run ci` on pushes and pull requests. CI uses only its read-only checkout token, does not persist that credential, does not configure application GitHub credentials, push branches, open real PRs, or prove customer-repository compatibility. A real pilot still requires operator review and evidence from approved repositories.
+
+## Pilot acceptance criteria
+
+Before charging for a provider campaign, test 5–10 authorized repositories and record:
+
+- affected-usage precision and false positives;
+- dependency and lockfile updates;
+- verification/test pass rate;
+- unresolved review items;
+- operator correction time;
+- accepted PR rate and engineering time saved.
+
+The next commercial milestone is one API provider paying for successful, reviewable migration PRs—not adding more providers or expanding the dashboard.
+
+## Deliberately out of scope
+
+- automatic merge;
+- public or multi-tenant console hosting;
+- merge-state tracking (the UI reports only what this service actually observes);
+- universal languages, SDKs, or behavior-changing migrations;
+- generating trustworthy migration rules from documentation alone;
+- claiming a GitHub App installation or a passing unit suite proves production safety.
+
+Reference migration guide: [Inngest TypeScript v3 to v4](https://www.inngest.com/docs/reference/typescript/v4/migrations/v3-to-v4).

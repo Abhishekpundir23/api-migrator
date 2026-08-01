@@ -4,9 +4,9 @@
  *
  *   tsx packages/engine/src/gate-verify.ts
  *
- * Clones the v3 fixture, bumps it to v4 deps, runs the migration WITH install,
- * and asserts verification actually ran (verified !== "skipped") and introduced
- * zero new errors in the migrated files.
+ * Clones the v3 fixture, lets the migration update dependencies and source,
+ * runs an isolated install plus type-check, and asserts verification actually
+ * ran (verified !== "skipped") with zero newly introduced type errors.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -30,23 +30,18 @@ async function main() {
     console.log("Cloning v3 fixture (bare, no node_modules)...");
     execSync(`git clone --depth 1 https://github.com/ykhli/AI-tamago.git ${tmp}`, { stdio: "pipe" });
 
-    // Pre-bump deps so the migrated code can type-check against v4. We're
-    // verifying that the TRANSFORM introduces no NEW errors, not that v4 is
-    // installed -- so set up the installable state first.
-    bumpToV4(tmp);
-
     const manifest: Manifest = {
       name: "Inngest TS SDK v3 -> v4",
       provider: "inngest",
       transformSet: "inngest-v3-to-v4",
       package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
-      peerFloors: [{ name: "typescript", range: ">=5.8.0" }],
+      peerFloors: [{ name: "typescript", range: "^5.8.0" }],
     };
 
     console.log("Running migration WITH install + verification...\n");
     const { report } = await runMigration(manifest, tmp, {
       writeChanges: true,
-      verify: { install: true },
+      verify: { runner: "docker", install: true },
     });
 
     const v = report.summary.verified;
@@ -55,6 +50,9 @@ async function main() {
     console.log("  baseline  :", report.verification.baseline.length, "pre-existing errors");
     console.log("  introduced:", report.verification.introduced.length, "new errors");
     if (report.verification.skipReason) console.log("  skipReason:", report.verification.skipReason);
+    for (const error of report.verification.introduced) {
+      console.log(`  - ${error.file}:${error.line ?? "?"}:${error.col ?? "?"} ${error.code} ${error.message}`);
+    }
 
     console.log("\n=== Assertions ===");
     assert(v !== "skipped", "verification actually RAN (not skipped)");
@@ -69,13 +67,6 @@ async function main() {
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
-}
-
-function bumpToV4(dir: string) {
-  execSync(
-    `node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.dependencies.inngest="^4.0.0";p.devDependencies=p.devDependencies||{};p.devDependencies.typescript="^5.8.0";fs.writeFileSync("package.json",JSON.stringify(p,null,2));'`,
-    { cwd: dir, stdio: "pipe" }
-  );
 }
 
 main().catch((e) => {

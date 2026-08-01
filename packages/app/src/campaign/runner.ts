@@ -1,89 +1,170 @@
-/**
- * Campaign runner — orchestrates a migration campaign across many repos.
- *
- * Given a campaign (manifest + list of repo slugs), it:
- *   1. Records a migration_run row per repo (status = queued).
- *   2. Dispatches each repo through the queue (Phase 2's migrateRepo).
- *   3. Writes the resulting status + PR url + report back to the run row.
- *
- * This is the glue between the DB (Phase 3) and the GitHub workflow (Phase 2).
- */
+/** DB-backed, bounded campaign runner with preview-first publication. */
 
 import {
   createRun,
   updateRun,
   upsertRepo,
   getCampaign,
-  getRepoBySlug,
   type MigrationRunStatus,
 } from "@api-migrator/db";
+import { Manifest, type MigrationReport } from "@api-migrator/engine";
 import { migrateRepo, type MigrateRepoResult } from "../github.js";
-import { Manifest } from "@api-migrator/engine";
+import {
+  PublicationAttemptError,
+  type PublicationOutcome,
+  type PublicationRequest,
+} from "../publication.js";
+import { parseRepositorySlug, validateBranchName } from "../repository.js";
+import { safeErrorMessage } from "../security.js";
 
 export interface RunCampaignInput {
   campaignId: string;
-  /** "owner/repo" slugs to migrate. */
   repoSlugs: string[];
-  /** Branch suffix; final branch is `${suffix}`. */
-  branchSuffix?: string;
+  /** Exact content-addressed branch from preview when supplied. */
+  branch?: string;
   concurrency?: number;
+  /** Omitted means preview. */
+  publication?: PublicationRequest;
+}
+
+export interface CampaignRepoResult {
+  slug: string;
+  status: MigrationRunStatus;
+  prUrl: string | null;
+  preflightId?: string;
+  report?: MigrationReport;
+  publication?: PublicationOutcome;
+  error?: string;
 }
 
 export interface CampaignRunSummary {
   campaignId: string;
   total: number;
-  results: Array<{ slug: string; status: MigrationRunStatus; prUrl: string | null; error?: string }>;
+  results: CampaignRepoResult[];
 }
 
-/**
- * Run a campaign. Processes repos with bounded concurrency, persisting run
- * status as each completes.
- */
 export async function runCampaign(input: RunCampaignInput): Promise<CampaignRunSummary> {
   const campaign = getCampaign(input.campaignId);
   if (!campaign) throw new Error(`campaign ${input.campaignId} not found`);
-  const manifest = JSON.parse(campaign.manifest) as Manifest;
-  const suffix = input.branchSuffix ?? "api-migrator/migration";
+  assertCampaignActive(campaign.status, input.campaignId);
+  const manifest = parseStoredManifest(campaign.manifest);
+  const branchOverride = input.branch ? validateBranchName(input.branch) : undefined;
+  const repoSlugs = input.repoSlugs.map((slug) => parseRepositorySlug(slug).slug);
+  if (new Set(repoSlugs).size !== repoSlugs.length) {
+    throw new Error("Campaign repository list contains duplicates");
+  }
 
-  const results: CampaignRunSummary["results"] = [];
-  const concurrency = Math.max(1, input.concurrency ?? 2);
-  const queue = [...input.repoSlugs];
+  const results: CampaignRepoResult[] = new Array(repoSlugs.length);
+  const concurrency = Math.min(5, Math.max(1, input.concurrency ?? 2));
+  let cursor = 0;
 
-  async function worker() {
-    while (queue.length) {
-      const slug = queue.shift()!;
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = cursor++;
+      if (index >= repoSlugs.length) return;
+      const slug = repoSlugs[index]!;
       const repo = upsertRepo({ slug });
-      const run = createRun({ campaignId: input.campaignId, repoId: repo.id, branch: suffix });
+      const run = createRun({
+        campaignId: input.campaignId,
+        repoId: repo.id,
+        branch: branchOverride ?? "codex/api-migrator/pending",
+      });
       try {
-        const r: MigrateRepoResult = await migrateRepo({
-          cloneUrl: `https://github.com/${slug}.git`,
+        const result: MigrateRepoResult = await migrateRepo({
           slug,
-          baseBranch: repo.defaultBranch ?? "main",
           manifest,
-          branch: suffix,
+          branch: branchOverride,
+          publication: input.publication,
         });
-        const status: MigrationRunStatus = r.changed ? "pr_opened" : "no_changes";
+        const outcomeStatus = result.publication.status;
+        const status = outcomeStatus as MigrationRunStatus;
+        const blockerError =
+          outcomeStatus === "blocked"
+            ? result.publication.blockers.map((blocker) => blocker.message).join("; ")
+            : undefined;
+        upsertRepo({ slug, defaultBranch: result.publication.baseBranch });
         updateRun(run.id, {
           status,
-          prUrl: r.prUrl ?? null,
-          summary: r.report.summary,
-          report: r.report,
+          prUrl: result.prUrl,
+          summary: result.report.summary,
+          report: result.report,
+          error: blockerError,
+          publicationMode: result.publication.mode,
+          preflightId: result.preflightId,
+          artifactDigest: result.publication.artifactDigest,
+          baseSha: result.publication.baseSha,
+          baseBranch: result.publication.baseBranch,
+          headSha: result.publication.headSha ?? null,
+          publicationBlockers: result.publication.blockers,
+          approvedBy: result.publication.approvedBy ?? null,
+          overrideUnsafe: result.publication.overridden,
+          overrideReason: result.publication.overrideReason ?? null,
+          branch: result.publication.branch,
         });
-        results.push({ slug, status, prUrl: r.prUrl });
-      } catch (e: any) {
-        updateRun(run.id, { status: "failed", error: e?.message ?? String(e) });
-        results.push({ slug, status: "failed", prUrl: null, error: e?.message ?? String(e) });
+        results[index] = {
+          slug,
+          status,
+          prUrl: result.prUrl,
+          preflightId: result.preflightId,
+          report: result.report,
+          publication: result.publication,
+          ...(blockerError ? { error: blockerError } : {}),
+        };
+      } catch (error) {
+        const message = persistFailedRun(run.id, error);
+        results[index] = { slug, status: "failed", prUrl: null, error: message };
       }
     }
   }
 
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, input.repoSlugs.length) }, worker)
-  );
+  await Promise.all(Array.from({ length: Math.min(concurrency, repoSlugs.length) }, worker));
+  return { campaignId: input.campaignId, total: repoSlugs.length, results };
+}
 
+/** Persist a handled failure, including exact branch state when publication had already mutated GitHub. */
+export function persistFailedRun(runId: string, error: unknown): string {
+  const patch = buildFailedRunPatch(error);
+  updateRun(runId, patch);
+  return patch.error;
+}
+
+/** Convert only trusted structured publication state into durable DB fields. */
+export function buildFailedRunPatch(error: unknown) {
+  const message = safeErrorMessage(error);
+  if (!(error instanceof PublicationAttemptError)) {
+    return { status: "failed" as const, error: message };
+  }
+  const audit = error.audit;
   return {
-    campaignId: input.campaignId,
-    total: input.repoSlugs.length,
-    results,
+    status: "failed" as const,
+    prUrl: null,
+    summary: audit.report.summary,
+    report: audit.report,
+    error: message,
+    publicationMode: audit.publicationMode,
+    preflightId: audit.preflightId,
+    artifactDigest: audit.artifactDigest,
+    baseSha: audit.baseSha,
+    baseBranch: audit.baseBranch,
+    headSha: audit.headSha,
+    publicationBlockers: audit.publicationBlockers,
+    approvedBy: audit.approvedBy,
+    overrideUnsafe: audit.overrideUnsafe,
+    overrideReason: audit.overrideReason ?? null,
+    branch: audit.branch,
   };
+}
+
+export function assertCampaignActive(status: string, campaignId = "campaign"): void {
+  if (status !== "active") {
+    throw new Error(`campaign ${campaignId} is ${status}; only active campaigns can run`);
+  }
+}
+
+export function parseStoredManifest(serialized: string): Manifest {
+  try {
+    return Manifest.parse(JSON.parse(serialized));
+  } catch (error) {
+    throw new Error(`Campaign manifest is invalid: ${safeErrorMessage(error)}`);
+  }
 }

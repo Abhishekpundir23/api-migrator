@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_MIGRATOR_DB_PATH: /tmp/api-migrator-ci.db
+      OPERATOR_USERNAME: ci-operator
+      OPERATOR_PASSWORD: ci-only-password
+      OPERATOR_APPROVAL_SECRET: ci-only-approval-secret-32-bytes-minimum
+      API_MIGRATOR_DOCKER_TEST: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run ci

@@ -14,6 +14,7 @@ export function loadEnv(path?: string): void {
   for (const f of files) {
     if (!existsSync(f)) continue;
     applyFile(f);
+    process.env.API_MIGRATOR_WORKSPACE_ROOT = dirname(f);
     return;
   }
 }
