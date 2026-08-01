@@ -4,4 +4,9 @@ export interface WorkspaceEnvResult {
   loadedEnvFiles: Array<{ path: string; contents: string; env: Record<string, string> }>;
 }
 
+export function assertWorkspaceEnvFilesSecure(
+  workspaceRoot: string,
+  development: boolean
+): void;
+
 export function loadWorkspaceEnv(workspaceRoot: string): WorkspaceEnvResult;

@@ -26,6 +26,7 @@ export {
   readAppCredentials,
   isAppMode,
   type AuthConfig,
+  type AuthCapability,
   type AuthMode,
   type AppCredentials,
   type AuthResult,

@@ -87,21 +87,28 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
   const isolatedHome = join(workdir, "home");
   mkdirSync(isolatedHome, { recursive: true, mode: 0o700 });
   let auth: AuthResult | null = null;
+  const authTokens: string[] = [];
+  const authSessions: AuthResult[] = [];
 
   try {
-    const cleanEnv = sanitizedExecutionEnv(isolatedHome);
-    const repositoryEnv = sanitizedExecutionEnv("/tmp", {
+    const trustedHostEnvironment = {
       PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       LANG: process.env.LANG,
       LC_ALL: process.env.LC_ALL,
       TZ: process.env.TZ,
-    });
+    };
+    // Credentialed GitHub operations do not inherit ambient proxies, custom
+    // certificate authorities, Git config, or language preloads.
+    const cleanEnv = sanitizedExecutionEnv(isolatedHome, trustedHostEnvironment);
+    const repositoryEnv = sanitizedExecutionEnv("/tmp", trustedHostEnvironment);
     const repoPath = join(workdir, "repo");
 
     let baseBranch: string;
     let gitEnv: NodeJS.ProcessEnv | null = null;
     if (publicationRequiresAuthentication(publication)) {
-      auth = await resolveAuth(repository.slug);
+      auth = await resolveAuth(repository.slug, "read");
+      authTokens.push(auth.token);
+      authSessions.push(auth);
       baseBranch = requestedBase ?? (await discoverDefaultBranch(auth, repository));
       validateBranchName(baseBranch);
       const askPassPath = createAskPassScript(workdir);
@@ -122,12 +129,14 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       if (anonymousCloneError) {
         // Preview remains credential-free for public repositories. A private
         // repository can fall back only to an explicitly selected auth mode.
-        auth = await resolveOptionalAuth(repository.slug);
+        auth = await resolveOptionalAuth(repository.slug, "read");
         if (!auth) {
           throw new Error(
             `Public preview clone failed; private repositories require explicitly configured authentication: ${safeErrorMessage(anonymousCloneError)}`
           );
         }
+        authTokens.push(auth.token);
+        authSessions.push(auth);
         rmSync(repoPath, { recursive: true, force: true });
         baseBranch = requestedBase ?? (await discoverDefaultBranch(auth, repository));
         validateBranchName(baseBranch);
@@ -269,6 +278,14 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     const expectedTreeSha = gitExec(["rev-parse", "HEAD^{tree}"], repoPath, cleanEnv).trim();
     if (!/^[a-f0-9]{40,64}$/.test(expectedTreeSha)) throw new Error("Git returned an invalid migration tree id");
 
+    // Mint write capability only after verification, blocker handling, exact
+    // preflight approval, and creation of the local immutable artifact.
+    auth = await resolveAuth(repository.slug, "write");
+    authTokens.push(auth.token);
+    authSessions.push(auth);
+    const publishAskPassPath = createAskPassScript(workdir);
+    gitEnv = gitAuthenticationEnv(auth.token, publishAskPassPath, cleanEnv);
+
     const remote = await inspectRemotePublicationState(
       auth,
       repository,
@@ -335,14 +352,23 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       },
     };
   } catch (error) {
-    const message = safeErrorMessage(error, auth ? [auth.token] : []);
+    const message = safeErrorMessage(error, authTokens);
     if (error instanceof PublicationAttemptError) {
       throw new PublicationAttemptError(message, error.audit);
     }
     throw new Error(message);
   } finally {
+    await revokeInstallationTokens(authSessions);
     rmSync(workdir, { recursive: true, force: true });
   }
+}
+
+async function revokeInstallationTokens(authSessions: readonly AuthResult[]): Promise<void> {
+  await Promise.allSettled(
+    authSessions
+      .filter((session) => session.mode === "github-app")
+      .map((session) => session.octokit.request("DELETE /installation/token"))
+  );
 }
 
 function gitExec(

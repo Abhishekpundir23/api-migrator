@@ -3,14 +3,22 @@
  * process.env for any keys not already set (real env vars win over the file).
  *
  * Next.js loads .env natively, so the console doesn't need this; the CLIs do.
- * Searches upward from cwd for a .env so it works from any package dir.
+ * The implicit file is anchored to this trusted workspace, never discovered by
+ * walking through ambient parent directories.
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const MAX_ENV_BYTES = 256 * 1024;
+const WORKSPACE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export function loadEnv(path?: string): void {
-  const files = path ? [path] : candidatePaths();
+  if (path !== undefined && !isAbsolute(path)) {
+    throw new Error("Explicit .env path must be absolute");
+  }
+  const files = path ? [path] : [join(WORKSPACE_ROOT, ".env")];
   for (const f of files) {
     if (!existsSync(f)) continue;
     applyFile(f);
@@ -19,21 +27,32 @@ export function loadEnv(path?: string): void {
   }
 }
 
-function candidatePaths(): string[] {
-  // Walk up from cwd looking for a .env (covers running from a package dir).
-  const out: string[] = [];
-  let dir = process.cwd();
-  for (let i = 0; i < 6; i++) {
-    out.push(join(dir, ".env"));
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return out;
-}
-
 function applyFile(file: string): void {
-  const text = readFileSync(file, "utf8");
+  let descriptor: number | null = null;
+  let text: string;
+  try {
+    descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile() || stats.size <= 0 || stats.size > MAX_ENV_BYTES) {
+      throw new Error("invalid .env file");
+    }
+    if (process.platform !== "win32" && (stats.mode & 0o077) !== 0) {
+      throw new Error(".env permissions are too broad");
+    }
+    if (
+      process.platform !== "win32" &&
+      typeof process.getuid === "function" &&
+      stats.uid !== process.getuid()
+    ) {
+      throw new Error(".env is not owned by the current user");
+    }
+    text = readFileSync(descriptor, "utf8");
+  } catch {
+    throw new Error(".env must be an owner-only, regular file within the trusted workspace");
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+
   // A key's value may span multiple lines if quoted (e.g. an embedded PEM).
   // Walk the text matching `KEY="..."` / `KEY='...'` / `KEY=value` blocks.
   const re = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\n\r]*))\r?$/gm;
