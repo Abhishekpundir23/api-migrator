@@ -1,12 +1,34 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveDatabasePath } from "@api-migrator/db";
 import { createApprovalToken, verifyApprovalToken } from "../lib/approval";
 import { credentialsFromEnv } from "../lib/operator-auth";
-import { loadWorkspaceEnv } from "../workspace-env.mjs";
+import { assertWorkspaceEnvFilesSecure, loadWorkspaceEnv } from "../workspace-env.mjs";
+
+test("workspace env files must be owner-only regular files", () => {
+  const directory = mkdtempSync(join(tmpdir(), "api-migrator-console-env-security-"));
+  const file = join(directory, ".env");
+  const link = join(directory, ".env.local");
+  try {
+    writeFileSync(file, "SAFE=value\n", { mode: 0o644 });
+    assert.throws(
+      () => assertWorkspaceEnvFilesSecure(directory, true),
+      /owner-only/
+    );
+
+    chmodSync(file, 0o600);
+    symlinkSync(file, link);
+    assert.throws(
+      () => assertWorkspaceEnvFilesSecure(directory, true),
+      /non-symlink/
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("root env reaches console authentication, approval, and the shared database path", () => {
   const directory = mkdtempSync(join(tmpdir(), "api-migrator-console-env-test-"));
@@ -26,7 +48,7 @@ test("root env reaches console authentication, approval, and the shared database
       "OPERATOR_APPROVAL_SECRET=root-env-approval-secret-at-least-32-bytes",
       "API_MIGRATOR_DB_PATH=data/env-smoke.db",
       "",
-    ].join("\n"));
+    ].join("\n"), { mode: 0o600 });
 
     loadWorkspaceEnv(directory);
     assert.deepEqual(credentialsFromEnv(), {
