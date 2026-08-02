@@ -1,0 +1,354 @@
+{
+  "schemaVersion": 1,
+  "pilotId": "pilot_example_001",
+  "audit": {
+    "observedAt": "2030-01-04T12:15:00Z",
+    "evidenceReference": "trusted-audit-example-001",
+    "evidenceDigest": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "authorization": {
+    "reference": "authorization-example-001",
+    "pilotId": "pilot_example_001",
+    "approverReference": "owner-representative-example",
+    "approvedAt": "2030-01-02T10:00:00Z",
+    "expiresAt": "2030-01-16T10:00:00Z",
+    "repository": "example-org/example-repo",
+    "repositoryId": 1234567890,
+    "baseBranch": "main",
+    "baseSha": "2222222222222222222222222222222222222222",
+    "provider": "inngest",
+    "transformSet": "inngest-v3-to-v4",
+    "engineTag": "v0.1.0-pilot",
+    "engineCommit": "67c744fc17bac42f9285300b84d77f79c36621ed",
+    "manifestDigest": "5ac6ba810be7ab4f91466fe815b4d58ba8f2d2bc546370c0dbba16e330844401",
+    "commandScope": {
+      "profile": "api-migrator-engine-v0.1",
+      "install": {
+        "executable": "npm",
+        "args": ["install", "--ignore-scripts", "--no-audit", "--no-fund"],
+        "network": "approved_registries_only"
+      },
+      "typecheck": {
+        "execution": "trusted_typescript_compiler",
+        "executable": "pinned_node",
+        "module": "./node_modules/typescript/bin/tsc",
+        "args": ["--noEmit", "--pretty", "false", "--tsBuildInfoFile", "<runner-temp>/tsconfig.tsbuildinfo"],
+        "network": "none",
+        "sourceReadOnly": true,
+        "configInspected": true,
+        "compilerProvenanceChecked": true
+      },
+      "test": { "script": "test", "network": "none", "sourceReadOnly": true },
+      "lint": { "script": "lint", "network": "none", "sourceReadOnly": true },
+      "runtime": {
+        "execution": "manifest_runtime_attestation",
+        "profile": "node22-bookworm-slim-2026-07",
+        "network": "none",
+        "sourceReadOnly": true
+      }
+    },
+    "commandScopeDigest": "c01d9f6ddbf73a99c95ad3313a8066c2c6fd9b402f1a6f615500c6cea4de9a76",
+    "requiredCi": [
+      { "name": "image-smoke", "workflow": "CI", "integrationId": 15368 },
+      { "name": "test", "workflow": "CI", "integrationId": 15368 }
+    ],
+    "requiredCiDigest": "8c356c0ff9b9a2deef9a63f7de78f3c794fb1db959385c5d324bb89b8aae5abd",
+    "cleanupDeadlines": {
+      "githubAccess": "2030-02-03T12:00:00Z",
+      "runnerStorage": "2030-02-03T12:00:00Z",
+      "pilotDatabase": "2030-02-03T12:00:00Z",
+      "logsExportsBackups": "2030-02-03T12:00:00Z",
+      "authorizationFeedback": "2030-02-03T12:00:00Z"
+    },
+    "allowedActions": ["public_metadata", "clone", "dependency_install", "preview"],
+    "postPreviewPublication": {
+      "evidenceReference": "owner-publication-example-001",
+      "authorizationReference": "authorization-example-001",
+      "pilotId": "pilot_example_001",
+      "approverReference": "owner-representative-example",
+      "approvedAt": "2030-01-02T11:00:00Z",
+      "expiresAt": "2030-01-03T11:00:00Z",
+      "repository": "example-org/example-repo",
+      "repositoryId": 1234567890,
+      "baseBranch": "main",
+      "baseSha": "2222222222222222222222222222222222222222",
+      "provider": "inngest",
+      "transformSet": "inngest-v3-to-v4",
+      "engineTag": "v0.1.0-pilot",
+      "engineCommit": "67c744fc17bac42f9285300b84d77f79c36621ed",
+      "manifestDigest": "5ac6ba810be7ab4f91466fe815b4d58ba8f2d2bc546370c0dbba16e330844401",
+      "preflightId": "pf_3333333333333333333333333333333333333333333333333333333333333333",
+      "artifactDigest": "4444444444444444444444444444444444444444444444444444444444444444",
+      "candidateBranch": "codex/api-migrator/inngest-inngest-v3-to-v4-46425a27878a430eb4c8298fde64b3102e3e5c69c94e0ef64e5db0b0ddad4efd",
+      "findingsDigest": "38c92446c9110724409d3a32352d9d04278a71350af913c48a2581f556063027",
+      "resolutionsDigest": "c2bf4b975e2b9be9ce4189ed9264ad99dfa55797eef47bf5482d25990ee2b78f",
+      "requiredCiDigest": "8c356c0ff9b9a2deef9a63f7de78f3c794fb1db959385c5d324bb89b8aae5abd",
+      "allowedActions": [
+        "use_private_app_for_publication",
+        "push_candidate_branch",
+        "open_pull_request"
+      ]
+    }
+  },
+  "campaign": {
+    "engineTag": "v0.1.0-pilot",
+    "engineCommit": "67c744fc17bac42f9285300b84d77f79c36621ed",
+    "provider": "inngest",
+    "transformSet": "inngest-v3-to-v4",
+    "manifestJson": "{\"name\":\"Inngest TypeScript SDK v3 -> v4\",\"provider\":\"inngest\",\"transformSet\":\"inngest-v3-to-v4\",\"runtime\":{\"node\":{\"minimumMajor\":20,\"profile\":\"node22-bookworm-slim-2026-07\",\"packageJson\":\"package.json\",\"dockerfile\":\"Dockerfile\"}},\"package\":{\"name\":\"inngest\",\"from\":\"^3.0.0\",\"to\":\"^4.0.0\"},\"peerFloors\":[{\"name\":\"typescript\",\"range\":\"^5.8.0\"}]}",
+    "manifestDigest": "5ac6ba810be7ab4f91466fe815b4d58ba8f2d2bc546370c0dbba16e330844401"
+  },
+  "repository": {
+    "slug": "example-org/example-repo",
+    "repositoryId": 1234567890,
+    "baseBranch": "main",
+    "baseSha": "2222222222222222222222222222222222222222"
+  },
+  "run": {
+    "previewStartedAt": "2030-01-02T10:15:00Z",
+    "previewCompletedAt": "2030-01-02T10:45:00Z",
+    "publicationAttemptedAt": "2030-01-02T11:15:00Z",
+    "publicationMode": "publish",
+    "publicationStatus": "pr_opened",
+    "preflightId": "pf_3333333333333333333333333333333333333333333333333333333333333333",
+    "artifactDigest": "4444444444444444444444444444444444444444444444444444444444444444",
+    "candidateBranch": "codex/api-migrator/inngest-inngest-v3-to-v4-46425a27878a430eb4c8298fde64b3102e3e5c69c94e0ef64e5db0b0ddad4efd",
+    "approvedHeadSha": "5555555555555555555555555555555555555555",
+    "approvedBy": "pilot-operator",
+    "overrideUnsafe": true,
+    "overrideReason": "Owner and operator reviewed the exact F12 finding and accepted the container runtime evidence.",
+    "scannedFiles": 42,
+    "changedFiles": 4,
+    "appliedTransforms": 6,
+    "reviewItems": 1,
+    "manualReviewFindings": [
+      {
+        "findingId": "finding_f2789d4b738e0965864a4e5f45928214ed6cf2e972c12db2e5d4c05204d6ce32",
+        "code": "F12",
+        "file": "src/inngest/functions.ts",
+        "locationDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "messageDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "evidenceReference": "preview-example-001#finding-1",
+        "evidenceDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ],
+    "manualReviewResolutions": [
+      {
+        "findingId": "finding_f2789d4b738e0965864a4e5f45928214ed6cf2e972c12db2e5d4c05204d6ce32",
+        "code": "F12",
+        "decision": "accepted",
+        "reason": "Deployment evidence shows a long-running container rather than a serverless timeout.",
+        "evidenceReference": "deployment-evidence-example-001",
+        "evidenceDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    ],
+    "blockers": [
+      {
+        "code": "manual_review_required",
+        "message": "One runtime-container finding required exact owner and operator review before publication."
+      }
+    ],
+    "verification": {
+      "runner": "disposable-egress-filtered-pilot-v1",
+      "overall": "passed",
+      "checks": {
+        "install": { "status": "passed", "reason": null, "evidenceReference": "run-example-001#install" },
+        "typecheck": { "status": "passed", "reason": null, "evidenceReference": "run-example-001#typecheck" },
+        "test": { "status": "passed", "reason": null, "evidenceReference": "run-example-001#test" },
+        "lint": { "status": "passed", "reason": null, "evidenceReference": "run-example-001#lint" },
+        "runtime": {
+          "status": "passed",
+          "reason": "Manifest-bound Node runtime floor and Docker declaration attestation passed.",
+          "evidenceReference": "run-example-001#runtime-attestation"
+        }
+      }
+    }
+  },
+  "review": {
+    "candidateSites": 6,
+    "truePositives": 6,
+    "falsePositives": 0,
+    "knownFalseNegatives": 0,
+    "correctionCount": 1,
+    "unresolvedReviewItems": 0,
+    "inventoryEvidenceReference": "manual-inventory-example-001"
+  },
+  "effort": {
+    "previewRuntimeSeconds": 190,
+    "operatorReviewMinutes": 22,
+    "correctionMinutes": 8,
+    "ownerReviewMinutes": 15,
+    "ownerEstimatedManualMigrationMinutes": 180
+  },
+  "outcome": {
+    "observedAt": "2030-01-04T11:45:00Z",
+    "ownerDisposition": "accepted",
+    "pullRequestState": "merged",
+    "prUrl": "https://github.com/example-org/example-repo/pull/123",
+    "currentHeadSha": "5555555555555555555555555555555555555555",
+    "mergeCommitSha": "6666666666666666666666666666666666666666",
+    "reasonCodes": ["operator_owned_sandbox", "verification_green", "owner_accepted"],
+    "feedbackSummary": "Fictitious operator-owned disposable sandbox example: the owner requested one naming correction before merge."
+  },
+  "controls": {
+    "runner": {
+      "pilotId": "pilot_example_001",
+      "repository": "example-org/example-repo",
+      "repositoryId": 1234567890,
+      "profile": "disposable-egress-filtered-pilot-v1",
+      "imageOrTemplateDigest": "7777777777777777777777777777777777777777777777777777777777777777",
+      "commandScopeDigest": "c01d9f6ddbf73a99c95ad3313a8066c2c6fd9b402f1a6f615500c6cea4de9a76",
+      "executionAttestationJson": "{\"schemaVersion\":1,\"pilotId\":\"pilot_example_001\",\"repository\":\"example-org/example-repo\",\"repositoryId\":1234567890,\"runnerProfile\":\"disposable-egress-filtered-pilot-v1\",\"imageOrTemplateDigest\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"commandScopeDigest\":\"c01d9f6ddbf73a99c95ad3313a8066c2c6fd9b402f1a6f615500c6cea4de9a76\",\"observedAt\":\"2030-01-02T11:10:00Z\",\"checks\":{\"install\":{\"status\":\"passed\",\"evidenceReference\":\"run-example-001#install\"},\"typecheck\":{\"status\":\"passed\",\"evidenceReference\":\"run-example-001#typecheck\"},\"test\":{\"status\":\"passed\",\"evidenceReference\":\"run-example-001#test\"},\"lint\":{\"status\":\"passed\",\"evidenceReference\":\"run-example-001#lint\"},\"runtime\":{\"status\":\"passed\",\"evidenceReference\":\"run-example-001#runtime-attestation\"}}}",
+      "executionAttestationDigest": "77f0616ea87b3bac1210d88248c9e4a81a31185c6100e92810ec0ffe13babd02",
+      "executionAttestationEvidenceReference": "trusted-runner-attestation-example-001",
+      "evidenceReference": "runner-provision-example-001",
+      "disposable": true,
+      "egressFiltered": true,
+      "teardownEvidenceReference": "runner-teardown-example-001"
+    },
+    "app": {
+      "appId": 123456,
+      "installationId": 789012,
+      "selectedRepositoryOnly": true,
+      "readAccess": {
+        "appId": 123456,
+        "installationId": 789012,
+        "repository": "example-org/example-repo",
+        "repositoryId": 1234567890,
+        "installationRepositoryIds": [1234567890],
+        "tokenRepositoryId": 1234567890,
+        "tokenCapability": "read",
+        "policyObservedAt": "2030-01-02T11:01:00Z",
+        "tokenPermissionsJson": "{\"metadata\":\"read\",\"contents\":\"read\"}",
+        "tokenPermissionsDigest": "6467b417d8a8f2d1b6bd1a8ccafb0eab53c8efc71b120e89b6c2d3078fc274f6",
+        "tokenIssuedAt": "2030-01-02T11:02:00Z",
+        "tokenExpiresAt": "2030-01-02T12:02:00Z",
+        "tokenRevokedAt": "2030-01-02T11:16:00Z",
+        "tokenEvidenceReference": "app-read-token-example-001",
+        "revocationEvidenceReference": "app-read-token-revocation-example-001",
+        "permissionSnapshotJson": "{\"metadata\":\"read\",\"contents\":\"write\",\"pull_requests\":\"write\"}",
+        "permissionSnapshotDigest": "7217b7495ca3dfdff64c98ff4fc01069f927cc1081c16cf5e1f646e82d7c0556",
+        "eventsSnapshotJson": "[]",
+        "eventsSnapshotDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "identityEvidenceReference": "app-read-identity-example-001",
+        "permissionsEvidenceReference": "app-read-permissions-example-001",
+        "eventsEvidenceReference": "app-read-events-example-001"
+      },
+      "writeAccess": {
+        "appId": 123456,
+        "installationId": 789012,
+        "repository": "example-org/example-repo",
+        "repositoryId": 1234567890,
+        "installationRepositoryIds": [1234567890],
+        "tokenRepositoryId": 1234567890,
+        "tokenCapability": "write",
+        "policyObservedAt": "2030-01-02T11:13:00Z",
+        "tokenPermissionsJson": "{\"metadata\":\"read\",\"contents\":\"write\",\"pull_requests\":\"write\"}",
+        "tokenPermissionsDigest": "7217b7495ca3dfdff64c98ff4fc01069f927cc1081c16cf5e1f646e82d7c0556",
+        "tokenIssuedAt": "2030-01-02T11:14:00Z",
+        "tokenExpiresAt": "2030-01-02T12:14:00Z",
+        "tokenRevokedAt": "2030-01-02T11:16:00Z",
+        "tokenEvidenceReference": "app-write-token-example-001",
+        "revocationEvidenceReference": "app-write-token-revocation-example-001",
+        "permissionSnapshotJson": "{\"metadata\":\"read\",\"contents\":\"write\",\"pull_requests\":\"write\"}",
+        "permissionSnapshotDigest": "7217b7495ca3dfdff64c98ff4fc01069f927cc1081c16cf5e1f646e82d7c0556",
+        "eventsSnapshotJson": "[]",
+        "eventsSnapshotDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "identityEvidenceReference": "app-write-identity-example-001",
+        "permissionsEvidenceReference": "app-write-permissions-example-001",
+        "eventsEvidenceReference": "app-write-events-example-001"
+      }
+    },
+    "rulesets": {
+      "repository": "example-org/example-repo",
+      "repositoryId": 1234567890,
+      "migrationRefRulesetId": 101,
+      "defaultBranchRulesetId": 102,
+      "observedAt": "2030-01-02T11:12:00Z",
+      "configurationJson": "{\"migrationRef\":{\"enforcement\":\"active\",\"target\":\"refs/heads/codex/api-migrator/*\",\"restrictCreation\":true,\"restrictUpdates\":true,\"restrictDeletion\":true,\"blockForcePush\":true,\"bypassActors\":[{\"actorType\":\"Integration\",\"actorId\":123456,\"bypassMode\":\"always\"}]},\"defaultBranch\":{\"enforcement\":\"active\",\"target\":\"refs/heads/main\",\"requirePullRequest\":true,\"blockDeletion\":true,\"blockForcePush\":true,\"bypassActors\":[],\"requiredChecks\":[{\"name\":\"image-smoke\",\"workflow\":\"CI\",\"integrationId\":15368},{\"name\":\"test\",\"workflow\":\"CI\",\"integrationId\":15368}]}}",
+      "configurationDigest": "39cbfc499b6c1eb68581ed0c48d5c36a96519cd5c010ac2f47c65b82a16963f7",
+      "evidenceReference": "ruleset-evidence-example-001"
+    },
+    "requiredCi": {
+      "repository": "example-org/example-repo",
+      "repositoryId": 1234567890,
+      "headSha": "5555555555555555555555555555555555555555",
+      "checks": [
+        {
+          "name": "image-smoke",
+          "workflow": "CI",
+          "integrationId": 15368,
+          "conclusion": "success",
+          "observedAt": "2030-01-02T11:30:00Z",
+          "evidenceUrl": "https://github.com/example-org/example-repo/actions/runs/111"
+        },
+        {
+          "name": "test",
+          "workflow": "CI",
+          "integrationId": 15368,
+          "conclusion": "success",
+          "observedAt": "2030-01-02T11:30:00Z",
+          "evidenceUrl": "https://github.com/example-org/example-repo/actions/runs/111"
+        }
+      ]
+    },
+    "productionSecretsUsed": false
+  },
+  "cleanup": {
+    "status": "pending",
+    "locations": [
+      {
+        "kind": "github_access",
+        "targetReference": "github-installation:789012:repository:1234567890",
+        "authorizedDeleteBy": "2030-02-03T12:00:00Z",
+        "status": "deleted",
+        "completedAt": "2030-01-02T11:17:00Z",
+        "evidenceReference": "access-removal-example-001",
+        "exception": null
+      },
+      {
+        "kind": "runner_storage",
+        "targetReference": "runner:pilot_example_001",
+        "authorizedDeleteBy": "2030-02-03T12:00:00Z",
+        "status": "deleted",
+        "completedAt": "2030-01-02T11:17:00Z",
+        "evidenceReference": "runner-teardown-example-001",
+        "exception": null
+      },
+      {
+        "kind": "pilot_database",
+        "targetReference": "database:pilot_example_001",
+        "authorizedDeleteBy": "2030-02-03T12:00:00Z",
+        "status": "pending",
+        "completedAt": null,
+        "evidenceReference": null,
+        "exception": null
+      },
+      {
+        "kind": "logs_exports_backups",
+        "targetReference": "records:pilot_example_001",
+        "authorizedDeleteBy": "2030-02-03T12:00:00Z",
+        "status": "pending",
+        "completedAt": null,
+        "evidenceReference": null,
+        "exception": null
+      },
+      {
+        "kind": "authorization_feedback",
+        "targetReference": "authorization:pilot_example_001",
+        "authorizedDeleteBy": "2030-02-03T12:00:00Z",
+        "status": "retained_by_owner",
+        "completedAt": "2030-01-04T12:10:00Z",
+        "evidenceReference": "owner-retention-example-001",
+        "exception": {
+          "authorityReference": "owner-retention-authority-example-001",
+          "authorityDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "reason": "The owner requested retention of the authorization record through its policy period.",
+          "evidenceReference": "owner-retention-exception-example-001",
+          "evidenceDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      }
+    ],
+    "confirmationReference": null
+  }
+}
