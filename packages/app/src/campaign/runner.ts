@@ -163,8 +163,42 @@ export function assertCampaignActive(status: string, campaignId = "campaign"): v
 
 export function parseStoredManifest(serialized: string): Manifest {
   try {
-    return Manifest.parse(JSON.parse(serialized));
+    const stored: unknown = JSON.parse(serialized);
+    // Campaigns created before the audited runtime policy existed are upgraded
+    // only when they are otherwise identifiable as this exact Inngest
+    // migration. Explicit, null, or malformed runtime values still fail closed.
+    const candidate = isLegacyInngestManifest(stored)
+      ? {
+          ...stored,
+          runtime: AUDITED_INNGEST_RUNTIME_POLICY,
+        }
+      : stored;
+    return Manifest.parse(candidate);
   } catch (error) {
     throw new Error(`Campaign manifest is invalid: ${safeErrorMessage(error)}`);
   }
 }
+
+function isLegacyInngestManifest(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const packagePolicy = "package" in value ? value.package : null;
+  return "provider" in value
+    && value.provider === "inngest"
+    && "transformSet" in value
+    && value.transformSet === "inngest-v3-to-v4"
+    && typeof packagePolicy === "object"
+    && packagePolicy !== null
+    && !Array.isArray(packagePolicy)
+    && "name" in packagePolicy
+    && packagePolicy.name === "inngest"
+    && !("runtime" in value);
+}
+
+const AUDITED_INNGEST_RUNTIME_POLICY = {
+  node: {
+    minimumMajor: 20,
+    profile: "node22-bookworm-slim-2026-07",
+    packageJson: "package.json",
+    dockerfile: "Dockerfile",
+  },
+} as const;

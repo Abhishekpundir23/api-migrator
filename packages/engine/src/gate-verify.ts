@@ -18,8 +18,7 @@ import type { Manifest } from "./index.js";
 
 function assert(cond: boolean, msg: string) {
   if (!cond) {
-    console.error(`❌ ASSERT FAILED: ${msg}`);
-    process.exit(1);
+    throw new Error(`ASSERT FAILED: ${msg}`);
   }
   console.log(`  ✓ ${msg}`);
 }
@@ -34,6 +33,7 @@ async function main() {
       name: "Inngest TS SDK v3 -> v4",
       provider: "inngest",
       transformSet: "inngest-v3-to-v4",
+      runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
       package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
       peerFloors: [{ name: "typescript", range: "^5.8.0" }],
     };
@@ -55,8 +55,18 @@ async function main() {
     }
 
     console.log("\n=== Assertions ===");
-    assert(v !== "skipped", "verification actually RAN (not skipped)");
+    assert(v === true, "verification completed successfully");
+    assert(report.verification.ok === true, "verification result is explicitly successful");
     assert(report.summary.introducedErrors === 0, "transform introduced 0 new type errors");
+    assert(report.verification.checks.runtime?.status === "passed", "Node runtime attestation passed");
+    assert(
+      report.entries.some((entry) => entry.code === "T5" && entry.kind === "applied"),
+      "T5 explicit client mode applied"
+    );
+    assert(
+      report.entries.some((entry) => entry.code === "F12" && /runtime container is unknown/i.test(entry.message)),
+      "F12 remains review-required without a validated deployment kind"
+    );
     // The migrated file must not appear among introduced errors.
     assert(
       !report.verification.introduced.some((e) => e.file.includes("inngest/functions")),

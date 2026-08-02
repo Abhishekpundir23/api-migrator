@@ -15,6 +15,7 @@ const manifest: Manifest = {
   name: "Inngest v3 to v4",
   provider: "inngest",
   transformSet: "inngest-v3-to-v4",
+  runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
   package: { name: "inngest", from: "^3", to: "^4" },
   peerFloors: [],
 };

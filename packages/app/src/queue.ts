@@ -100,6 +100,7 @@ function emptyReport(manifest: MigrationJob["manifest"]): import("@api-migrator/
         typecheck: { ...skippedCheck },
         test: { ...skippedCheck },
         lint: { ...skippedCheck },
+        ...(manifest.runtime ? { runtime: { ...skippedCheck } } : {}),
       },
     },
     summary: { applied: 0, review: 0, changedFiles: 0, introducedErrors: 0, verified: "skipped" },

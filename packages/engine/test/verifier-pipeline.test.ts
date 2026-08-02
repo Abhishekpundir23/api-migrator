@@ -1,6 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -83,6 +95,7 @@ const manifest: Manifest = {
   name: "Inngest v4",
   provider: "inngest",
   transformSet: "inngest-v3-to-v4",
+  runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
   package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
   peerFloors: [{ name: "typescript", range: "^5.8.0" }],
 };
@@ -185,6 +198,23 @@ class MutatingScriptRunner extends InspectingRunner {
   }
 }
 
+class ConcurrentTargetMutationRunner extends InspectingRunner {
+  private mutated = false;
+
+  constructor(private readonly mutateTarget: () => void) {
+    super();
+  }
+
+  override run(repoPath: string, command: RunnerCommand): RunnerResult {
+    const result = super.run(repoPath, command);
+    if (!this.mutated && command.args.includes("--showConfig")) {
+      this.mutateTarget();
+      this.mutated = true;
+    }
+    return result;
+  }
+}
+
 test("dry-run verifies proposed output without mutating source and matches write mode", async () => {
   await withRepo(async (dryRepo) => {
     const before = readFileSync(join(dryRepo, "src", "functions.ts"), "utf8");
@@ -199,6 +229,11 @@ test("dry-run verifies proposed output without mutating source and matches write
     assert.doesNotMatch(runner.observations[0]!, /triggers:/);
     assert.match(runner.observations[1]!, /triggers:/);
     assert.equal(dry.report.verification.ok, true);
+    assert.equal(dry.report.verification.checks.runtime?.status, "passed");
+    assert.equal(dry.report.changedFiles.includes("Dockerfile"), true);
+    const checkpointingReview = dry.report.entries.find((entry) => entry.code === "F12");
+    assert.equal(checkpointingReview?.kind, "review");
+    assert.match(checkpointingReview?.message ?? "", /runtime container is unknown/i);
 
     await withRepo(async (writeRepo) => {
       const written = await runMigration(manifest, writeRepo, {
@@ -207,8 +242,91 @@ test("dry-run verifies proposed output without mutating source and matches write
       });
       assert.deepEqual(written.report.changedFiles, dry.report.changedFiles);
       assert.match(readFileSync(join(writeRepo, "src", "functions.ts"), "utf8"), /triggers:/);
-      assert.equal(JSON.parse(readFileSync(join(writeRepo, "package.json"), "utf8")).dependencies.inngest, "^4.0.0");
+      const writtenPackage = JSON.parse(readFileSync(join(writeRepo, "package.json"), "utf8"));
+      assert.equal(writtenPackage.dependencies.inngest, "^4.0.0");
+      assert.equal(writtenPackage.engines.node, ">=20");
+      assert.match(readFileSync(join(writeRepo, "Dockerfile"), "utf8"), /^FROM node:22-bookworm-slim@sha256:[a-f0-9]{64} AS base$/m);
+      assert.doesNotMatch(readFileSync(join(writeRepo, "Dockerfile"), "utf8"), /ARG NODE_VERSION/);
     });
+  });
+});
+
+test("write mode rejects a concurrent target edit before applying any candidate file", async () => {
+  await withRepo(async (repo) => {
+    const packageBefore = readFileSync(join(repo, "package.json"));
+    const dockerfileBefore = readFileSync(join(repo, "Dockerfile"));
+    const externalEdit = "// concurrent operator edit; migration must not overwrite this\n";
+
+    await assert.rejects(
+      () => runMigration(manifest, repo, {
+        writeChanges: true,
+        verify: {
+          runner: new ConcurrentTargetMutationRunner(() => {
+            writeFileSync(join(repo, "src", "functions.ts"), externalEdit);
+          }),
+          install: true,
+        },
+      }),
+      /Repository tree changed after migration planning|Repository file changed after migration planning/
+    );
+
+    assert.deepEqual(readFileSync(join(repo, "package.json")), packageBefore);
+    assert.deepEqual(readFileSync(join(repo, "Dockerfile")), dockerfileBefore);
+    assert.equal(readFileSync(join(repo, "src", "functions.ts"), "utf8"), externalEdit);
+    const names = [
+      ...readdirSync(repo),
+      ...readdirSync(join(repo, "src")),
+    ];
+    assert.equal(names.some((name) => name.includes(".api-migrator-") && /\.(?:stage|backup)$/.test(name)), false);
+  });
+});
+
+test("write mode rejects a parent-directory symlink swap without writing outside the repository", async () => {
+  const external = mkdtempSync(join(tmpdir(), "api-migrator-external-"));
+  try {
+    await withRepo(async (repo) => {
+      const packageBefore = readFileSync(join(repo, "package.json"));
+      const dockerfileBefore = readFileSync(join(repo, "Dockerfile"));
+      const sourceBefore = readFileSync(join(repo, "src", "functions.ts"));
+      writeFileSync(join(external, "functions.ts"), sourceBefore);
+
+      await assert.rejects(
+        () => runMigration(manifest, repo, {
+          writeChanges: true,
+          verify: {
+            runner: new ConcurrentTargetMutationRunner(() => {
+              renameSync(join(repo, "src"), join(repo, "src-original"));
+              symlinkSync(external, join(repo, "src"), "dir");
+            }),
+            install: true,
+          },
+        }),
+        /Repository tree changed after migration planning|Migration output parent must be a real directory/
+      );
+
+      assert.deepEqual(readFileSync(join(repo, "package.json")), packageBefore);
+      assert.deepEqual(readFileSync(join(repo, "Dockerfile")), dockerfileBefore);
+      assert.deepEqual(readFileSync(join(external, "functions.ts")), sourceBefore);
+      assert.deepEqual(readFileSync(join(repo, "src-original", "functions.ts")), sourceBefore);
+    });
+  } finally {
+    rmSync(external, { recursive: true, force: true });
+  }
+});
+
+test("write mode preserves an unchanged relative symlink", async () => {
+  await withRepo(async (repo) => {
+    writeFileSync(join(repo, "runtime-notes.txt"), "notes\n");
+    symlinkSync("runtime-notes.txt", join(repo, "runtime-notes-link"));
+
+    const result = await runMigration(manifest, repo, {
+      writeChanges: true,
+      verify: { runner: new InspectingRunner(), install: true },
+    });
+
+    assert.equal(result.report.verification.ok, true);
+    assert.equal(readlinkSync(join(repo, "runtime-notes-link")), "runtime-notes.txt");
+    assert.equal(readFileSync(join(repo, "runtime-notes-link"), "utf8"), "notes\n");
   });
 });
 
@@ -536,6 +654,7 @@ test("install is isolated from lifecycle scripts and checks lose network access"
     assert.equal(runner.commands[0]!.network, "default");
     assert.equal(runner.commands[0]!.args.includes("--ignore-scripts"), true);
     assert.equal(runner.commands[0]!.env.npm_config_ignore_scripts, "true");
+    assert.equal(runner.commands[0]!.env.npm_config_engine_strict, "true");
     assert.equal(runner.commands[0]!.env.npm_config_cache, "/npm-cache");
     assert.equal(runner.commands[1]!.args.includes("--showConfig"), true);
     assert.equal(runner.commands[1]!.network, "none");
@@ -642,6 +761,31 @@ test("networked installation rejects repository-controlled package configuration
       assert.equal(result.ok, false);
       assert.match(result.reason ?? "", /approved npm registry/);
       assert.equal(runner.commands.length, 0);
+    });
+  }
+});
+
+test("networked installation rejects all custom package-manager arguments", async () => {
+  const cases: Array<[label: string, installArgs: string[]]> = [
+    ["long force", ["--force"]],
+    ["assigned short force", ["-f=true"]],
+    ["leading clustered force", ["-fD"]],
+    ["trailing clustered force", ["-Df"]],
+    ["split lifecycle override", ["--ignore-scripts", "false"]],
+    ["abbreviated lifecycle override", ["--ig", "false"]],
+    ["single-dash lifecycle override", ["-ignore-scripts", "false"]],
+    ["negated lifecycle override", ["--no-ignore-scripts"]],
+    ["split engine-strict override", ["--engine-strict", "false"]],
+    ["registry override", ["--registry", "https://packages.example.invalid/"]],
+    ["otherwise benign custom option", ["--prefer-offline"]],
+  ];
+  for (const [label, installArgs] of cases) {
+    await withRepo(async (repo) => {
+      const runner = new InspectingRunner();
+      const result = installDeps(repo, { runner, install: true, installArgs });
+      assert.equal(result.ok, false, label);
+      assert.match(result.reason ?? "", /custom install arguments are not allowed/, label);
+      assert.equal(runner.commands.length, 0, label);
     });
   }
 });
@@ -852,6 +996,29 @@ async function withRepo(run: (directory: string) => Promise<void>): Promise<void
       devDependencies: { typescript: "^5.8.0" },
       scripts: { typecheck: "tsc --noEmit" },
     }, null, 2) + "\n");
+    writeFileSync(join(directory, "Dockerfile"), `# syntax = docker/dockerfile:1
+
+ARG NODE_VERSION=18.8.0
+FROM node:\${NODE_VERSION}-slim as base
+
+LABEL fly_launch_runtime="Next.js"
+WORKDIR /app
+ENV NODE_ENV=production
+
+FROM base AS build
+RUN apt-get update -qq && \\
+    apt-get install -y python-is-python3 pkg-config build-essential
+COPY --link package-lock.json package.json ./
+RUN npm ci --include=dev
+COPY --link . .
+RUN npm run build
+RUN npm prune --omit=dev
+
+FROM base
+COPY --from=build /app /app
+EXPOSE 3000
+CMD [ "npm", "run", "start" ]
+`);
     writeFileSync(join(directory, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
     writeTrustedCompilerFixture(directory);
     writeFileSync(join(directory, "src", "functions.ts"), `import { Inngest } from "inngest";

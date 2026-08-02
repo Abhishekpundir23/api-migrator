@@ -2,22 +2,11 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-
-const DEFAULT_MANIFEST = JSON.stringify(
-  {
-    name: "Inngest TypeScript SDK v3 -> v4",
-    provider: "inngest",
-    transformSet: "inngest-v3-to-v4",
-    package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
-    peerFloors: [{ name: "typescript", range: "^5.8.0" }],
-  },
-  null,
-  2
-);
+import { DEFAULT_INNGEST_MANIFEST_JSON } from "../../../lib/default-manifest";
 
 export default function NewCampaignPage() {
   const router = useRouter();
-  const [manifest, setManifest] = useState(DEFAULT_MANIFEST);
+  const [manifest, setManifest] = useState(DEFAULT_INNGEST_MANIFEST_JSON);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 

@@ -4,6 +4,12 @@ import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { Manifest } from "./manifest.js";
 import {
+  TRUSTED_NODE_RUNTIME_PROFILES,
+  compareNodeVersions,
+  parseCanonicalNodeMinimum,
+  parseExactNodeVersion,
+} from "./runtime.js";
+import {
   MAX_PACKAGE_MANIFEST_BYTES,
   MAX_ROOT_LOCKFILE_BYTES,
   readRepositoryFile,
@@ -40,6 +46,7 @@ const ROOT_LOCKFILE_POLICY = {
 
 type PackageJson = Record<string, unknown> & {
   packageManager?: string;
+  engines?: Record<string, unknown>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
@@ -134,6 +141,24 @@ export function updateManifestDependencies(
         kind: "applied",
         code: "PKG2",
         message: `${floor.name} (${found.sectionName}): ${previous} -> ${floor.range} (required peer floor)`,
+        line: null,
+      });
+    }
+  }
+
+  if (manifest.runtime?.node) {
+    const runtimePackage = parsed.find((item) => item.relative === manifest.runtime!.node.packageJson);
+    if (!runtimePackage) {
+      throw new DependencyUpdateError(
+        `Runtime package manifest is missing: ${manifest.runtime.node.packageJson}`
+      );
+    }
+    if (ensureNodeFloor(runtimePackage.json, manifest.runtime.node, runtimePackage.relative)) {
+      sink.push({
+        file: runtimePackage.relative,
+        kind: "applied",
+        code: "RT1",
+        message: `Set engines.node to require Node >=${manifest.runtime.node.minimumMajor}.`,
         line: null,
       });
     }
@@ -247,6 +272,48 @@ function ensureDevDependency(
     sectionName: "devDependencies",
     spec: json.devDependencies[name] ?? "",
   };
+}
+
+function ensureNodeFloor(
+  json: PackageJson,
+  policy: NonNullable<Manifest["runtime"]>["node"],
+  path: string
+): boolean {
+  if (json.engines !== undefined && !isRecord(json.engines)) {
+    throw new DependencyUpdateError(`${path} engines must be an object`);
+  }
+  const engines = (json.engines ??= {});
+  const current = engines.node;
+  const floor = policy.minimumMajor;
+  const selected = parseExactNodeVersion(TRUSTED_NODE_RUNTIME_PROFILES[policy.profile].nodeVersion);
+  if (current === undefined) {
+    engines.node = `>=${floor}`;
+    return true;
+  }
+  if (typeof current !== "string") {
+    throw new DependencyUpdateError(`${path} engines.node must be a string`);
+  }
+  const minimum = parseCanonicalNodeMinimum(current);
+  if (!minimum) {
+    throw new DependencyUpdateError(
+      `${path} engines.node must use canonical >=N, >=N.N, or >=N.N.N syntax, not ${JSON.stringify(current)}`
+    );
+  }
+  const required = [floor, 0, 0] as const;
+  if (compareNodeVersions(minimum, required) < 0) {
+    engines.node = `>=${floor}`;
+    return true;
+  }
+  if (compareNodeVersions(selected, minimum) < 0) {
+    throw new DependencyUpdateError(
+      `${path} requires Node ${current}, but runtime profile ${policy.profile} provides Node ${selected.join(".")}`
+    );
+  }
+  return false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function dependencyState(

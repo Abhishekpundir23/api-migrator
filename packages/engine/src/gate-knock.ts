@@ -16,8 +16,7 @@ import type { Manifest } from "./index.js";
 
 function assert(cond: boolean, msg: string) {
   if (!cond) {
-    console.error(`❌ ASSERT FAILED: ${msg}`);
-    process.exit(1);
+    throw new Error(`ASSERT FAILED: ${msg}`);
   }
   console.log(`  ✓ ${msg}`);
 }
@@ -60,15 +59,24 @@ export async function alertUser(userId: string) {
     assert(report.changedFiles.includes("src/notify.ts"), "the source file would change");
     assert(report.changedFiles.includes("package.json"), "the SDK dependency would change");
     assert(report.summary.applied >= 7, "dependency/import/client/method/parameter transforms applied");
-    assert(report.entries.some((e) => e.code === "K1"), "K1 (notify -> workflows.trigger) applied");
-    assert(report.entries.some((e) => e.code === "K2"), "K2 (users.identify -> users.update) applied");
-    assert(report.entries.some((e) => e.code === "K3"), "K3 (param rename) applied");
-    assert(report.entries.some((e) => e.code === "K4"), "K4 (default import) applied");
-    assert(report.entries.some((e) => e.code === "K5"), "K5 (options-object client init) applied");
+    assert(report.entries.some((e) => e.code === "K1" && e.kind === "applied"), "K1 (notify -> workflows.trigger) applied");
+    assert(report.entries.some((e) => e.code === "K2" && e.kind === "applied"), "K2 (users.identify -> users.update) applied");
+    assert(report.entries.some((e) => e.code === "K3" && e.kind === "applied"), "K3 (param rename) applied");
+    assert(report.entries.some((e) => e.code === "K4" && e.kind === "applied"), "K4 (default import) applied");
+    assert(report.entries.some((e) => e.code === "K5" && e.kind === "applied"), "K5 (options-object client init) applied");
+    assert(report.summary.review === 0, "the audited Knock fixture has no unresolved review items");
     // Crucially: NO Inngest transforms leaked into a Knock migration.
     assert(
       !report.entries.some((e) => e.code.startsWith("T") && e.code.length === 2),
       "no Inngest transforms ran against a Knock migration (dispatch isolation)"
+    );
+    assert(
+      !report.entries.some((e) => /^F\d+$/.test(e.code)),
+      "no Inngest findings ran against a Knock migration (dispatch isolation)"
+    );
+    assert(
+      report.summary.verified === "skipped" && report.verification.skipped === true,
+      "the dry-run gate reports verification as incomplete"
     );
 
     console.log("\n=== Report summary ===");
