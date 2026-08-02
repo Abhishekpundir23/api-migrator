@@ -2,11 +2,16 @@
 
 API Migrator is an operator-reviewed pilot for upgrading application code when an API provider ships a breaking TypeScript SDK release.
 
-**Current status:** internal pilot prototype. It is suitable for approved test repositories and carefully supervised pilots. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
+**Current status:** sandbox-validated internal pilot, pinned as `v0.1.0-pilot`. It has completed one disposable sandbox migration end to end, but it has not yet been validated on independent owner-controlled repositories. External-source execution remains blocked until its authorization, disposable-runner, egress-control, and preview-access gates are evidenced. External-source publication is additionally blocked on `v0.1.0-pilot`: the current product does not enforce a separately signed and validated owner approval envelope in the write-token path. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
 
 The first product goal is deliberately narrow: create a complete, verified migration preview for one repository, let a human review it, and publish a PR only after explicit approval. It never auto-merges.
 
 ## Safety model
+
+The publication flow below describes the existing disposable-sandbox path and
+the intended future product. On `v0.1.0-pilot`, do not use it for external
+source because owner approval is not technically enforced before write-token
+minting.
 
 Publishing is a separate action from analysis:
 
@@ -73,7 +78,13 @@ Open [http://localhost:3000](http://localhost:3000) and enter the configured ope
 
 ### GitHub credentials
 
-Public-repository previews first use anonymous, credential-free cloning. For private-repository previews and all publishing, set `API_MIGRATOR_AUTH_MODE=github-app`, keep the first-pilot App private, configure access only to explicitly selected repositories, then set `GH_APP_ID` and exactly one of `GH_APP_PRIVATE_KEY_PATH` (preferred for a local pilot) or `GH_APP_PRIVATE_KEY`; `GH_APP_INSTALLATION_ID` is optional and is checked against the requested repository. Private previews fall back to those credentials only when that mode was explicitly configured. They receive a single-repository read token. A single-repository write token is minted only after verification and exact operator approval. App tokens are revoked on best-effort job cleanup and are never cached across jobs. Preview does not grant permission to publish; the signed preflight and typed approval are still required.
+Public-repository previews first use anonymous, credential-free cloning. For an explicitly owner-authorized private preview—or sandbox-only publication—set `API_MIGRATOR_AUTH_MODE=github-app`, keep the first-pilot App private, configure access only to the exact selected repository, then set `GH_APP_ID` and exactly one of `GH_APP_PRIVATE_KEY_PATH` (preferred for a local pilot) or `GH_APP_PRIVATE_KEY`; `GH_APP_INSTALLATION_ID` is optional and is checked against the requested repository. Private previews fall back to those credentials only when that mode was explicitly configured. They receive a single-repository read token. The current code can mint a single-repository write token after verification and operator approval, but that is not sufficient owner authorization for external source and remains sandbox-only on `v0.1.0-pilot`. App tokens are revoked on best-effort job cleanup and are never cached across jobs. Preview does not grant permission to publish.
+
+A GitHub App publication invocation uses two separately scoped installation
+tokens: read access for repository discovery/clone and a later write token for
+the approved branch and PR. Pilot evidence must record both phases separately,
+including exact repository scope, policy snapshots, issuance, expiry, and
+best-effort revocation.
 
 For a local pilot on repositories you control, `API_MIGRATOR_AUTH_MODE=gh-cli` explicitly opts into the current `gh` CLI identity. That mode is rejected when `NODE_ENV=production`; there is no implicit credential fallback.
 
@@ -85,7 +96,7 @@ The trusted no-emit verifier currently requires the root `tsconfig.json` to sele
 
 Alternative `VerificationRunner` implementations must provide isolated writable temporary-file storage in the runner namespace and clean it up, or dispose of the entire runner after each command. Temporary paths are normalized out of verification reports so repeated preflights remain deterministic.
 
-Content-addressed migration branch names and PR head/base checks do not make GitHub refs permanently immutable: collaborators or other integrations may still change or delete a ref after the app checks it. For stronger ongoing protection in GitHub App mode, each pilot repository must have a GitHub ruleset targeting `codex/api-migrator/*` that restricts branch creation, updates, deletion, and non-fast-forward changes, with only the migrator App configured as a bypass actor. Protect the default branch separately with PR-only, deletion, and non-fast-forward rules and no App bypass. These rulesets are configured by the repository operator; the App does not need Administration permission. The local `gh-cli` pilot remains a weaker operator-controlled mode unless its explicitly selected identity is granted equivalent narrowly scoped access. Immediately before merge, the operator must confirm that the PR's current head commit still equals the approved head recorded in the PR audit footer and publication result.
+Content-addressed migration branch names and PR head/base checks do not make GitHub refs permanently immutable: collaborators or other integrations may still change or delete a ref after the app checks it. Before any future external publication in GitHub App mode, the target repository must have a GitHub ruleset targeting `codex/api-migrator/*` that restricts branch creation, updates, deletion, and non-fast-forward changes, with only the migrator App configured as a bypass actor. Protect the default branch separately with PR-only, deletion, and non-fast-forward rules and no App bypass. These publication rulesets are not prerequisites for an anonymous, non-publishing public preview. They are configured by the repository operator; the App does not need Administration permission. The local `gh-cli` pilot remains a weaker operator-controlled mode and is not authorized for external publication. Immediately before any future merge, an authorized repository maintainer must confirm that the PR's current head commit still equals the approved head recorded in the PR audit footer and publication result.
 
 Preview the built-in Inngest campaign from the CLI without publishing anything:
 
@@ -93,7 +104,7 @@ Preview the built-in Inngest campaign from the CLI without publishing anything:
 npm run migrate -- owner/repo
 ```
 
-The command prints the preflight ID, exact base commit, blockers, and artifact fingerprint. Publishing requires rerunning it with explicit `--publish`, `--preflight`, and `--approved-by` arguments.
+The command prints the preflight ID, exact base commit, blockers, and artifact fingerprint. For an operator-owned disposable sandbox only, publishing requires rerunning it with explicit `--publish`, `--preflight`, and `--approved-by` arguments. Those flags do not authorize external-source publication on `v0.1.0-pilot`.
 
 ## Commands and automated checks
 
@@ -102,7 +113,7 @@ The command prints the preflight ID, exact base commit, blockers, and artifact f
 | `npm run build` | Builds engine, DB, and app before the Next.js console |
 | `npm run typecheck` | Builds package declarations, then type-checks every workspace |
 | `npm test` | Runs the workspace unit and migration-fixture tests that exist in this checkout |
-| `npm run ci` | Runs ordered package builds, type-checks, tests, and the console production build |
+| `npm run ci` | Runs ordered package builds, type-checks, workspace and pilot-evidence tests, example sidecar validation, and the console production build |
 | `npm run db:migrate` | Creates/updates the local SQLite bootstrap schema and indexes |
 | `npm run migrate -- owner/repo` | Generates a non-publishing Inngest migration preview for one approved repository |
 
@@ -110,7 +121,17 @@ GitHub Actions runs `npm run ci` on pushes and pull requests. CI uses only its r
 
 ## Pilot acceptance criteria
 
-Before charging for a provider campaign, test 5–10 authorized repositories and record:
+The [supervised pilot package](docs/pilot/README.md) defines the authorization,
+execution, data-handling, revocation, and evidence requirements for every real
+repository trial. Do not clone or install the App on a candidate repository
+until the runbook's authorization and isolation gates are satisfied.
+
+The sidecar result validator is a post-run audit aid. It is not consulted by the
+GitHub write-token path and cannot authorize preview, publication, or merge.
+
+Before charging for a provider campaign, run owner-authorized previews on 5–10
+repositories and record the evidence below. Do not publish externally until a
+later version enforces the signed owner envelope at the write boundary.
 
 - affected-usage precision and false positives;
 - dependency and lockfile updates;

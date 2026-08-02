@@ -1,0 +1,913 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.example/schemas/pilot-result-v1.json",
+  "title": "API Migrator supervised pilot result",
+  "description": "Strict post-run audit record. This record is not a runtime authorization envelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "pilotId",
+    "audit",
+    "authorization",
+    "campaign",
+    "repository",
+    "run",
+    "review",
+    "effort",
+    "outcome",
+    "controls",
+    "cleanup"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "pilotId": { "type": "string", "pattern": "^pilot_[A-Za-z0-9_-]{6,80}$" },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observedAt", "evidenceReference", "evidenceDigest"],
+      "properties": {
+        "observedAt": { "type": "string", "format": "date-time" },
+        "evidenceReference": { "$ref": "#/$defs/evidenceReference" },
+        "evidenceDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference",
+        "pilotId",
+        "approverReference",
+        "approvedAt",
+        "expiresAt",
+        "repository",
+        "repositoryId",
+        "baseBranch",
+        "baseSha",
+        "provider",
+        "transformSet",
+        "engineTag",
+        "engineCommit",
+        "manifestDigest",
+        "commandScope",
+        "commandScopeDigest",
+        "requiredCi",
+        "requiredCiDigest",
+        "cleanupDeadlines",
+        "allowedActions",
+        "postPreviewPublication"
+      ],
+      "properties": {
+        "reference": { "$ref": "#/$defs/evidenceReference" },
+        "pilotId": { "type": "string", "pattern": "^pilot_[A-Za-z0-9_-]{6,80}$" },
+        "approverReference": { "$ref": "#/$defs/evidenceReference" },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "repository": { "$ref": "#/$defs/repositorySlug" },
+        "repositoryId": { "$ref": "#/$defs/githubId" },
+        "baseBranch": { "$ref": "#/$defs/gitRefName" },
+        "baseSha": { "$ref": "#/$defs/gitSha" },
+        "provider": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "transformSet": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "engineTag": { "$ref": "#/$defs/engineTag" },
+        "engineCommit": { "$ref": "#/$defs/gitSha" },
+        "manifestDigest": { "$ref": "#/$defs/sha256" },
+        "commandScope": { "$ref": "#/$defs/commandScope" },
+        "commandScopeDigest": { "$ref": "#/$defs/sha256" },
+        "requiredCi": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/requiredCiIdentity" }
+        },
+        "requiredCiDigest": { "$ref": "#/$defs/sha256" },
+        "cleanupDeadlines": { "$ref": "#/$defs/cleanupDeadlines" },
+        "allowedActions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "public_metadata",
+              "clone",
+              "dependency_install",
+              "private_preview_app_install",
+              "preview"
+            ]
+          }
+        },
+        "postPreviewPublication": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "evidenceReference",
+                "authorizationReference",
+                "pilotId",
+                "approverReference",
+                "approvedAt",
+                "expiresAt",
+                "repository",
+                "repositoryId",
+                "baseBranch",
+                "baseSha",
+                "provider",
+                "transformSet",
+                "engineTag",
+                "engineCommit",
+                "manifestDigest",
+                "preflightId",
+                "artifactDigest",
+                "candidateBranch",
+                "findingsDigest",
+                "resolutionsDigest",
+                "requiredCiDigest",
+                "allowedActions"
+              ],
+              "properties": {
+                "evidenceReference": { "$ref": "#/$defs/evidenceReference" },
+                "authorizationReference": { "$ref": "#/$defs/evidenceReference" },
+                "pilotId": { "type": "string", "pattern": "^pilot_[A-Za-z0-9_-]{6,80}$" },
+                "approverReference": { "$ref": "#/$defs/evidenceReference" },
+                "approvedAt": { "type": "string", "format": "date-time" },
+                "expiresAt": { "type": "string", "format": "date-time" },
+                "repository": { "$ref": "#/$defs/repositorySlug" },
+                "repositoryId": { "$ref": "#/$defs/githubId" },
+                "baseBranch": { "$ref": "#/$defs/gitRefName" },
+                "baseSha": { "$ref": "#/$defs/gitSha" },
+                "provider": { "type": "string", "minLength": 1, "maxLength": 100 },
+                "transformSet": { "type": "string", "minLength": 1, "maxLength": 100 },
+                "engineTag": { "$ref": "#/$defs/engineTag" },
+                "engineCommit": { "$ref": "#/$defs/gitSha" },
+                "manifestDigest": { "$ref": "#/$defs/sha256" },
+                "preflightId": { "$ref": "#/$defs/preflightId" },
+                "artifactDigest": { "$ref": "#/$defs/sha256" },
+                "candidateBranch": { "$ref": "#/$defs/gitRefName" },
+                "findingsDigest": { "$ref": "#/$defs/sha256" },
+                "resolutionsDigest": { "$ref": "#/$defs/sha256" },
+                "requiredCiDigest": { "$ref": "#/$defs/sha256" },
+                "allowedActions": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": ["use_private_app_for_publication", "push_candidate_branch", "open_pull_request"]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engineTag", "engineCommit", "provider", "transformSet", "manifestJson", "manifestDigest"],
+      "properties": {
+        "engineTag": { "$ref": "#/$defs/engineTag" },
+        "engineCommit": { "$ref": "#/$defs/gitSha" },
+        "provider": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "transformSet": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "manifestJson": { "type": "string", "minLength": 2, "maxLength": 20000 },
+        "manifestDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "repositoryId", "baseBranch", "baseSha"],
+      "properties": {
+        "slug": { "$ref": "#/$defs/repositorySlug" },
+        "repositoryId": { "$ref": "#/$defs/githubId" },
+        "baseBranch": { "$ref": "#/$defs/gitRefName" },
+        "baseSha": { "$ref": "#/$defs/gitSha" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "previewStartedAt",
+        "previewCompletedAt",
+        "publicationAttemptedAt",
+        "publicationMode",
+        "publicationStatus",
+        "preflightId",
+        "artifactDigest",
+        "candidateBranch",
+        "approvedHeadSha",
+        "approvedBy",
+        "overrideUnsafe",
+        "overrideReason",
+        "scannedFiles",
+        "changedFiles",
+        "appliedTransforms",
+        "reviewItems",
+        "manualReviewFindings",
+        "manualReviewResolutions",
+        "blockers",
+        "verification"
+      ],
+      "properties": {
+        "previewStartedAt": { "type": "string", "format": "date-time" },
+        "previewCompletedAt": { "type": "string", "format": "date-time" },
+        "publicationAttemptedAt": { "type": ["string", "null"], "format": "date-time" },
+        "publicationMode": { "enum": ["preview", "publish"] },
+        "publicationStatus": { "enum": ["preview_ready", "blocked", "pr_opened", "no_changes"] },
+        "preflightId": { "$ref": "#/$defs/preflightId" },
+        "artifactDigest": { "$ref": "#/$defs/sha256" },
+        "candidateBranch": { "$ref": "#/$defs/gitRefName" },
+        "approvedHeadSha": { "oneOf": [{ "$ref": "#/$defs/gitSha" }, { "type": "null" }] },
+        "approvedBy": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,99}$" },
+        "overrideUnsafe": { "type": "boolean" },
+        "overrideReason": { "type": ["string", "null"], "minLength": 10, "maxLength": 500 },
+        "scannedFiles": { "$ref": "#/$defs/nonNegativeInteger" },
+        "changedFiles": { "$ref": "#/$defs/nonNegativeInteger" },
+        "appliedTransforms": { "$ref": "#/$defs/nonNegativeInteger" },
+        "reviewItems": { "$ref": "#/$defs/nonNegativeInteger" },
+        "manualReviewFindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/manualReviewFinding" }
+        },
+        "manualReviewResolutions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/manualReviewResolution" }
+        },
+        "blockers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/blocker" }
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runner", "overall", "checks"],
+          "properties": {
+            "runner": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "overall": { "enum": ["passed", "failed", "skipped"] },
+            "checks": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["install", "typecheck", "test", "lint", "runtime"],
+              "properties": {
+                "install": { "$ref": "#/$defs/check" },
+                "typecheck": { "$ref": "#/$defs/check" },
+                "test": { "$ref": "#/$defs/check" },
+                "lint": { "$ref": "#/$defs/check" },
+                "runtime": { "$ref": "#/$defs/check" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateSites", "truePositives", "falsePositives", "knownFalseNegatives", "correctionCount", "unresolvedReviewItems", "inventoryEvidenceReference"],
+      "properties": {
+        "candidateSites": { "$ref": "#/$defs/nonNegativeInteger" },
+        "truePositives": { "$ref": "#/$defs/nonNegativeInteger" },
+        "falsePositives": { "$ref": "#/$defs/nonNegativeInteger" },
+        "knownFalseNegatives": { "$ref": "#/$defs/nonNegativeInteger" },
+        "correctionCount": { "$ref": "#/$defs/nonNegativeInteger" },
+        "unresolvedReviewItems": { "$ref": "#/$defs/nonNegativeInteger" },
+        "inventoryEvidenceReference": { "$ref": "#/$defs/evidenceReference" }
+      }
+    },
+    "effort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previewRuntimeSeconds", "operatorReviewMinutes", "correctionMinutes", "ownerReviewMinutes", "ownerEstimatedManualMigrationMinutes"],
+      "properties": {
+        "previewRuntimeSeconds": { "$ref": "#/$defs/nonNegativeNumber" },
+        "operatorReviewMinutes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "correctionMinutes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "ownerReviewMinutes": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "ownerEstimatedManualMigrationMinutes": { "$ref": "#/$defs/nullableNonNegativeNumber" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observedAt", "ownerDisposition", "pullRequestState", "prUrl", "currentHeadSha", "mergeCommitSha", "reasonCodes", "feedbackSummary"],
+      "properties": {
+        "observedAt": { "type": "string", "format": "date-time" },
+        "ownerDisposition": { "enum": ["pending", "accepted", "changes_requested", "rejected", "withdrawn"] },
+        "pullRequestState": { "enum": ["not_opened", "open", "merged", "closed_unmerged"] },
+        "prUrl": { "type": ["string", "null"], "format": "uri", "maxLength": 2048 },
+        "currentHeadSha": { "oneOf": [{ "$ref": "#/$defs/gitSha" }, { "type": "null" }] },
+        "mergeCommitSha": { "oneOf": [{ "$ref": "#/$defs/gitSha" }, { "type": "null" }] },
+        "reasonCodes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,79}$" }
+        },
+        "feedbackSummary": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner", "app", "rulesets", "requiredCi", "productionSecretsUsed"],
+      "properties": {
+        "runner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pilotId", "repository", "repositoryId", "profile", "imageOrTemplateDigest", "commandScopeDigest", "executionAttestationJson", "executionAttestationDigest", "executionAttestationEvidenceReference", "evidenceReference", "disposable", "egressFiltered", "teardownEvidenceReference"],
+          "properties": {
+            "pilotId": { "type": "string", "pattern": "^pilot_[A-Za-z0-9_-]{6,80}$" },
+            "repository": { "$ref": "#/$defs/repositorySlug" },
+            "repositoryId": { "$ref": "#/$defs/githubId" },
+            "profile": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "imageOrTemplateDigest": { "$ref": "#/$defs/sha256" },
+            "commandScopeDigest": { "$ref": "#/$defs/sha256" },
+            "executionAttestationJson": { "type": "string", "minLength": 2, "maxLength": 20000 },
+            "executionAttestationDigest": { "$ref": "#/$defs/sha256" },
+            "executionAttestationEvidenceReference": { "$ref": "#/$defs/evidenceReference" },
+            "evidenceReference": { "$ref": "#/$defs/evidenceReference" },
+            "disposable": { "const": true },
+            "egressFiltered": { "const": true },
+            "teardownEvidenceReference": { "$ref": "#/$defs/evidenceReference" }
+          }
+        },
+        "app": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["appId", "installationId", "selectedRepositoryOnly", "readAccess", "writeAccess"],
+              "properties": {
+                "appId": { "$ref": "#/$defs/githubId" },
+                "installationId": { "$ref": "#/$defs/githubId" },
+                "selectedRepositoryOnly": { "const": true },
+                "readAccess": { "$ref": "#/$defs/appAccess" },
+                "writeAccess": {
+                  "oneOf": [
+                    { "type": "null" },
+                    { "$ref": "#/$defs/appAccess" }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "rulesets": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["repository", "repositoryId", "migrationRefRulesetId", "defaultBranchRulesetId", "observedAt", "configurationJson", "configurationDigest", "evidenceReference"],
+              "properties": {
+                "repository": { "$ref": "#/$defs/repositorySlug" },
+                "repositoryId": { "$ref": "#/$defs/githubId" },
+                "migrationRefRulesetId": { "$ref": "#/$defs/githubId" },
+                "defaultBranchRulesetId": { "$ref": "#/$defs/githubId" },
+                "observedAt": { "type": "string", "format": "date-time" },
+                "configurationJson": { "type": "string", "minLength": 2, "maxLength": 20000 },
+                "configurationDigest": { "$ref": "#/$defs/sha256" },
+                "evidenceReference": { "$ref": "#/$defs/evidenceReference" }
+              }
+            }
+          ]
+        },
+        "requiredCi": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["repository", "repositoryId", "headSha", "checks"],
+              "properties": {
+                "repository": { "$ref": "#/$defs/repositorySlug" },
+                "repositoryId": { "$ref": "#/$defs/githubId" },
+                "headSha": { "$ref": "#/$defs/gitSha" },
+                "checks": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "$ref": "#/$defs/requiredCiCheck" }
+                }
+              }
+            }
+          ]
+        },
+        "productionSecretsUsed": { "const": false }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "locations", "confirmationReference"],
+      "properties": {
+        "status": { "enum": ["pending", "complete", "complete_with_exceptions"] },
+        "locations": {
+          "type": "array",
+          "minItems": 5,
+          "items": { "$ref": "#/$defs/cleanupLocation" }
+        },
+        "confirmationReference": { "type": ["string", "null"], "minLength": 6, "maxLength": 500 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["run"],
+        "properties": {
+          "run": {
+            "type": "object",
+            "required": ["publicationMode"],
+            "properties": { "publicationMode": { "const": "publish" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "postPreviewPublication": {
+                "type": "object",
+                "properties": {
+                  "allowedActions": {
+                    "type": "array",
+                    "allOf": [
+                      { "contains": { "const": "use_private_app_for_publication" } },
+                      { "contains": { "const": "push_candidate_branch" } },
+                      { "contains": { "const": "open_pull_request" } }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "run": {
+            "type": "object",
+            "properties": {
+              "approvedBy": { "type": "string" },
+              "publicationAttemptedAt": { "type": "string", "format": "date-time" },
+              "publicationStatus": { "enum": ["blocked", "pr_opened", "no_changes"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["run"],
+        "properties": {
+          "run": {
+            "type": "object",
+            "required": ["publicationStatus"],
+            "properties": { "publicationStatus": { "const": "pr_opened" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "run": {
+            "type": "object",
+            "properties": {
+              "publicationMode": { "const": "publish" },
+              "approvedHeadSha": { "$ref": "#/$defs/gitSha" },
+              "verification": {
+                "type": "object",
+                "properties": { "overall": { "const": "passed" } }
+              }
+            }
+          },
+          "outcome": {
+            "type": "object",
+            "properties": {
+              "pullRequestState": { "enum": ["open", "merged", "closed_unmerged"] },
+              "prUrl": { "type": "string" },
+              "currentHeadSha": { "$ref": "#/$defs/gitSha" }
+            }
+          },
+          "controls": {
+            "type": "object",
+            "properties": {
+              "app": { "type": "object" },
+              "rulesets": { "type": "object" },
+              "requiredCi": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["run"],
+        "properties": {
+          "run": {
+            "type": "object",
+            "required": ["publicationStatus"],
+            "properties": { "publicationStatus": { "const": "blocked" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "run": {
+            "type": "object",
+            "properties": { "blockers": { "type": "array", "minItems": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["run"],
+        "properties": {
+          "run": {
+            "type": "object",
+            "required": ["verification"],
+            "properties": {
+              "verification": {
+                "type": "object",
+                "required": ["overall"],
+                "properties": { "overall": { "const": "passed" } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "run": {
+            "type": "object",
+            "properties": {
+              "verification": {
+                "type": "object",
+                "properties": {
+                  "checks": {
+                    "type": "object",
+                    "properties": {
+                      "install": { "type": "object", "properties": { "status": { "const": "passed" } } },
+                      "typecheck": { "type": "object", "properties": { "status": { "const": "passed" } } },
+                      "test": { "type": "object", "properties": { "status": { "const": "passed" } } },
+                      "lint": { "type": "object", "properties": { "status": { "const": "passed" } } },
+                      "runtime": { "type": "object", "properties": { "status": { "const": "passed" } } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["run"],
+        "properties": {
+          "run": {
+            "type": "object",
+            "required": ["overrideUnsafe"],
+            "properties": { "overrideUnsafe": { "const": true } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "run": {
+            "type": "object",
+            "properties": {
+              "overrideReason": { "type": "string", "minLength": 10 },
+              "blockers": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "required": ["code"],
+                  "properties": { "code": { "const": "manual_review_required" } }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "run": {
+            "type": "object",
+            "properties": { "overrideReason": { "type": "null" } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["outcome"],
+        "properties": {
+          "outcome": {
+            "type": "object",
+            "required": ["pullRequestState"],
+            "properties": { "pullRequestState": { "const": "merged" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "type": "object",
+            "properties": {
+              "ownerDisposition": { "const": "accepted" },
+              "prUrl": { "type": "string" },
+              "currentHeadSha": { "$ref": "#/$defs/gitSha" },
+              "mergeCommitSha": { "$ref": "#/$defs/gitSha" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["outcome"],
+        "properties": {
+          "outcome": {
+            "type": "object",
+            "required": ["pullRequestState"],
+            "properties": { "pullRequestState": { "const": "not_opened" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "type": "object",
+            "properties": {
+              "prUrl": { "type": "null" },
+              "currentHeadSha": { "type": "null" },
+              "mergeCommitSha": { "type": "null" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "githubId": { "type": "integer", "minimum": 1 },
+    "gitSha": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "preflightId": { "type": "string", "pattern": "^pf_[a-f0-9]{64}$" },
+    "engineTag": { "type": "string", "pattern": "^v[0-9]+[.][0-9]+[.][0-9]+(?:-[A-Za-z0-9.-]+)?$" },
+    "repositorySlug": {
+      "type": "string",
+      "maxLength": 140,
+      "pattern": "^(?![^/]*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/(?![.]{1,2}$)(?![A-Za-z0-9_.-]*[.]git$)[A-Za-z0-9_.-]{1,100}$"
+    },
+    "gitRefName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!@$)(?![-/])(?![.]|.*/[.])(?!.*[.]lock$)(?!.*[.](?:/|$))(?!.*(?:[.][.]|@\\{|//|[\\u0000-\\u0020\\u007f~^:?*\\[\\\\]))[^/]+(?:/[^/]+)*$"
+    },
+    "reviewCode": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]{0,49}$" },
+    "findingId": { "type": "string", "pattern": "^finding_[a-f0-9]{64}$" },
+    "evidenceReference": { "type": "string", "minLength": 6, "maxLength": 500 },
+    "nonNegativeInteger": { "type": "integer", "minimum": 0 },
+    "nonNegativeNumber": { "type": "number", "minimum": 0 },
+    "nullableNonNegativeNumber": { "type": ["number", "null"], "minimum": 0 },
+    "cleanupDeadlines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["githubAccess", "runnerStorage", "pilotDatabase", "logsExportsBackups", "authorizationFeedback"],
+      "properties": {
+        "githubAccess": { "type": "string", "format": "date-time" },
+        "runnerStorage": { "type": "string", "format": "date-time" },
+        "pilotDatabase": { "type": "string", "format": "date-time" },
+        "logsExportsBackups": { "type": "string", "format": "date-time" },
+        "authorizationFeedback": { "type": "string", "format": "date-time" }
+      }
+    },
+    "commandScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "install", "typecheck", "test", "lint", "runtime"],
+      "properties": {
+        "profile": { "const": "api-migrator-engine-v0.1" },
+        "install": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executable", "args", "network"],
+          "properties": {
+            "executable": { "const": "npm" },
+            "args": {
+              "type": "array",
+              "prefixItems": [
+                { "const": "install" },
+                { "const": "--ignore-scripts" },
+                { "const": "--no-audit" },
+                { "const": "--no-fund" }
+              ],
+              "items": false,
+              "minItems": 4,
+              "maxItems": 4
+            },
+            "network": { "const": "approved_registries_only" }
+          }
+        },
+        "typecheck": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["execution", "executable", "module", "args", "network", "sourceReadOnly", "configInspected", "compilerProvenanceChecked"],
+          "properties": {
+            "execution": { "const": "trusted_typescript_compiler" },
+            "executable": { "const": "pinned_node" },
+            "module": { "const": "./node_modules/typescript/bin/tsc" },
+            "args": {
+              "type": "array",
+              "prefixItems": [
+                { "const": "--noEmit" },
+                { "const": "--pretty" },
+                { "const": "false" },
+                { "const": "--tsBuildInfoFile" },
+                { "const": "<runner-temp>/tsconfig.tsbuildinfo" }
+              ],
+              "items": false,
+              "minItems": 5,
+              "maxItems": 5
+            },
+            "network": { "const": "none" },
+            "sourceReadOnly": { "const": true },
+            "configInspected": { "const": true },
+            "compilerProvenanceChecked": { "const": true }
+          }
+        },
+        "test": { "$ref": "#/$defs/isolatedPackageScript" },
+        "lint": { "$ref": "#/$defs/isolatedPackageScript" },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["execution", "profile", "network", "sourceReadOnly"],
+          "properties": {
+            "execution": { "const": "manifest_runtime_attestation" },
+            "profile": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,100}$" },
+            "network": { "const": "none" },
+            "sourceReadOnly": { "const": true }
+          }
+        }
+      }
+    },
+    "isolatedPackageScript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["script", "network", "sourceReadOnly"],
+      "properties": {
+        "script": { "type": "string", "pattern": "^[A-Za-z0-9:_-]{1,80}$" },
+        "network": { "const": "none" },
+        "sourceReadOnly": { "const": true }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason", "evidenceReference"],
+      "properties": {
+        "status": { "enum": ["passed", "failed", "skipped", "not_configured"] },
+        "reason": { "type": ["string", "null"], "maxLength": 1000 },
+        "evidenceReference": { "type": ["string", "null"], "maxLength": 500 }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "enum": ["verification_skipped", "verification_failed", "manual_review_required"] },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
+    "manualReviewFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["findingId", "code", "file", "locationDigest", "messageDigest", "evidenceReference", "evidenceDigest"],
+      "properties": {
+        "findingId": { "$ref": "#/$defs/findingId" },
+        "code": { "$ref": "#/$defs/reviewCode" },
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "^(?!/)(?![.][.](?:/|$))(?!.*[/][.][.](?:/|$)).+$"
+        },
+        "locationDigest": { "$ref": "#/$defs/sha256" },
+        "messageDigest": { "$ref": "#/$defs/sha256" },
+        "evidenceReference": { "$ref": "#/$defs/evidenceReference" },
+        "evidenceDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "manualReviewResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["findingId", "code", "decision", "reason", "evidenceReference", "evidenceDigest"],
+      "properties": {
+        "findingId": { "$ref": "#/$defs/findingId" },
+        "code": { "$ref": "#/$defs/reviewCode" },
+        "decision": { "enum": ["fixed", "accepted", "false_positive"] },
+        "reason": { "type": "string", "minLength": 10, "maxLength": 1000 },
+        "evidenceReference": { "$ref": "#/$defs/evidenceReference" },
+        "evidenceDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "requiredCiCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "workflow", "integrationId", "conclusion", "observedAt", "evidenceUrl"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "workflow": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "integrationId": { "$ref": "#/$defs/githubId" },
+        "conclusion": { "const": "success" },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "evidenceUrl": { "type": "string", "format": "uri", "maxLength": 2048 }
+      }
+    },
+    "requiredCiIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "workflow", "integrationId"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "workflow": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "integrationId": { "$ref": "#/$defs/githubId" }
+      }
+    },
+    "appAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["appId", "installationId", "repository", "repositoryId", "installationRepositoryIds", "tokenRepositoryId", "tokenCapability", "policyObservedAt", "tokenPermissionsJson", "tokenPermissionsDigest", "tokenIssuedAt", "tokenExpiresAt", "tokenRevokedAt", "tokenEvidenceReference", "revocationEvidenceReference", "permissionSnapshotJson", "permissionSnapshotDigest", "eventsSnapshotJson", "eventsSnapshotDigest", "identityEvidenceReference", "permissionsEvidenceReference", "eventsEvidenceReference"],
+      "properties": {
+        "appId": { "$ref": "#/$defs/githubId" },
+        "installationId": { "$ref": "#/$defs/githubId" },
+        "repository": { "$ref": "#/$defs/repositorySlug" },
+        "repositoryId": { "$ref": "#/$defs/githubId" },
+        "installationRepositoryIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/githubId" }
+        },
+        "tokenRepositoryId": { "$ref": "#/$defs/githubId" },
+        "tokenCapability": { "enum": ["read", "write"] },
+        "policyObservedAt": { "type": "string", "format": "date-time" },
+        "tokenPermissionsJson": { "type": "string", "minLength": 2, "maxLength": 5000 },
+        "tokenPermissionsDigest": { "$ref": "#/$defs/sha256" },
+        "tokenIssuedAt": { "type": "string", "format": "date-time" },
+        "tokenExpiresAt": { "type": "string", "format": "date-time" },
+        "tokenRevokedAt": { "type": ["string", "null"], "format": "date-time" },
+        "tokenEvidenceReference": { "$ref": "#/$defs/evidenceReference" },
+        "revocationEvidenceReference": { "type": ["string", "null"], "minLength": 6, "maxLength": 500 },
+        "permissionSnapshotJson": { "type": "string", "minLength": 2, "maxLength": 5000 },
+        "permissionSnapshotDigest": { "$ref": "#/$defs/sha256" },
+        "eventsSnapshotJson": { "type": "string", "minLength": 2, "maxLength": 5000 },
+        "eventsSnapshotDigest": { "$ref": "#/$defs/sha256" },
+        "identityEvidenceReference": { "$ref": "#/$defs/evidenceReference" },
+        "permissionsEvidenceReference": { "$ref": "#/$defs/evidenceReference" },
+        "eventsEvidenceReference": { "$ref": "#/$defs/evidenceReference" }
+      }
+    },
+    "cleanupLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "targetReference", "authorizedDeleteBy", "status", "completedAt", "evidenceReference", "exception"],
+      "properties": {
+        "kind": { "enum": ["github_access", "runner_storage", "pilot_database", "logs_exports_backups", "authorization_feedback"] },
+        "targetReference": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 500,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#=@+-]{5,499}$"
+        },
+        "authorizedDeleteBy": { "type": "string", "format": "date-time" },
+        "status": { "enum": ["pending", "deleted", "retained_by_owner", "unverifiable"] },
+        "completedAt": { "type": ["string", "null"], "format": "date-time" },
+        "evidenceReference": { "type": ["string", "null"], "minLength": 6, "maxLength": 500 },
+        "exception": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/cleanupException" }
+          ]
+        }
+      }
+    },
+    "cleanupException": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityReference", "authorityDigest", "reason", "evidenceReference", "evidenceDigest"],
+      "properties": {
+        "authorityReference": { "$ref": "#/$defs/evidenceReference" },
+        "authorityDigest": { "$ref": "#/$defs/sha256" },
+        "reason": { "type": "string", "minLength": 10, "maxLength": 1000 },
+        "evidenceReference": { "$ref": "#/$defs/evidenceReference" },
+        "evidenceDigest": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
