@@ -89,6 +89,7 @@ const CHECK_LABELS: Record<string, string> = {
   repoTypecheck: "Project type-check",
   test: "Tests",
   lint: "Lint",
+  runtime: "Runtime declarations (image not built here)",
 };
 
 /** Convert an API result into the exact, safe evidence the operator reviews. */

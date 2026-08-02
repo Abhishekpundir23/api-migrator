@@ -28,6 +28,8 @@ import {
   readRepositoryText,
   validateRepositoryFile,
 } from "./repository-files.js";
+import { attestNodeRuntime, TRUSTED_NODE_RUNTIME_PROFILES } from "./runtime.js";
+import type { NodeRuntimePolicy } from "./manifest.js";
 
 export type CheckStatus = "passed" | "failed" | "skipped";
 
@@ -46,6 +48,8 @@ export interface VerificationChecks {
   repoTypecheck?: CheckResult;
   test: CheckResult;
   lint: CheckResult;
+  /** Manifest-bound post-edit deployment runtime declaration check. */
+  runtime?: CheckResult;
 }
 
 export interface RunnerCommand {
@@ -102,7 +106,7 @@ export interface VerifyOptions {
   runner?: "local" | "docker" | VerificationRunner;
   /** Install/update dependencies before checking. */
   install?: boolean;
-  /** Extra package-manager install arguments. */
+  /** Reserved for compatibility; non-empty custom install arguments fail closed. */
   installArgs?: string[];
   /** Lifecycle scripts are disabled by default. */
   lifecycleScripts?: boolean;
@@ -154,7 +158,7 @@ const TS_ERROR = /^(.+?)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.*)$/;
 const TS_GLOBAL_ERROR = /^error\s+(TS\d+):\s+(.*)$/;
 const MAX_OUTPUT = 24_000;
 const DEFAULT_DOCKER_IMAGE =
-  "node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46";
+  TRUSTED_NODE_RUNTIME_PROFILES["node22-bookworm-slim-2026-07"].image;
 const PACKAGE_MANIFEST_POLICY = {
   label: "package manifest",
   maxBytes: MAX_PACKAGE_MANIFEST_BYTES,
@@ -710,6 +714,25 @@ export async function verify(
   return result;
 }
 
+/**
+ * Attest the post-edit deployment declarations selected by the audited
+ * manifest. A full Docker build is intentionally outside this host verifier
+ * and must run in a disposable, secret-free build worker.
+ */
+export function verifyNodeRuntime(
+  repoPath: string,
+  policy: NodeRuntimePolicy
+): CheckResult {
+  const attestation = attestNodeRuntime(repoPath, policy);
+  return {
+    status: attestation.ok ? "passed" : "failed",
+    command: `runtime-attest ${policy.profile}`,
+    exitCode: attestation.ok ? 0 : 1,
+    output: "",
+    reason: attestation.reason,
+  };
+}
+
 export function hasTestScript(repoPath: string): boolean {
   return hasScript(repoPath, "test");
 }
@@ -748,17 +771,16 @@ function packageManager(repoPath: string): PackageManager {
 }
 
 function installCommand(manager: PackageManager, opts: VerifyOptions): { command: string; args: string[] } | null {
-  const custom = opts.installArgs ?? [];
   const ignoreScripts = opts.lifecycleScripts ? [] : ["--ignore-scripts"];
   switch (manager) {
     case "npm":
-      return { command: "npm", args: ["install", ...ignoreScripts, "--no-audit", "--no-fund", ...custom] };
+      return { command: "npm", args: ["install", ...ignoreScripts, "--no-audit", "--no-fund"] };
     case "pnpm":
-      return { command: "corepack", args: ["pnpm", "install", ...ignoreScripts, "--no-frozen-lockfile", ...custom] };
+      return { command: "corepack", args: ["pnpm", "install", ...ignoreScripts, "--no-frozen-lockfile"] };
     case "yarn":
-      return { command: "corepack", args: ["yarn", "install", ...ignoreScripts, ...custom] };
+      return { command: "corepack", args: ["yarn", "install", ...ignoreScripts] };
     case "bun":
-      return { command: "bun", args: ["install", ...ignoreScripts, ...custom] };
+      return { command: "bun", args: ["install", ...ignoreScripts] };
   }
 }
 
@@ -781,6 +803,7 @@ function childEnvironment(input: NodeJS.ProcessEnv | undefined, lifecycleScripts
     npm_config_audit: "false",
     npm_config_fund: "false",
     npm_config_ignore_scripts: lifecycleScripts ? "false" : "true",
+    npm_config_engine_strict: "true",
     // Docker provisions a dedicated cache tmpfs outside /root. HOME
     // intentionally remains /tmp, whose smaller tmpfs must not become npm's
     // package cache.
@@ -812,8 +835,12 @@ function dependencyTrustFailure(repoPath: string, opts: VerifyOptions): string |
     for (const name of PACKAGE_CONFIG_FILES) {
       if (existsSync(join(repoPath, name))) return `custom package-manager configuration is not allowed: ${name}`;
     }
-    if ((opts.installArgs ?? []).some((arg) => /registry|config|ignore-scripts\s*=\s*false/i.test(arg))) {
-      return "custom install arguments may not override registry or script-safety settings";
+    // npm and the other supported package managers accept split boolean
+    // values, negated flags, abbreviations, single-dash long options, and
+    // clustered short flags. No finite denylist is a stable safety boundary,
+    // so the verifier owns the complete install command instead.
+    if ((opts.installArgs?.length ?? 0) > 0) {
+      return "custom install arguments are not allowed; the verifier owns registry, lifecycle-script, and engine-strict policy";
     }
 
     const compilerFailure = typescriptConfigurationTrustFailure(repoPath, false);

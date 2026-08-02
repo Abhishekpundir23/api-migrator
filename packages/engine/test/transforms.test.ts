@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyInngestV3ToV4, applyKnockV0ToV1, parseManifest } from "../src/index.js";
+import {
+  applyInngestV3ToV4,
+  applyKnockV0ToV1,
+  inngestBehavioralReviewEntries,
+  parseManifest,
+} from "../src/index.js";
 import type { ReportEntry } from "../src/index.js";
 
 function collect<T>(run: (entries: ReportEntry[]) => T): { value: T; entries: ReportEntry[] } {
@@ -13,6 +18,7 @@ test("manifest rejects unknown transform ids and unknown fields", () => {
     name: "Inngest v4",
     provider: "inngest",
     transformSet: "inngest-v3-to-v4",
+    runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
     package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
     peerFloors: [],
   };
@@ -52,6 +58,49 @@ const event = { user: "outside-handler" };
   assert.equal(secondEntries.some((entry) => entry.kind === "applied"), false);
 });
 
+test("Inngest T5 adds an explicit environment-controlled development mode", () => {
+  const source = `import { Inngest } from "inngest";
+export const inngest = new Inngest({ id: "demo" });
+`;
+  const first = collect((entries) => applyInngestV3ToV4(
+    source,
+    "src/inngest/client.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["T5", "F1"])
+  ));
+  assert.ok(first.value);
+  assert.match(first.value, /isDev: process\.env\.INNGEST_DEV === "1"/);
+  assert.equal(first.entries.filter((entry) => entry.code === "T5" && entry.kind === "applied").length, 1);
+  assert.equal(first.entries.some((entry) => entry.code === "F1"), false);
+
+  const second = collect((entries) => applyInngestV3ToV4(
+    first.value!,
+    "src/inngest/client.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["T5", "F1"])
+  ));
+  assert.equal(second.value, null);
+  assert.equal(second.entries.length, 0);
+
+  for (const unsafe of [
+    `import { Inngest } from "inngest";\nconst options = { id: "demo" };\nnew Inngest(options);`,
+    `import { Inngest } from "inngest";\nconst defaults = {};\nnew Inngest({ id: "demo", ...defaults });`,
+    `import { Inngest } from "inngest";\nconst process = fakeProcess;\nnew Inngest({ id: "demo" });`,
+    `import { Inngest } from "inngest";\nnew Inngest({ id: "demo", isDev() { return false; } });`,
+    `import { Inngest } from "inngest";\nnew Inngest({ id: "demo", get isDev() { return false; } });`,
+    `import { Inngest } from "inngest";\nnew Inngest({ id: "demo", set signingKey(value: string) { void value; } });`,
+  ]) {
+    const result = collect((entries) => applyInngestV3ToV4(
+      unsafe,
+      "src/inngest/unsafe-client.ts",
+      { push: (entry) => entries.push(entry) },
+      new Set(["T5", "F1"])
+    ));
+    assert.equal(result.entries.some((entry) => entry.code === "T5"), false);
+    assert.equal(result.entries.some((entry) => entry.code === "F1" && entry.kind === "review"), true);
+  }
+});
+
 test("Knock transforms are receiver-aware and idempotent", () => {
   const source = `
 import { Knock } from "@knocklabs/node";
@@ -74,7 +123,15 @@ const unrelated = { pageSize: 50, cancellationKey: "leave-me" };
   assert.match(first, /mailer\.notify\("unrelated"\)/);
   assert.match(first, /pageSize: 50/);
   assert.match(first, /cancellationKey: "leave-me"/);
-  assert.equal(entries.some((entry) => entry.code === "K1"), true);
+  for (const code of ["K1", "K2", "K3", "K4", "K5"]) {
+    assert.equal(
+      entries.some((entry) => entry.code === code && entry.kind === "applied"),
+      true,
+      `${code} must be applied rather than review-only`
+    );
+  }
+  assert.equal(entries.some((entry) => entry.kind === "review"), false);
+  assert.equal(entries.some((entry) => /^F\d+$/.test(entry.code)), false);
 
   const secondEntries: ReportEntry[] = [];
   const second = applyKnockV0ToV1(first, "src/knock.ts", { push: (entry) => secondEntries.push(entry) });
@@ -632,6 +689,344 @@ await inngest[method]({ name: "demo/run", data: { id: "1" } });`,
     new Set(["T1"])
   ));
   assert.equal(computed.entries.some((entry) => entry.kind === "review"), true);
+});
+
+test("Inngest F11 is limited to unshadowed Promise.race calls in proven handlers", () => {
+  const positive = collect((entries) => applyInngestV3ToV4(
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+client.createFunction({ id: "x" }, { event: "x" }, async ({ step }) => {
+  return Promise.race([
+    step.run("one", async () => 1),
+    step.run("two", async () => 2),
+  ]);
+});`,
+    "src/functions.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F11"])
+  ));
+  assert.equal(positive.entries.filter((entry) => entry.code === "F11").length, 1);
+  assert.match(positive.entries[0]?.message ?? "", /Promise\.race/);
+
+  const computedPositive = collect((entries) => applyInngestV3ToV4(
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+client.createFunction({ id: "x" }, { event: "x" }, async ({ step }) => {
+  return Promise["race"]([
+    step.run("one", async () => 1),
+    step.run("two", async () => 2),
+  ]);
+});`,
+    "src/functions.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F11"])
+  ));
+  assert.equal(computedPositive.entries.filter((entry) => entry.code === "F11").length, 1);
+
+  for (const source of [
+    `Promise.race([one(), two()]);`,
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+client.createFunction({ id: "x" }, { event: "x" }, async () => Promise.all([one(), two()]));`,
+    `import { Inngest } from "inngest";
+const Promise = scheduler;
+const client = new Inngest({ id: "demo" });
+client.createFunction({ id: "x" }, { event: "x" }, async () => Promise["race"]([one(), two()]));`,
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+const method = "race";
+client.createFunction({ id: "x" }, { event: "x" }, async () => Promise[method]([one(), two()]));`,
+    `const unrelated = { createFunction(_options, _trigger, handler) { return handler(); } };
+unrelated.createFunction({}, {}, async () => Promise.race([one(), two()]));`,
+  ]) {
+    const negative = collect((entries) => applyInngestV3ToV4(
+      source,
+      "src/not-an-inngest-race.ts",
+      { push: (entry) => entries.push(entry) },
+      new Set(["F11"])
+    ));
+    assert.equal(negative.entries.some((entry) => entry.code === "F11"), false);
+  }
+});
+
+test("Inngest handler reviews resolve immutable named functions conservatively", () => {
+  for (const declaration of [
+    `const run = async ({ step }) => {
+  await client.send({ name: "demo/one", data: {} });
+  return Promise.race([step.run("one", async () => 1), step.run("two", async () => 2)]);
+};`,
+    `async function run({ step }) {
+  client.send({ name: "demo/one", data: {} }).catch(() => undefined);
+  return Promise.race([step.run("one", async () => 1), step.run("two", async () => 2)]);
+}`,
+  ]) {
+    const result = collect((entries) => applyInngestV3ToV4(
+      `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+${declaration}
+client.createFunction({ id: "x" }, { event: "x" }, run);`,
+      "src/named-functions.ts",
+      { push: (entry) => entries.push(entry) },
+      new Set(["F11", "F14"])
+    ));
+    assert.equal(result.entries.filter((entry) => entry.code === "F11").length, 1);
+    assert.equal(result.entries.filter((entry) => entry.code === "F14").length, 1);
+  }
+
+  const reusedAndExported = collect((entries) => applyInngestV3ToV4(
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+const run = async ({ step }) => {
+  await client.send({ name: "demo/one", data: {} });
+  return Promise["race"]([
+    step.run("one", async () => 1),
+    step.run("two", async () => 2),
+  ]);
+};
+consume(run);
+export { run };
+client.createFunction({ id: "x", triggers: { event: "x" } }, run);`,
+    "src/reused-named-function.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F11", "F14"])
+  ));
+  assert.equal(reusedAndExported.entries.filter((entry) => entry.code === "F11").length, 1);
+  assert.equal(reusedAndExported.entries.filter((entry) => entry.code === "F14").length, 1);
+
+  const aliased = collect((entries) => applyInngestV3ToV4(
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+const run = async ({ step }) => {
+  await client.send({ name: "demo/one", data: {} });
+  return Promise.race([step.run("one", async () => 1), step.run("two", async () => 2)]);
+};
+const handler = run;
+client.createFunction({ id: "x", triggers: { event: "x" } }, handler);`,
+    "src/aliased-named-function.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F11", "F14"])
+  ));
+  assert.equal(aliased.entries.filter((entry) => entry.code === "F11").length, 1);
+  assert.match(aliased.entries.find((entry) => entry.code === "F11")?.message ?? "", /Promise\.race inside/);
+  assert.equal(aliased.entries.filter((entry) => entry.code === "F14").length, 1);
+  assert.match(aliased.entries.find((entry) => entry.code === "F14")?.message ?? "", /step\.sendEvent/);
+
+  for (const declaration of [
+    `let run = async () => Promise.race([one(), two()]);`,
+    `async function run() { return Promise["race"]([one(), two()]); }\nrun = replacement;`,
+  ]) {
+    const result = collect((entries) => applyInngestV3ToV4(
+      `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+${declaration}
+client.createFunction({ id: "x" }, { event: "x" }, run);`,
+      "src/unsafe-named-functions.ts",
+      { push: (entry) => entries.push(entry) },
+      new Set(["F11"])
+    ));
+    assert.equal(result.entries.filter((entry) => entry.code === "F11").length, 1);
+    assert.match(result.entries[0]?.message ?? "", /could not be resolved statically/);
+  }
+});
+
+test("Inngest handler aliases stop after one immutable hop and fail closed otherwise", () => {
+  const unresolvedSources = [
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+const run = async () => 1;
+let handler = run;
+client.createFunction({ id: "x", triggers: { event: "x" } }, handler);`,
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+const run = async () => 1;
+const handler = run;
+handler = replacement;
+client.createFunction({ id: "x", triggers: { event: "x" } }, handler);`,
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+const run = async () => 1;
+const first = run;
+const handler = first;
+client.createFunction({ id: "x", triggers: { event: "x" } }, handler);`,
+    `import { Inngest } from "inngest";
+import { run } from "./run";
+const client = new Inngest({ id: "demo" });
+client.createFunction({ id: "x", triggers: { event: "x" } }, run);`,
+  ];
+
+  for (const source of unresolvedSources) {
+    const result = collect((entries) => applyInngestV3ToV4(
+      source,
+      "src/unresolved-handler.ts",
+      { push: (entry) => entries.push(entry) },
+      new Set(["F11", "F14"])
+    ));
+    for (const code of ["F11", "F14"]) {
+      const reviews = result.entries.filter((entry) => entry.code === code);
+      assert.equal(reviews.length, 1, `${code} must fail closed for an unresolved handler`);
+      assert.match(reviews[0]?.message ?? "", /could not be resolved statically/);
+    }
+  }
+
+  const inline = collect((entries) => applyInngestV3ToV4(
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+client.createFunction({ id: "x", triggers: { event: "x" } }, async () => 1);`,
+    "src/inline-handler.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F11", "F14"])
+  ));
+  assert.equal(inline.entries.some((entry) => ["F11", "F14"].includes(entry.code)), false);
+});
+
+test("Inngest F13 is limited to proven serving routes that export an edge runtime", () => {
+  for (const runtime of ["edge", "experimental-edge"]) {
+    const positive = collect((entries) => applyInngestV3ToV4(
+      `import { serve } from "inngest/next";
+export const runtime = ${JSON.stringify(runtime)};
+export const handler = serve({ client: {}, functions: [] });`,
+      "src/app/api/inngest/route.ts",
+      { push: (entry) => entries.push(entry) },
+      new Set(["F13"])
+    ));
+    assert.equal(positive.entries.filter((entry) => entry.code === "F13").length, 1);
+  }
+
+  const aliased = collect((entries) => applyInngestV3ToV4(
+    `import { serve as inngestServe } from "inngest/next";
+const serveRoute = inngestServe;
+export const runtime = "edge";
+export const handler = serveRoute({ client: {}, functions: [] });`,
+    "src/app/api/inngest/route.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F13"])
+  ));
+  assert.equal(aliased.entries.filter((entry) => entry.code === "F13").length, 1);
+
+  for (const source of [
+    `import { serve } from "inngest/next";
+export const runtime = "nodejs";
+export const handler = serve({ client: {}, functions: [] });`,
+    `import { serve } from "./http";
+export const runtime = "edge";
+export const handler = serve();`,
+    `import { serve } from "inngest/next";
+const runtime = "edge";
+export const handler = serve({ client: {}, functions: [] });`,
+    `import { serve } from "inngest/next";
+let serveRoute = serve;
+export const runtime = "edge";
+export const handler = serveRoute({ client: {}, functions: [] });`,
+    `import { serve } from "inngest/next";
+const first = serve;
+const second = first;
+export const runtime = "edge";
+export const handler = second({ client: {}, functions: [] });`,
+    `export const runtime = "edge";
+export async function GET() { return new Response("ok"); }`,
+  ]) {
+    const negative = collect((entries) => applyInngestV3ToV4(
+      source,
+      "src/app/api/route.ts",
+      { push: (entry) => entries.push(entry) },
+      new Set(["F13"])
+    ));
+    assert.equal(negative.entries.some((entry) => entry.code === "F13"), false);
+  }
+});
+
+test("Inngest F12 uses the optional runtime-container hint", () => {
+  const enabled = new Set(["F12"]);
+  const unknown = inngestBehavioralReviewEntries(enabled);
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0]?.code, "F12");
+  assert.match(unknown[0]?.message ?? "", /runtime container is unknown/i);
+
+  assert.deepEqual(
+    inngestBehavioralReviewEntries(new Set(["F11", "F12", "F13"])).map((entry) => entry.code),
+    ["F12"]
+  );
+
+  const serverless = inngestBehavioralReviewEntries(enabled, { runtimeContainer: "serverless" });
+  assert.equal(serverless.length, 1);
+  assert.match(serverless[0]?.message ?? "", /serverless.*maxRuntime/i);
+
+  assert.deepEqual(
+    inngestBehavioralReviewEntries(enabled, { runtimeContainer: "long-running" }),
+    []
+  );
+  assert.deepEqual(
+    inngestBehavioralReviewEntries(new Set(), { runtimeContainer: "serverless" }),
+    []
+  );
+});
+
+test("Inngest F14 flags every direct handler send and floating outside sends", () => {
+  const inHandler = collect((entries) => applyInngestV3ToV4(
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+const mailer = { send() { return Promise.resolve(); } };
+client.createFunction({ id: "x" }, { event: "x" }, async ({ step }) => {
+  client.send({ name: "demo/one", data: {} });
+  await client.send({ name: "demo/two", data: {} });
+  client.send({ name: "demo/three", data: {} }).catch(() => undefined);
+  mailer.send();
+  return client.send({ name: "demo/four", data: {} });
+});`,
+    "src/functions.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F14"])
+  ));
+  const handlerEntries = inHandler.entries.filter((entry) => entry.code === "F14");
+  assert.equal(handlerEntries.length, 4);
+  assert.equal(handlerEntries.every((entry) => /step\.sendEvent/.test(entry.message)), true);
+
+  const outsideHandler = collect((entries) => applyInngestV3ToV4(
+    `import { Inngest } from "inngest";
+const client = new Inngest({ id: "demo" });
+async function emit() {
+  client.send({ name: "demo/one", data: {} });
+  client.send({ name: "demo/two", data: {} }).catch(() => undefined);
+  client.send({ name: "demo/three", data: {} }).then(() => undefined);
+  await client.send({ name: "demo/four", data: {} });
+  await client.send({ name: "demo/five", data: {} }).catch(() => undefined);
+  return client.send({ name: "demo/six", data: {} }).finally(() => undefined);
+}`,
+    "src/send.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F14"])
+  ));
+  const outsideEntries = outsideHandler.entries.filter((entry) => entry.code === "F14");
+  assert.equal(outsideEntries.length, 3);
+  assert.equal(outsideEntries.every((entry) => /await or return/.test(entry.message)), true);
+
+  const importedClient = collect((entries) => applyInngestV3ToV4(
+    `import { client } from "./client";
+void client.send({ name: "demo/one", data: {} });`,
+    "src/send.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F14"]),
+    {
+      scannedSources: new Map([[
+        "src/client.ts",
+        `import { Inngest } from "inngest";
+export const client = new Inngest({ id: "demo" });`,
+      ]]),
+      sourcePaths: new Set(["src/send.ts", "src/client.ts"]),
+    }
+  ));
+  assert.equal(importedClient.entries.filter((entry) => entry.code === "F14").length, 1);
+
+  const unrelated = collect((entries) => applyInngestV3ToV4(
+    `import { inngest } from "@/inngest/client";
+const transport = { send() { return Promise.resolve(); } };
+transport.send();
+inngest.send({ name: "not-proven", data: {} });`,
+    "src/unrelated.ts",
+    { push: (entry) => entries.push(entry) },
+    new Set(["F14"])
+  ));
+  assert.equal(unrelated.entries.some((entry) => entry.code === "F14"), false);
 });
 
 test("client-named path aliases and re-exports remain blocking review items", () => {

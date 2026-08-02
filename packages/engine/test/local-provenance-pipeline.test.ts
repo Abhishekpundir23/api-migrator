@@ -9,6 +9,7 @@ const manifest: Manifest = {
   name: "Inngest v4",
   provider: "inngest",
   transformSet: "inngest-v3-to-v4",
+  runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
   package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
   peerFloors: [],
   transforms: ["T1"],
@@ -28,6 +29,7 @@ test("pipeline resolves the scanned one-hop Inngest client fixture", async () =>
   try {
     mkdirSync(join(repo, "src", "inngest"), { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({ dependencies: { inngest: "^3.0.0" } }, null, 2));
+    writeLegacyDockerfile(repo);
     writeFileSync(join(repo, "src", "inngest", "client.ts"), `import { Inngest } from "inngest";
 export const inngest = new Inngest({ id: "demo" });
 `);
@@ -54,6 +56,7 @@ test("pipeline refuses proof when an unscanned sibling can win module resolution
   try {
     mkdirSync(join(repo, "src", "inngest"), { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({ dependencies: { inngest: "^3.0.0" } }, null, 2));
+    writeLegacyDockerfile(repo);
     writeFileSync(join(repo, "src", "inngest", "client.ts"), `export const inngest = makeUnrelatedClient();\n`);
     writeFileSync(join(repo, "src", "inngest", "client.js"), `import { Inngest } from "inngest";
 export const inngest = new Inngest({ id: "demo" });
@@ -81,6 +84,7 @@ test("pipeline reports namespace mutation of a one-hop client across files", asy
   try {
     mkdirSync(join(repo, "src"), { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({ dependencies: { inngest: "^3.0.0" } }, null, 2));
+    writeLegacyDockerfile(repo);
     writeFileSync(join(repo, "src", "client.ts"), `import { Inngest } from "inngest";
 export const client = new Inngest({ id: "demo" });
 `);
@@ -107,6 +111,7 @@ test("pipeline reports path-alias and computed mutation of a one-hop client", as
   try {
     mkdirSync(join(repo, "src"), { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({ dependencies: { inngest: "^3.0.0" } }, null, 2));
+    writeLegacyDockerfile(repo);
     writeFileSync(join(repo, "src", "client.ts"), `import { Inngest } from "inngest";
 export const client = new Inngest({ id: "demo" });
 `);
@@ -156,3 +161,29 @@ export async function send() { return knock.notify("welcome", { recipients: ["u_
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+function writeLegacyDockerfile(repo: string): void {
+  writeFileSync(join(repo, "Dockerfile"), `# syntax = docker/dockerfile:1
+
+ARG NODE_VERSION=18.8.0
+FROM node:\${NODE_VERSION}-slim as base
+
+LABEL fly_launch_runtime="Next.js"
+WORKDIR /app
+ENV NODE_ENV=production
+
+FROM base AS build
+RUN apt-get update -qq && \\
+    apt-get install -y python-is-python3 pkg-config build-essential
+COPY --link package-lock.json package.json ./
+RUN npm ci --include=dev
+COPY --link . .
+RUN npm run build
+RUN npm prune --omit=dev
+
+FROM base
+COPY --from=build /app /app
+EXPOSE 3000
+CMD [ "npm", "run", "start" ]
+`);
+}

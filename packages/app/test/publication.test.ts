@@ -37,6 +37,7 @@ const manifest: Manifest = {
   name: "Inngest v3 to v4",
   provider: "inngest",
   transformSet: "inngest-v3-to-v4",
+  runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
   package: { name: "inngest", from: "^3", to: "^4" },
   peerFloors: [],
 };
@@ -65,6 +66,7 @@ function report(options: { skipped?: boolean; ok?: boolean; review?: boolean } =
         typecheck: { status: ok ? "passed" : "failed", command: "tsc", exitCode: ok ? 0 : 1, output: "" },
         test: { status: "passed", command: "test", exitCode: 0, output: "" },
         lint: { status: "passed", command: "lint", exitCode: 0, output: "" },
+        runtime: { status: "passed", command: "runtime-attest", exitCode: 0, output: "", reason: "Node 22" },
       },
     },
     summary: {
@@ -100,6 +102,28 @@ test("verification and unresolved review items block publication", () => {
     code: "manual_review_required",
     message: "10001 unresolved item(s) require manual review",
   }]);
+
+  const f12Only = report({ review: true });
+  f12Only.entries = [{
+    file: "(migration)",
+    kind: "review",
+    code: "F12",
+    message: "The runtime container is unknown; determine whether this is serverless.",
+    line: null,
+  }];
+  assert.equal(f12Only.verification.ok, true);
+  assert.equal(f12Only.summary.verified, true);
+  assert.deepEqual(publicationBlockers(f12Only), [{
+    code: "manual_review_required",
+    message: "1 unresolved item(s) require manual review",
+  }]);
+
+  const failedWithF12 = report({ ok: false, review: true });
+  failedWithF12.entries = f12Only.entries;
+  assert.deepEqual(
+    publicationBlockers(failedWithF12).map((blocker) => blocker.code),
+    ["verification_failed", "manual_review_required"]
+  );
 });
 
 test("preflight ids bind repository, base commit, manifest, and report", () => {
@@ -121,6 +145,15 @@ test("preflight ids bind repository, base commit, manifest, and report", () => {
   assert.notEqual(first, createPreflightId({ ...input, baseSha: "b".repeat(40) }));
   assert.notEqual(first, createPreflightId({ ...input, targetBranch: "codex/api-migrator/inngest-def" }));
   assert.notEqual(first, createPreflightId({ ...input, artifactDigest: "d".repeat(64) }));
+  const changedRuntime = report();
+  changedRuntime.verification.checks.runtime = {
+    status: "failed",
+    command: "runtime-attest",
+    exitCode: 1,
+    output: "",
+    reason: "Node 18",
+  };
+  assert.notEqual(first, createPreflightId({ ...input, report: changedRuntime }));
 });
 
 test("publish approval must match the exact preview and unsafe override is separate", () => {

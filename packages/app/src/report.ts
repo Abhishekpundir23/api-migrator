@@ -60,6 +60,7 @@ function sanitizeChecks(checks: VerificationChecks): VerificationChecks {
     ...(checks.repoTypecheck ? { repoTypecheck: sanitizeCheck(checks.repoTypecheck) } : {}),
     test: sanitizeCheck(checks.test),
     lint: sanitizeCheck(checks.lint),
+    ...(checks.runtime ? { runtime: sanitizeCheck(checks.runtime) } : {}),
   };
 }
 

@@ -33,6 +33,13 @@ export interface InngestProvenanceContext {
   sourcePaths: ReadonlySet<string>;
 }
 
+export type InngestRuntimeContainer = "serverless" | "long-running" | "unknown";
+
+export interface InngestBehavioralReviewContext {
+  /** Deployment container for checkpointing/maxRuntime review. Omit when it cannot be proven. */
+  runtimeContainer?: InngestRuntimeContainer;
+}
+
 interface Bindings {
   constructors: ScopedBindings;
   namespaces: ScopedBindings;
@@ -86,9 +93,12 @@ export function applyInngestV3ToV4(
   if (enabled.has("T2")) applied += migrateServeHost(root, bindings, report);
   if (enabled.has("T3")) applied += migrateStreaming(root, bindings, report);
   if (enabled.has("T4")) applied += migrateGateway(root, bindings, report);
+  if (enabled.has("T5")) applied += migrateClientMode(root, bindings, report);
 
   flagClientMode(root, bindings, report);
   flagHandlerChanges(root, bindings, report);
+  flagOptimizedParallelism(root, bindings, report);
+  flagUnhandledClientSend(root, bindings, report);
   flagMiddleware(root, bindings, report);
   flagEventSchemas(root, bindings, report);
   flagServeOptions(root, bindings, report);
@@ -96,6 +106,7 @@ export function applyInngestV3ToV4(
   flagConnect(root, bindings, report);
   flagInternalFunctionType(root, bindings, report);
   flagCheckpointRuntime(root, bindings, report);
+  flagEdgeRuntime(root, bindings, report);
 
   return applied > 0 ? toSource(root) : null;
 }
@@ -105,16 +116,16 @@ export default function transform(file: FileInfo, _api: API): string | null | un
   return applyInngestV3ToV4(file.source, file.path ?? "(unknown)", sink);
 }
 
-/** Review items that are behavioral and cannot be tied reliably to one AST node. */
-export function inngestBehavioralReviewEntries(enabled: ReadonlySet<string>): ReportEntry[] {
-  const definitions: Array<[string, string]> = [
-    ["F11", "Inngest v4 enables optimized parallelism by default; review concurrency/rate-limit assumptions and ordering-sensitive functions."],
-    ["F12", "Inngest v4 enables checkpointing by default and changes maxRuntime behavior; review long-running functions, retries, and timeout expectations."],
-    ["F13", "Inngest v4 includes edge-runtime execution changes; exercise deployed edge handlers even when static type-checking passes."],
-  ];
-  return definitions
-    .filter(([code]) => enabled.has(code))
-    .map(([code, message]) => ({ file: "(migration)", kind: "review", code, message, line: null }));
+/** Deployment review that cannot be tied reliably to one source node. */
+export function inngestBehavioralReviewEntries(
+  enabled: ReadonlySet<string>,
+  context: InngestBehavioralReviewContext = {}
+): ReportEntry[] {
+  if (!enabled.has("F12") || context.runtimeContainer === "long-running") return [];
+  const message = context.runtimeContainer === "serverless"
+    ? "Inngest v4 enables checkpointing by default; for this serverless deployment, review retries/timeouts and set maxRuntime below the platform limit."
+    : "The runtime container is unknown; determine whether this is serverless before accepting v4 checkpointing and maxRuntime behavior.";
+  return [{ file: "(migration)", kind: "review", code: "F12", message, line: null }];
 }
 
 function collectBindings(root: any, filePath: string, provenance?: InngestProvenanceContext): Bindings {
@@ -178,6 +189,7 @@ function collectBindings(root: any, filePath: string, provenance?: InngestProven
       addLocalImport(bindings.localImports, identifier.name, source, null, false, true, path, identifier);
     }
   });
+  proveDirectServeAliases(root, bindings);
   filterUnsafeConstructorBindings(root, bindings);
   proveDirectLocalClients(root, bindings, filePath, provenance);
   root.find(j.VariableDeclarator).forEach((path: any) => {
@@ -205,6 +217,27 @@ function collectBindings(root: any, filePath: string, provenance?: InngestProven
     }
   });
   return bindings;
+}
+
+/**
+ * A const initialized directly from a proven named `serve` import retains the
+ * same immutable function identity. Collect aliases in a separate pass before
+ * adding them so alias chains and mutable bindings never establish proof.
+ */
+function proveDirectServeAliases(root: any, bindings: Bindings): void {
+  const aliases: Array<{ name: string; path: any; declarationNode: object }> = [];
+  root.find(j.VariableDeclarator).forEach((path: any) => {
+    const { id, init } = path.node;
+    if (id?.type !== "Identifier" || init?.type !== "Identifier"
+      || variableDeclarationKind(path) !== "const"
+      || !hasScopedBinding(bindings.serve, init.name, path)) {
+      return;
+    }
+    aliases.push({ name: id.name, path, declarationNode: id });
+  });
+  for (const alias of aliases) {
+    addScopedBinding(bindings.serve, alias.name, alias.path, alias.declarationNode);
+  }
 }
 
 /** Unsupported module-loading forms are never rewritten, but must block publication. */
@@ -540,10 +573,55 @@ function flagClientMode(root: any, bindings: Bindings, report: ReportFn): void {
       report("F1", "review", "Inngest client configuration is dynamic; confirm v4 cloud mode, isDev, and signingKey behavior.", path.node.loc);
       return;
     }
+    if (hasClientModeMemberCollision(options)) {
+      report(
+        "F1",
+        "review",
+        "Inngest client configuration defines isDev or signingKey as a method/accessor; replace it with an explicit data property before migration.",
+        path.node.loc
+      );
+      return;
+    }
     if (!["isDev", "signingKey"].some((name) => directProperty(options, name))) {
       report("F1", "review", "v4 defaults to cloud mode; explicitly choose isDev for development or provide a signingKey.", path.node.loc);
     }
   });
+}
+
+function migrateClientMode(root: any, bindings: Bindings, report: ReportFn): number {
+  let count = 0;
+  root.find(j.NewExpression).forEach((path: any) => {
+    if (!isConstructor(path.node.callee, bindings, path)) return;
+    const options = path.node.arguments[0];
+    if (options?.type !== "ObjectExpression"
+      || hasClientModeMemberCollision(options)
+      || ["isDev", "signingKey"].some((name) => directProperty(options, name))
+      || options.properties.some((property: any) => property.type === "SpreadElement"
+        || property.type === "SpreadProperty" || property.computed)
+      || bindingScopeNode("process", path) != null) {
+      return;
+    }
+    options.properties.push(j.property(
+      "init",
+      j.identifier("isDev"),
+      j.binaryExpression(
+        "===",
+        j.memberExpression(
+          j.memberExpression(j.identifier("process"), j.identifier("env")),
+          j.identifier("INNGEST_DEV")
+        ),
+        j.literal("1")
+      )
+    ));
+    count += 1;
+    report(
+      "T5",
+      "applied",
+      "Added explicit INNGEST_DEV=1 local-mode selection; production remains cloud mode and reads INNGEST_SIGNING_KEY from the environment.",
+      path.node.loc
+    );
+  });
+  return count;
 }
 
 function flagHandlerChanges(root: any, bindings: Bindings, report: ReportFn): void {
@@ -561,6 +639,56 @@ function flagHandlerChanges(root: any, bindings: Bindings, report: ReportFn): vo
       }
     });
   }
+}
+
+function flagOptimizedParallelism(root: any, bindings: Bindings, report: ReportFn): void {
+  const handlers = new Set(functionHandlers(root, bindings, (argument) => {
+    report(
+      "F11",
+      "review",
+      "This Inngest createFunction handler could not be resolved statically; review it manually for Promise.race and v4 optimized-parallelism semantics.",
+      argument.loc
+    );
+  }).map(({ handler }) => handler));
+  root.find(j.CallExpression).forEach((path: any) => {
+    const callee = path.node.callee;
+    if (callee?.type !== "MemberExpression" || callee.optional === true
+      || path.node.optional === true || callee.object?.type !== "Identifier"
+      || callee.object.name !== "Promise" || staticMemberPropertyName(callee) !== "race"
+      || bindingScopeNode("Promise", path) != null || !enclosingHandler(path, handlers)) {
+      return;
+    }
+    report(
+      "F11",
+      "review",
+      "Promise.race inside an Inngest handler waits for every branch under v4 optimized parallelism; use step.parallel/group.parallel or review the changed completion semantics.",
+      path.node.loc
+    );
+  });
+}
+
+function flagUnhandledClientSend(root: any, bindings: Bindings, report: ReportFn): void {
+  const handlers = new Set(functionHandlers(root, bindings, (argument) => {
+    report(
+      "F14",
+      "review",
+      "This Inngest createFunction handler could not be resolved statically; review it manually for direct client.send calls that must use and await step.sendEvent(...).",
+      argument.loc
+    );
+  }).map(({ handler }) => handler));
+  root.find(j.CallExpression).forEach((path: any) => {
+    if (!isClientMethod(path.node.callee, bindings, "send", path)) return;
+    const inHandler = enclosingHandler(path, handlers);
+    if (!inHandler && !isUnhandledPromiseCall(path)) return;
+    report(
+      "F14",
+      "review",
+      inHandler
+        ? "Direct Inngest client.send inside an Inngest handler bypasses step checkpointing; use and await step.sendEvent(...) instead."
+        : "Unhandled Inngest client.send may be dropped before delivery; await or return its promise.",
+      path.node.loc
+    );
+  });
 }
 
 function flagMiddleware(root: any, bindings: Bindings, report: ReportFn): void {
@@ -629,15 +757,172 @@ function flagCheckpointRuntime(root: any, bindings: Bindings, report: ReportFn):
   });
 }
 
-function functionHandlers(root: any, bindings: Bindings): Array<{
+function flagEdgeRuntime(root: any, bindings: Bindings, report: ReportFn): void {
+  const declaration = edgeRuntimeDeclaration(root);
+  if (!declaration) return;
+  let servesInngest = false;
+  root.find(j.CallExpression).forEach((path: any) => {
+    if (isProvenInngestServeCall(path, bindings)) servesInngest = true;
+  });
+  if (!servesInngest) return;
+  report(
+    "F13",
+    "review",
+    "This Inngest serving route declares an edge runtime; exercise the deployed handler because v4 resolves fetch and client configuration lazily.",
+    declaration.loc
+  );
+}
+
+function enclosingHandler(path: any, handlers: ReadonlySet<any>): any | null {
+  let cursor = path;
+  while (cursor) {
+    if (handlers.has(cursor.node)) return cursor.node;
+    cursor = cursor.parentPath;
+  }
+  return null;
+}
+
+function isUnhandledPromiseCall(path: any): boolean {
+  let cursor = outerPromiseChainPath(path);
+  while (cursor?.parentPath) {
+    const parent = cursor.parentPath.node;
+    if ([
+      "ParenthesizedExpression", "ChainExpression", "TSAsExpression", "TSTypeAssertion",
+      "TSNonNullExpression", "TypeCastExpression", "TSSatisfiesExpression",
+    ].includes(parent?.type) && (parent.expression === cursor.node || parent.argument === cursor.node)) {
+      cursor = cursor.parentPath;
+      continue;
+    }
+    if (parent?.type === "UnaryExpression" && parent.operator === "void" && parent.argument === cursor.node) {
+      cursor = cursor.parentPath;
+      continue;
+    }
+    if (parent?.type === "SequenceExpression") {
+      const index = parent.expressions?.indexOf(cursor.node) ?? -1;
+      if (index >= 0 && index < parent.expressions.length - 1) return true;
+      if (index === parent.expressions.length - 1) {
+        cursor = cursor.parentPath;
+        continue;
+      }
+    }
+    if ((parent?.type === "ConditionalExpression"
+        && (parent.consequent === cursor.node || parent.alternate === cursor.node))
+      || (parent?.type === "LogicalExpression"
+        && (parent.left === cursor.node || parent.right === cursor.node))) {
+      cursor = cursor.parentPath;
+      continue;
+    }
+    return parent?.type === "ExpressionStatement" && parent.expression === cursor.node;
+  }
+  return false;
+}
+
+function outerPromiseChainPath(path: any): any {
+  let cursor = path;
+  while (cursor?.parentPath) {
+    const parentPath = cursor.parentPath;
+    const parent = parentPath.node;
+    if (isTransparentExpressionWrapper(parent, cursor.node)) {
+      cursor = parentPath;
+      continue;
+    }
+    if ((parent?.type === "MemberExpression" || parent?.type === "OptionalMemberExpression")
+      && parent.object === cursor.node
+      && ["then", "catch", "finally"].includes(staticMemberPropertyName(parent) ?? "")) {
+      const callPath = parentPath.parentPath;
+      const call = callPath?.node;
+      if ((call?.type === "CallExpression" || call?.type === "OptionalCallExpression")
+        && call.callee === parent) {
+        cursor = callPath;
+        continue;
+      }
+    }
+    break;
+  }
+  return cursor;
+}
+
+function isTransparentExpressionWrapper(parent: any, child: any): boolean {
+  return [
+    "ParenthesizedExpression", "ChainExpression", "TSAsExpression", "TSTypeAssertion",
+    "TSNonNullExpression", "TypeCastExpression", "TSSatisfiesExpression",
+  ].includes(parent?.type) && (parent.expression === child || parent.argument === child);
+}
+
+function isProvenInngestServeCall(path: any, bindings: Bindings): boolean {
+  const call = path.node;
+  const callee = call?.callee;
+  if (call?.type !== "CallExpression" || call.optional === true || callee?.optional === true) return false;
+  if (callee?.type === "Identifier") return hasScopedBinding(bindings.serve, callee.name, path);
+  return callee?.type === "MemberExpression" && !callee.computed
+    && callee.object?.type === "Identifier"
+    && hasScopedBinding(bindings.namespaces, callee.object.name, path)
+    && propertyName(callee.property) === "serve";
+}
+
+function edgeRuntimeDeclaration(root: any): any | null {
+  const program = root.find(j.Program).nodes()[0];
+  if (!program) return null;
+  let exportedBySpecifier = false;
+  for (const statement of program.body ?? []) {
+    if (statement.type !== "ExportNamedDeclaration" || statement.source != null) continue;
+    for (const specifier of statement.specifiers ?? []) {
+      if (specifier.type === "ExportSpecifier" && specifier.exportKind !== "type"
+        && identifierName(specifier.local) === "runtime"
+        && identifierName(specifier.exported) === "runtime") {
+        exportedBySpecifier = true;
+      }
+    }
+  }
+  for (const statement of program.body ?? []) {
+    const directExport = statement.type === "ExportNamedDeclaration";
+    const declaration = directExport ? statement.declaration : statement;
+    if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") continue;
+    for (const declarator of declaration.declarations ?? []) {
+      if (declarator.id?.type !== "Identifier" || declarator.id.name !== "runtime"
+        || (!directExport && !exportedBySpecifier)) {
+        continue;
+      }
+      const value = staticLiteralThroughTypeWrappers(declarator.init);
+      if (value === "edge" || value === "experimental-edge") return declarator;
+    }
+  }
+  return null;
+}
+
+function staticLiteralThroughTypeWrappers(node: any): string | null {
+  let current = node;
+  while ([
+    "ParenthesizedExpression", "TSAsExpression", "TSTypeAssertion", "TSNonNullExpression",
+    "TypeCastExpression", "TSSatisfiesExpression",
+  ].includes(current?.type)) {
+    current = current.expression;
+  }
+  return literalString(current);
+}
+
+function functionHandlers(
+  root: any,
+  bindings: Bindings,
+  onUnresolved?: (argument: any) => void
+): Array<{
   handler: any; eventNames: Set<string>; stepNames: Set<string>; contextNames: Set<string>;
 }> {
   const handlers: Array<{ handler: any; eventNames: Set<string>; stepNames: Set<string>; contextNames: Set<string> }> = [];
+  const namedHandlerReferences = provenNamedHandlerReferences(root, bindings);
   root.find(j.CallExpression).forEach((path: any) => {
     if (!isClientMethod(path.node.callee, bindings, "createFunction", path)) return;
-    const args = path.node.arguments;
-    const handler = args.length === 3 ? args[2] : args[1];
-    if (!handler || !["ArrowFunctionExpression", "FunctionExpression"].includes(handler.type)) return;
+    const handlerArgument = createFunctionHandlerArgument(path.node);
+    const handler = resolveStaticHandler(
+      root,
+      handlerArgument,
+      path,
+      namedHandlerReferences
+    );
+    if (!handler) {
+      if (handlerArgument) onUnresolved?.(handlerArgument);
+      return;
+    }
     const eventNames = new Set<string>();
     const stepNames = new Set<string>();
     const contextNames = new Set<string>();
@@ -655,6 +940,197 @@ function functionHandlers(root: any, bindings: Bindings): Array<{
     handlers.push({ handler, eventNames, stepNames, contextNames });
   });
   return handlers;
+}
+
+function provenNamedHandlerReferences(root: any, bindings: Bindings): ReadonlySet<any> {
+  const references = new Set<any>();
+  root.find(j.CallExpression).forEach((path: any) => {
+    if (!isClientMethod(path.node.callee, bindings, "createFunction", path)) return;
+    const handler = createFunctionHandlerArgument(path.node);
+    if (handler?.type === "Identifier") references.add(handler);
+  });
+  return references;
+}
+
+function createFunctionHandlerArgument(call: any): any | null {
+  if (call?.type !== "CallExpression") return null;
+  if (call.arguments?.length === 3) return call.arguments[2] ?? null;
+  if (call.arguments?.length === 2) return call.arguments[1] ?? null;
+  return null;
+}
+
+function resolveStaticHandler(
+  root: any,
+  argument: any,
+  callPath: any,
+  allowedReferences: ReadonlySet<any>
+): any | null {
+  if (["ArrowFunctionExpression", "FunctionExpression"].includes(argument?.type)) return argument;
+  if (argument?.type !== "Identifier") return null;
+
+  const direct = resolveDirectStaticHandlerBinding(
+    root,
+    argument.name,
+    callPath,
+    allowedReferences
+  );
+  if (direct) return direct;
+
+  const alias = resolveDirectConstHandlerAlias(
+    root,
+    argument.name,
+    callPath,
+    allowedReferences
+  );
+  if (!alias) return null;
+  const targetReferences = new Set(allowedReferences);
+  targetReferences.add(alias.target);
+  return resolveDirectStaticHandlerBinding(
+    root,
+    alias.target.name,
+    alias.targetPath,
+    targetReferences
+  );
+}
+
+function resolveDirectStaticHandlerBinding(
+  root: any,
+  name: string,
+  referencePath: any,
+  allowedReferences: ReadonlySet<any>
+): any | null {
+  const referenceScope = bindingScopeNode(name, referencePath) ?? nearestProgramNode(referencePath);
+  if (!referenceScope) return null;
+  const nearestDeclaration = nearestBlockDeclaration(name, referencePath);
+  const candidates: Array<{ declarationNode: object; handler: any }> = [];
+
+  root.find(j.VariableDeclarator).forEach((path: any) => {
+    if (path.node.id?.type !== "Identifier" || path.node.id.name !== name
+      || variableDeclarationKind(path) !== "const") return;
+    const candidateScope = bindingScopeNode(name, path) ?? nearestProgramNode(path);
+    if (candidateScope !== referenceScope
+      || (nearestDeclaration && nearestDeclaration !== path.node.id)) return;
+    const handler = unwrapStaticHandlerExpression(path.node.init);
+    if (handler) candidates.push({ declarationNode: path.node.id, handler });
+  });
+  root.find(j.FunctionDeclaration).forEach((path: any) => {
+    if (path.node.id?.type !== "Identifier" || path.node.id.name !== name) return;
+    const candidateScope = bindingScopeNode(name, path) ?? nearestProgramNode(path);
+    if (candidateScope !== referenceScope
+      || (nearestDeclaration && nearestDeclaration !== path.node.id)) return;
+    candidates.push({ declarationNode: path.node.id, handler: path.node });
+  });
+
+  if (candidates.length !== 1) return null;
+  const candidate = candidates[0]!;
+  return namedHandlerReferencesAreSafe(
+    root,
+    name,
+    referenceScope,
+    candidate.declarationNode,
+    allowedReferences
+  ) ? candidate.handler : null;
+}
+
+function resolveDirectConstHandlerAlias(
+  root: any,
+  name: string,
+  referencePath: any,
+  allowedReferences: ReadonlySet<any>
+): { target: any; targetPath: any } | null {
+  const referenceScope = bindingScopeNode(name, referencePath) ?? nearestProgramNode(referencePath);
+  if (!referenceScope) return null;
+  const nearestDeclaration = nearestBlockDeclaration(name, referencePath);
+  const candidates: Array<{
+    declarationNode: object;
+    target: any;
+    targetPath: any;
+  }> = [];
+
+  root.find(j.VariableDeclarator).forEach((path: any) => {
+    if (path.node.id?.type !== "Identifier" || path.node.id.name !== name
+      || path.node.init?.type !== "Identifier"
+      || variableDeclarationKind(path) !== "const") return;
+    const candidateScope = bindingScopeNode(name, path) ?? nearestProgramNode(path);
+    if (candidateScope !== referenceScope
+      || (nearestDeclaration && nearestDeclaration !== path.node.id)) return;
+    candidates.push({
+      declarationNode: path.node.id,
+      target: path.node.init,
+      targetPath: path.get("init"),
+    });
+  });
+
+  if (candidates.length !== 1) return null;
+  const candidate = candidates[0]!;
+  return namedHandlerReferencesAreSafe(
+    root,
+    name,
+    referenceScope,
+    candidate.declarationNode,
+    allowedReferences
+  ) ? { target: candidate.target, targetPath: candidate.targetPath } : null;
+}
+
+function unwrapStaticHandlerExpression(node: any): any | null {
+  let current = node;
+  while ([
+    "ParenthesizedExpression", "TSAsExpression", "TSTypeAssertion", "TSNonNullExpression",
+    "TypeCastExpression", "TSSatisfiesExpression",
+  ].includes(current?.type)) {
+    current = current.expression;
+  }
+  return ["ArrowFunctionExpression", "FunctionExpression"].includes(current?.type) ? current : null;
+}
+
+function namedHandlerReferencesAreSafe(
+  root: any,
+  name: string,
+  scopeNode: object,
+  declarationNode: object,
+  allowedReferences: ReadonlySet<any>
+): boolean {
+  let safe = true;
+  let sawDeclaration = false;
+  root.find(j.Identifier, { name }).forEach((path: any) => {
+    if (!safe) return;
+    const referenceScope = bindingScopeNode(name, path) ?? nearestProgramNode(path);
+    if (referenceScope !== scopeNode) return;
+    const nearestDeclaration = nearestBlockDeclaration(name, path);
+    if (nearestDeclaration && nearestDeclaration !== declarationNode) return;
+    if (path.node === declarationNode) {
+      sawDeclaration = true;
+      return;
+    }
+    if (allowedReferences.has(path.node) || isClearlyNonReferenceIdentifier(path)) return;
+    if (isBindingWriteReference(path)) safe = false;
+  });
+  return safe && sawDeclaration;
+}
+
+/** Return true only when this identifier occurrence can replace its binding. */
+function isBindingWriteReference(path: any): boolean {
+  let cursor = path;
+  while (cursor?.parentPath) {
+    const parentPath = cursor.parentPath;
+    const parent = parentPath.node;
+    if (isTransparentExpressionWrapper(parent, cursor.node)
+      || (parent?.type === "AssignmentPattern" && parent.left === cursor.node)
+      || (parent?.type === "RestElement" && parent.argument === cursor.node)
+      || (parent?.type === "ArrayPattern" && parent.elements?.includes(cursor.node))
+      || ((parent?.type === "ObjectProperty" || parent?.type === "Property")
+        && parent.value === cursor.node && parentPath.parentPath?.node?.type === "ObjectPattern")) {
+      cursor = parentPath;
+      continue;
+    }
+    if (parent?.type === "AssignmentExpression" && parent.left === cursor.node) return true;
+    if ((parent?.type === "ForInStatement" || parent?.type === "ForOfStatement")
+      && parent.left === cursor.node) return true;
+    return (parent?.type === "UpdateExpression" && parent.argument === cursor.node)
+      || (parent?.type === "UnaryExpression" && parent.operator === "delete"
+        && parent.argument === cursor.node);
+  }
+  return false;
 }
 
 function belongsToConfig(path: any, bindings: Bindings, owners: string[]): boolean {
@@ -725,6 +1201,14 @@ function isContextMember(node: any, direct: Set<string>, contexts: Set<string>, 
 
 function directProperty(object: any, name: string): any | null {
   return object.properties?.find((property: any) => isObjectProperty(property) && propertyName(property.key) === name) ?? null;
+}
+
+function hasClientModeMemberCollision(object: any): boolean {
+  return (object.properties ?? []).some((property: any) =>
+    ["isDev", "signingKey"].includes(staticMemberKeyName(property) ?? "")
+      && (property.type === "ObjectMethod" || property.method === true
+        || property.kind === "get" || property.kind === "set")
+  );
 }
 
 function propertyName(node: any): string | null {
