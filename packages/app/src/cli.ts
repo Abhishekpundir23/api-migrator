@@ -4,7 +4,6 @@ import { argv, exit } from "node:process";
 import type { Manifest } from "@api-migrator/engine";
 import { loadEnv } from "./env.js";
 import { migrateRepo } from "./github.js";
-import type { PublicationRequest } from "./publication.js";
 import { safeErrorMessage } from "./security.js";
 
 loadEnv();
@@ -12,11 +11,8 @@ loadEnv();
 const VALUE_FLAGS = new Set([
   "--base",
   "--branch",
-  "--preflight",
-  "--approved-by",
-  "--override-reason",
 ]);
-const BOOLEAN_FLAGS = new Set(["--publish", "--override-unsafe"]);
+const BOOLEAN_FLAGS = new Set<string>();
 
 function usage(): never {
   console.error(
@@ -24,11 +20,9 @@ function usage(): never {
       "Preview:",
       "  tsx packages/app/src/cli.ts owner/repo [--base main] [--branch name]",
       "",
-      "Publish an exact preview:",
-      "  tsx packages/app/src/cli.ts owner/repo --publish --preflight pf_... --approved-by operator",
       "",
-      "Manual-review acknowledgment (operator-only; verification failures cannot be overridden):",
-      "  add --override-unsafe --override-reason \"reviewed and accepted because ...\"",
+      "Direct CLI publication is intentionally disabled. Use the local operator console",
+      "so the signed owner authorization and durable one-use receipt are enforced.",
     ].join("\n")
   );
   exit(1);
@@ -61,16 +55,6 @@ const value = (name: string): string | undefined => {
   return typeof found === "string" ? found : undefined;
 };
 
-const publication: PublicationRequest = flags.has("--publish")
-  ? {
-      mode: "publish",
-      preflightId: value("--preflight") ?? "",
-      approvedBy: value("--approved-by") ?? "",
-      overrideUnsafe: flags.has("--override-unsafe"),
-      overrideReason: value("--override-reason"),
-    }
-  : { mode: "preview" };
-
 const manifest: Manifest = {
   name: "Inngest TypeScript SDK v3 -> v4",
   provider: "inngest",
@@ -80,13 +64,13 @@ const manifest: Manifest = {
   peerFloors: [{ name: "typescript", range: "^5.8.0" }],
 };
 
-console.log(`${publication.mode === "preview" ? "Previewing" : "Publishing"} ${slug}...\n`);
+console.log(`Previewing ${slug}...\n`);
 migrateRepo({
   slug,
   manifest,
   baseBranch: value("--base"),
   branch: value("--branch"),
-  publication,
+  publication: { mode: "preview" },
 })
   .then(({ report, prUrl, publication: outcome }) => {
     console.log(`Changed files: ${report.changedFiles.length}`);
@@ -94,6 +78,7 @@ migrateRepo({
     console.log(`Preflight: ${outcome.preflightId}`);
     console.log(`Base: ${outcome.baseBranch}@${outcome.baseSha}`);
     console.log(`Branch: ${outcome.branch}`);
+    console.log(`Candidate tree: ${outcome.candidateTreeSha}`);
     if (outcome.headSha) console.log(`Approved head: ${outcome.headSha}`);
     console.log(`Artifact: ${outcome.artifactDigest}`);
     if (outcome.blockers.length) {

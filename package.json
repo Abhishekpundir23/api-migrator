@@ -19,6 +19,7 @@
     "console": "npm run dev --workspace @api-migrator/console",
     "migrate": "npm run migrate --workspace @api-migrator/app --",
     "db:migrate": "npm run migrate --workspace @api-migrator/db --",
+    "db:init-owner-store": "npm run init:owner-store --workspace @api-migrator/db --",
     "test": "npm run build:packages && npm run test:workspaces",
     "test:workspaces": "npm run test --workspaces --if-present",
     "test:pilot": "node --test scripts/validate-pilot-result.test.mjs",

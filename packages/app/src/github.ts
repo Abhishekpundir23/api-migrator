@@ -5,13 +5,19 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  Manifest,
   runMigration,
   reportToMarkdown,
-  type Manifest,
   type MigrationReport,
   type RunMigrationOptions,
 } from "@api-migrator/engine";
-import { resolveAuth, resolveOptionalAuth, type AuthMode, type AuthResult } from "./auth.js";
+import {
+  resolveAuthorizedWriteAuth,
+  resolveReadAuth,
+  resolveOptionalReadAuth,
+  type AuthMode,
+  type AuthResult,
+} from "./auth.js";
 import {
   applyVerifiedArtifact,
   assertAppliedArtifact,
@@ -38,10 +44,17 @@ import {
   githubDefaultCloneArgs,
   parseRepositorySlug,
   resolveMigrationBranch,
+  stableStringify,
   validateBranchName,
   type GitHubRepository,
 } from "./repository.js";
 import { sanitizeMigrationReport } from "./report.js";
+import {
+  buildExpectedOwnerAuthorizationBindings,
+  readOwnerPublicationPolicy,
+  type RemotePublicationState,
+} from "./owner-publication-policy.js";
+import { verifyOwnerAuthorizationEnvelope } from "./owner-authorization.js";
 import {
   createAskPassScript,
   gitAuthenticationEnv,
@@ -53,6 +66,8 @@ export interface MigrateRepoInput {
   /** Exact `owner/repo` slug. The clone URL is always derived internally. */
   slug: string;
   manifest: Manifest;
+  /** Exact manifest JSON bytes bound into owner authorization. */
+  manifestJson?: string;
   /** Optional explicit base; otherwise GitHub's current default branch is used. */
   baseBranch?: string;
   /** Optional exact content-addressed branch override returned by preview. */
@@ -71,6 +86,18 @@ export interface MigrateRepoResult {
   error?: string;
 }
 
+class CreatedPullRequestMismatchError extends Error {
+  override readonly name = "CreatedPullRequestMismatchError";
+
+  constructor(
+    message: string,
+    readonly pullRequestNumber: number,
+    readonly prUrl: string
+  ) {
+    super(message);
+  }
+}
+
 export function publicationRequiresAuthentication(request: PublicationRequest): boolean {
   return request.mode === "publish";
 }
@@ -81,6 +108,7 @@ export function publicationRequiresAuthentication(request: PublicationRequest): 
  */
 export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoResult> {
   const repository = parseRepositorySlug(input.slug);
+  const manifestJson = exactManifestJson(input.manifest, input.manifestJson);
   const publication = validatePublicationRequest(input.publication);
   const requestedBase = input.baseBranch ? validateBranchName(input.baseBranch) : undefined;
   const workdir = mkdtempSync(join(tmpdir(), "api-migrator-"));
@@ -106,7 +134,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     let baseBranch: string;
     let gitEnv: NodeJS.ProcessEnv | null = null;
     if (publicationRequiresAuthentication(publication)) {
-      auth = await resolveAuth(repository.slug, "read");
+      auth = await resolveReadAuth(repository.slug);
       authTokens.push(auth.token);
       authSessions.push(auth);
       baseBranch = requestedBase ?? (await discoverDefaultBranch(auth, repository));
@@ -129,7 +157,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       if (anonymousCloneError) {
         // Preview remains credential-free for public repositories. A private
         // repository can fall back only to an explicitly selected auth mode.
-        auth = await resolveOptionalAuth(repository.slug, "read");
+        auth = await resolveOptionalReadAuth(repository.slug);
         if (!auth) {
           throw new Error(
             `Public preview clone failed; private repositories require explicitly configured authentication: ${safeErrorMessage(anonymousCloneError)}`
@@ -150,7 +178,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     }
 
     const baseSha = gitExec(["rev-parse", "HEAD"], repoPath, cleanEnv).trim();
-    if (!/^[a-f0-9]{40,64}$/.test(baseSha)) throw new Error("Git returned an invalid base commit id");
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseSha)) throw new Error("Git returned an invalid base commit id");
 
     // Repository-controlled compilers/tests/lint never see the live clone or
     // its .git directory. The resulting tree is inspected before transfer.
@@ -180,26 +208,45 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       input.branch
     );
     const changed = artifact.files.length > 0;
+    // Everything leaving the engine uses the safe boundary copy. Artifact
+    // inspection intentionally retains the engine's exact existing semantics.
+    const report = sanitizeMigrationReport(engineReport);
+    const blockers = publicationBlockers(report);
+
+    // Compute the exact candidate tree during preview as well as publication.
+    // This mutates only the disposable clone and lets owner approval bind the
+    // Git tree before any write credential exists.
+    let candidateTreeSha = gitExec(["rev-parse", "HEAD^{tree}"], repoPath, cleanEnv).trim();
+    if (changed) {
+      applyVerifiedArtifact(repoPath, proposedPath, artifact);
+      assertAppliedArtifact(repoPath, proposedPath, artifact);
+      stageVerifiedArtifact(repoPath, artifact, cleanEnv);
+      candidateTreeSha = gitExec(["write-tree"], repoPath, cleanEnv).trim();
+    }
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(candidateTreeSha)) {
+      throw new Error("Git returned an invalid candidate tree id");
+    }
+
     const preflightId = createPreflightId({
       slug: repository.slug,
       baseBranch,
       baseSha,
       targetBranch: branch,
+      candidateTreeSha,
       artifactDigest: artifact.digest,
       manifest: input.manifest,
-      report: engineReport,
+      report,
     });
-    // Everything leaving this function uses the safe boundary copy. Artifact
-    // inspection and preflight hashing above intentionally retain their exact
-    // existing engine semantics.
-    const report = sanitizeMigrationReport(engineReport);
-    const blockers = publicationBlockers(report);
+    const previewCompletedAt =
+      publication.mode === "publish" ? publication.previewCompletedAt : Date.now();
 
     const common = {
       preflightId,
       baseBranch,
       baseSha,
       branch,
+      candidateTreeSha,
+      previewCompletedAt,
       artifactDigest: artifact.digest,
       blockers,
     };
@@ -235,8 +282,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     if (publication.preflightId !== preflightId) {
       assertPublicationAllowed(publication, preflightId, blockers);
     }
-    const absoluteBlocker = blockers.some((blocker) => blocker.code !== "manual_review_required");
-    if (absoluteBlocker || (blockers.length > 0 && !publication.overrideUnsafe)) {
+    if (blockers.length > 0) {
       return {
         report,
         prUrl: null,
@@ -252,14 +298,52 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
         },
       };
     }
-    const { overridden } = assertPublicationAllowed(publication, preflightId, blockers);
+    assertPublicationAllowed(publication, preflightId, blockers);
 
     if (!auth || !gitEnv) throw new Error("Publishing requires resolved GitHub authentication");
+    if (auth.mode !== "github-app" || auth.githubApp === null) {
+      throw new Error("Owner-authorized publication requires GitHub App authentication");
+    }
     assertCanonicalRemote(repoPath, repository, cleanEnv);
-    applyVerifiedArtifact(repoPath, proposedPath, artifact);
-    assertAppliedArtifact(repoPath, proposedPath, artifact);
+
+    // Inspect the exact branch/PR state with the read-only token. The owner's
+    // envelope authorizes only the resulting state-specific action set.
+    const reviewedRemote = await inspectRemotePublicationState(
+      auth,
+      repository,
+      branch,
+      baseBranch,
+      baseSha,
+      candidateTreeSha
+    );
+    const ownerPolicy = readOwnerPublicationPolicy();
+    const expectedOwnerBindings = buildExpectedOwnerAuthorizationBindings({
+      policy: ownerPolicy,
+      previewCompletedAt: publication.previewCompletedAt,
+      repositorySlug: repository.slug,
+      github: auth.githubApp,
+      baseBranch,
+      baseSha,
+      manifestJson,
+      preflightId,
+      artifactDigest: artifact.digest,
+      candidateBranch: branch,
+      candidateTreeSha,
+      report,
+      remote: reviewedRemote,
+    });
+    const ownerGrant = verifyOwnerAuthorizationEnvelope(
+      publication.ownerAuthorizationEnvelope,
+      {
+        expected: expectedOwnerBindings,
+        registryPath: ownerPolicy.registryPath,
+      }
+    );
+
     gitExec(["checkout", "-B", branch], repoPath, cleanEnv);
-    stageVerifiedArtifact(repoPath, artifact, cleanEnv);
+    if (gitExec(["write-tree"], repoPath, cleanEnv).trim() !== candidateTreeSha) {
+      throw new Error("Candidate tree changed after owner-review preparation");
+    }
     gitExec(
       [
         "-c",
@@ -274,13 +358,23 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       cleanEnv
     );
     const localCommitSha = gitExec(["rev-parse", "HEAD"], repoPath, cleanEnv).trim();
-    if (!/^[a-f0-9]{40,64}$/.test(localCommitSha)) throw new Error("Git returned an invalid migration commit id");
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(localCommitSha)) throw new Error("Git returned an invalid migration commit id");
     const expectedTreeSha = gitExec(["rev-parse", "HEAD^{tree}"], repoPath, cleanEnv).trim();
-    if (!/^[a-f0-9]{40,64}$/.test(expectedTreeSha)) throw new Error("Git returned an invalid migration tree id");
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(expectedTreeSha)) throw new Error("Git returned an invalid migration tree id");
+    if (expectedTreeSha !== candidateTreeSha) {
+      throw new Error("Committed migration tree differs from the reviewed candidate tree");
+    }
 
     // Mint write capability only after verification, blocker handling, exact
     // preflight approval, and creation of the local immutable artifact.
-    auth = await resolveAuth(repository.slug, "write");
+    const authorizedWrite = await resolveAuthorizedWriteAuth(repository.slug, {
+      readAuth: auth,
+      ownerGrant,
+      expected: expectedOwnerBindings,
+      registryPath: ownerPolicy.registryPath,
+    });
+    auth = authorizedWrite.auth;
+    const ownerAuthorizationReceipt = authorizedWrite.ownerAuthorizationReceipt;
     authTokens.push(auth.token);
     authSessions.push(auth);
     const publishAskPassPath = createAskPassScript(workdir);
@@ -294,6 +388,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       baseSha,
       expectedTreeSha
     );
+    assertRemotePublicationStateUnchanged(reviewedRemote, remote);
     const expectedHeadSha = remote.pushRequired ? localCommitSha : remote.sha;
     if (!expectedHeadSha) throw new Error("Could not determine the expected migration branch head");
 
@@ -305,20 +400,17 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       baseBranch,
       headSha: expectedHeadSha,
       branch,
+      candidateTreeSha,
+      ownerAuthorizationReceipt,
       publicationBlockers: blockers,
       approvedBy: publication.approvedBy,
-      overrideUnsafe: overridden,
-      ...(overridden && publication.overrideReason
-        ? { overrideReason: publication.overrideReason }
-        : {}),
+      overrideUnsafe: false,
       report,
     };
     const body = reportToMarkdown(report) + publicationAuditFooter(
       auth.mode,
       publication.approvedBy,
-      overridden,
-      expectedHeadSha,
-      publication.overrideReason
+      expectedHeadSha
     );
     if (remote.pushRequired) {
       const pushArgs = publicationPushArgs(repository, branch);
@@ -343,12 +435,10 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
         ...common,
         mode: "publish",
         status: "pr_opened",
-        overridden,
+        overridden: false,
         approvedBy: publication.approvedBy,
         headSha: expectedHeadSha,
-        ...(overridden && publication.overrideReason
-          ? { overrideReason: publication.overrideReason }
-          : {}),
+        ownerAuthorizationReceipt,
       },
     };
   } catch (error) {
@@ -411,7 +501,7 @@ function stageVerifiedArtifact(repoPath: string, artifact: VerifiedArtifact, env
     const stat = lstatSync(absolute);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Refusing to stage non-regular path: ${path}`);
     const blob = gitExec(["hash-object", "-w", "--no-filters", "--", path], repoPath, env).trim();
-    if (!/^[a-f0-9]{40,64}$/.test(blob)) throw new Error(`Git returned an invalid blob id for ${path}`);
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(blob)) throw new Error(`Git returned an invalid blob id for ${path}`);
     const mode = stat.mode & 0o111 ? "100755" : "100644";
     gitExec(["update-index", "--add", "--cacheinfo", mode, blob, path], repoPath, env);
   }
@@ -500,10 +590,10 @@ export async function reconcilePr(
   expectedHeadSha: string,
   expectedBaseSha: string
 ): Promise<string> {
-  if (!/^[a-f0-9]{40,64}$/.test(expectedHeadSha)) {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(expectedHeadSha)) {
     throw new Error("Invalid expected migration commit id");
   }
-  if (!/^[a-f0-9]{40,64}$/.test(expectedBaseSha)) {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(expectedBaseSha)) {
     throw new Error("Invalid expected base commit id");
   }
   try {
@@ -530,12 +620,17 @@ export async function reconcilePr(
       title,
       body,
     });
+    const created = createdPullRequestEvidence(repository, data.number, data.html_url);
     if (data.head?.sha !== expectedHeadSha || data.base?.ref !== base || data.base?.sha !== expectedBaseSha) {
-      await closeNewPullRequestBestEffort(auth, repository, data.number);
-      throw new Error("New pull request head or approved base changed during reconciliation");
+      throw new CreatedPullRequestMismatchError(
+        "New pull request head or approved base changed during reconciliation; the created pull request remains open for manual review",
+        created.number,
+        created.prUrl
+      );
     }
-    return data.html_url;
+    return created.prUrl;
   } catch (error) {
+    if (error instanceof CreatedPullRequestMismatchError) throw error;
     throw new Error(`Could not reconcile pull request: ${safeErrorMessage(error, [auth.token])}`);
   }
 }
@@ -566,11 +661,62 @@ export async function reconcilePrWithAudit(
     );
   } catch (error) {
     const message = safeErrorMessage(error, [auth.token]);
+    const failedAudit = error instanceof CreatedPullRequestMismatchError
+      ? {
+          ...audit,
+          pullRequestNumber: error.pullRequestNumber,
+          prUrl: error.prUrl,
+        }
+      : audit;
     throw new PublicationAttemptError(
       `Migration branch ${audit.branch} is present but pull request reconciliation failed: ${message}`,
-      audit
+      failedAudit
     );
   }
+}
+
+function createdPullRequestEvidence(
+  repository: GitHubRepository,
+  number: number,
+  htmlUrl: string
+): { number: number; prUrl: string } {
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new Error("GitHub returned an invalid created pull request number");
+  }
+  const prUrl = `https://github.com/${repository.owner}/${repository.repo}/pull/${number}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(htmlUrl);
+  } catch {
+    throw new CreatedPullRequestMismatchError(
+      "GitHub returned an invalid created pull request URL; the repository-derived pull request remains open for manual review",
+      number,
+      prUrl
+    );
+  }
+  const segments = parsed.pathname.split("/");
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname.toLowerCase() !== "github.com" ||
+    parsed.port !== "" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    segments.length !== 5 ||
+    segments[0] !== "" ||
+    segments[1]?.toLowerCase() !== repository.owner.toLowerCase() ||
+    segments[2]?.toLowerCase() !== repository.repo.toLowerCase() ||
+    segments[3] !== "pull" ||
+    segments[4] !== String(number)
+  ) {
+    throw new CreatedPullRequestMismatchError(
+      "GitHub returned a mismatched created pull request URL; the repository-derived pull request remains open for manual review",
+      number,
+      prUrl
+    );
+  }
+  return { number, prUrl };
 }
 
 async function assertRemoteBaseMatchesApproval(
@@ -590,24 +736,6 @@ async function assertRemoteBaseMatchesApproval(
     }
   } catch (error) {
     throw new Error(`Could not verify approved base branch: ${safeErrorMessage(error, [auth.token])}`);
-  }
-}
-
-async function closeNewPullRequestBestEffort(
-  auth: AuthResult,
-  repository: GitHubRepository,
-  pullNumber: number
-): Promise<void> {
-  if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) return;
-  try {
-    await auth.octokit.pulls.update({
-      owner: repository.owner,
-      repo: repository.repo,
-      pull_number: pullNumber,
-      state: "closed",
-    });
-  } catch {
-    // The original head-mismatch failure remains authoritative.
   }
 }
 
@@ -645,9 +773,7 @@ function prTitle(manifest: Manifest): string {
 function publicationAuditFooter(
   mode: AuthMode,
   approvedBy: string,
-  overridden: boolean,
-  expectedHeadSha: string,
-  overrideReason?: string
+  expectedHeadSha: string
 ): string {
   const generator = mode === "github-app" ? "api-migrator GitHub App" : "api-migrator pilot auth";
   const lines = [
@@ -657,6 +783,43 @@ function publicationAuditFooter(
     `_Generated by the ${generator} after approval by \`${approvedBy}\`._`,
     `_Approved migration head: \`${expectedHeadSha}\`._`,
   ];
-  if (overridden) lines.push(`_Safety gate override: ${overrideReason ?? "operator override"}_`);
   return lines.join("\n");
+}
+
+function assertRemotePublicationStateUnchanged(
+  reviewed: RemotePublicationState,
+  current: RemotePublicationState
+): void {
+  const reviewedPr = reviewed.pullRequest;
+  const currentPr = current.pullRequest;
+  if (
+    reviewed.pushRequired !== current.pushRequired ||
+    reviewed.sha !== current.sha ||
+    (reviewedPr?.number ?? null) !== (currentPr?.number ?? null) ||
+    (reviewedPr?.baseBranch ?? null) !== (currentPr?.baseBranch ?? null)
+  ) {
+    throw new Error("Remote branch or pull request state changed after owner authorization");
+  }
+}
+
+/**
+ * Convert a manifest into the one canonical UTF-8 representation used by the
+ * preflight and owner-authorization boundary. A supplied stored value must
+ * describe exactly the same validated manifest; duplicate-key or alternate
+ * byte encodings never become authorization input.
+ */
+function exactManifestJson(manifest: Manifest, stored?: string): string {
+  let parsed: Manifest;
+  try {
+    if (stored !== undefined && Buffer.byteLength(stored, "utf8") > 256 * 1024) {
+      throw new Error("manifest JSON is too large");
+    }
+    parsed = Manifest.parse(stored === undefined ? manifest : JSON.parse(stored));
+  } catch {
+    throw new Error("Manifest JSON is invalid at the publication boundary");
+  }
+  if (stableStringify(parsed) !== stableStringify(Manifest.parse(manifest))) {
+    throw new Error("Stored manifest JSON does not match the migration manifest");
+  }
+  return stableStringify(parsed);
 }

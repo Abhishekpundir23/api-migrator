@@ -91,7 +91,8 @@ another repository, or run a command with production secrets.
 - Authorized persistent evidence fields:
 - GitHub App/repository-access removal deadline:
 - Disposable runner and source-storage deletion deadline:
-- Isolated pilot-database deletion deadline:
+- Deletable pilot run-record deadline:
+- Replay-store/anchor retention or explicit whole-unit decommission decision:
 - Logs, exports, and backups deletion deadline:
 - Authorization and feedback deletion deadline:
 - Whether de-identified aggregate metrics may be retained:
@@ -111,63 +112,78 @@ List the authority, target, reason, deadline, and evidence for every exception.
 
 ## Post-preview publication decision
 
-This section specifies the future signed envelope. Complete it only after the
-owner has reviewed the sanitized preview and patch. A change to any bound field
-invalidates the envelope.
+This section records the inputs to the unreleased candidate's exact canonical
+Ed25519 owner envelope. Complete it only after the owner has reviewed the
+sanitized preview and patch. Do not hand-build or hand-edit the envelope:
+owner challenge/signing tooling is still a release gate. A change to any bound
+field requires a new preview and envelope.
 
-`v0.1.0-pilot` does not verify this owner envelope before write-token minting.
-Therefore a completed section is an audit record only and does not authorize
-external publication on that version.
+The outer envelope contains exactly `version`, `keyId`, canonical unpadded
+base64url `payload`, and `signature`. The payload contains exactly the runtime
+fields below. Store the raw envelope only in restricted transient handling; do
+not commit, log, echo, or place it in the sidecar.
 
-- Envelope version/ID:
-- Authorization ID:
+- Envelope version (`1`) and unique `envelopeId`:
+- Authorization ID and digest of this pre-run authorization:
 - Pilot ID:
-- Publication approval evidence reference:
-- Approved by owner representative and authority reference:
-- Signature algorithm, owner key/issuer ID, and signature:
-- Issued at (UTC):
-- Expires at (UTC):
+- Owner signer ID and key ID:
+- Publication approval evidence digest:
+- Exact preview completion time (Unix epoch milliseconds):
+- Issued-at, not-before, envelope expiry, and authorization expiry (Unix epoch
+  milliseconds):
 - Replay-resistant nonce:
-- Repository (`owner/repo`):
-- GitHub numeric repository ID:
-- Base branch:
-- Exact base SHA:
-- Provider:
-- Transform set:
+- Canonical repository slug, GitHub numeric repository ID, and numeric owner
+  ID:
+- GitHub App ID and installation ID:
+- Base branch and exact base SHA:
 - Engine tag and exact commit:
-- Exact manifest storage reference, byte length, and digest:
-- Exact preflight ID:
-- Exact artifact digest:
-- Candidate content-addressed branch:
-- Canonical `findingsDigest`:
-- Canonical `resolutionsDigest`:
-- Canonical authorized required-CI set digest:
-- Per-finding identity/resolution evidence reference and exact-byte digest:
-- Owner-requested corrections included in this artifact:
-- Allowed publication actions:
+- Exact canonical manifest byte length and digest:
+- Exact preflight ID and artifact digest:
+- Candidate content-addressed branch and exact candidate tree SHA:
+- Canonical empty findings and resolutions digests:
+- Canonical command-scope digest:
+- Trusted runner-attestation digest:
+- Current ruleset-evidence digest:
+- Authorized required-CI set digest:
+- Exact allowed-action sequence:
+- Existing pull-request number, or `null`:
 
-Select future actions requested by the owner; these remain disabled for
-external source on `v0.1.0-pilot`:
+Allowed actions are derived from the observed remote state, not selected
+freely: create branch plus create pull request, create pull request for an
+already matching immutable branch, or update the one already matching pull
+request. A pull-request number is bound only for the update action.
 
-- [ ] Mint one exact-repository write token after envelope validation.
-- [ ] Create the exact content-addressed branch.
-- [ ] Open or update the exact pull request against the approved base branch.
-
-- [ ] Future enforcement must verify this signature and every binding in the
-  same trusted process immediately before minting a write token.
-- [ ] Approval occurred after the exact preview completed; the pre-run
-  authorization and this envelope will both be unexpired at write-token
-  minting; the nonce has not been used before.
-- [ ] App evidence binds App ID, installation ID, exact slug, numeric repository
-  ID, selected repository IDs, and separate read/write policy, token,
-  capability, issue/expiry/revocation evidence.
-- [ ] Ruleset evidence binds the same numeric repository ID, ruleset IDs, exact
-  configuration digests, targets, bypass actors, and timestamp.
-- [ ] Required-CI evidence binds the same numeric repository ID, required check
-  workflow and integration identities, approved head SHA, URLs, conclusions,
+- [ ] The owner key registry is an owner-only regular file outside the
+  workspace and contains the exact Ed25519 public key, signer/repository scope,
+  validity interval, fingerprint, and current key/authorization revocations.
+- [ ] Approval occurred after the exact preview completed; this pre-run
+  authorization and the envelope will both be unexpired at write-token
+  minting.
+- [ ] App evidence binds App ID, installation ID, exact slug, numeric owner and
+  repository IDs, selected repository IDs, and separate read/write policy,
+  token, capability, issue/expiry/revocation evidence.
+- [ ] Ruleset evidence binds the same numeric repository ID, ruleset IDs,
+  exact configuration digests, targets, bypass actors, and timestamp.
+- [ ] Required-CI evidence binds the same numeric repository ID, required
+  workflow/check/integration identities, approved head SHA, URLs, conclusions,
   and timestamp.
-- [ ] I understand that a later artifact, base, manifest, preflight, or branch
-  or any finding/resolution change requires a new preview and signed envelope.
+- [ ] The externally anchored replay store is explicitly initialized, and its
+  stable store identity, owner-only anchor, and database/anchor backup unit are
+  recorded outside Git.
+- [ ] I understand that all failed, skipped, and unresolved verification or
+  review findings block publication and cannot be overridden. Owner-requested
+  corrections require a new preview and signed envelope.
+
+The candidate verifies every signed binding, current key/authorization state,
+repository/base state, time, and allowed action; durably consumes the one-use
+authorization; and rechecks live state immediately before and after the sole
+write-token broker mints a token. A safe consumption receipt contains digests
+and identifiers only, never the raw payload or signature.
+
+External-source publication remains disabled until owner challenge/signing
+tooling, the disposable egress-filtered runner, current ruleset and required-CI
+evidence, and a supervised sandbox publication drill are complete. Completing
+this record does not waive those gates.
 
 The approved head SHA is recorded after publication. Before any merge decision,
 the owner must verify that the PR still belongs to the exact numeric repository

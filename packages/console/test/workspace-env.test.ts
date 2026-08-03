@@ -4,9 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveDatabasePath } from "@api-migrator/db";
-import { createApprovalToken, verifyApprovalToken } from "../lib/approval";
+import {
+  createPreviewReceipt,
+  prepareOperatorApproval,
+  verifyOperatorApprovalToken,
+} from "../lib/approval";
 import { credentialsFromEnv } from "../lib/operator-auth";
 import { assertWorkspaceEnvFilesSecure, loadWorkspaceEnv } from "../workspace-env.mjs";
+import { DEFAULT_INNGEST_MANIFEST_JSON } from "../lib/default-manifest";
 
 test("workspace env files must be owner-only regular files", () => {
   const directory = mkdtempSync(join(tmpdir(), "api-migrator-console-env-security-"));
@@ -55,16 +60,29 @@ test("root env reaches console authentication, approval, and the shared database
       username: "root-env-operator",
       password: "root-env-password",
     });
-    const manifestJson = '{"provider":"inngest"}';
-    const approval = createApprovalToken({
+    const manifestJson = DEFAULT_INNGEST_MANIFEST_JSON;
+    const preview = createPreviewReceipt({
       campaignId: "campaign-env",
       manifestJson,
-      preflights: [{ slug: "owner/repo", preflightId: "preflight-env-0123456789" }],
-      concurrency: 1,
+      repository: {
+        slug: "owner/repo",
+        preflightId: `pf_${"a".repeat(64)}`,
+        artifactDigest: "b".repeat(64),
+        candidateTreeSha: "c".repeat(40),
+        previewCompletedAt: 1_000,
+      },
     });
-    assert.equal(verifyApprovalToken({
-      token: approval.token,
+    const envelope = '{"signed":"owner"}';
+    const approval = prepareOperatorApproval({
+      previewReceipt: preview.previewReceipt,
+      ownerAuthorizationEnvelope: envelope,
+      campaignId: "campaign-env",
+      manifestJson,
+    });
+    assert.equal(verifyOperatorApprovalToken({
+      operatorApprovalToken: approval.operatorApprovalToken,
       confirmation: approval.confirmationPhrase,
+      ownerAuthorizationEnvelope: envelope,
       campaignId: "campaign-env",
       manifestJson,
     }).campaignId, "campaign-env");

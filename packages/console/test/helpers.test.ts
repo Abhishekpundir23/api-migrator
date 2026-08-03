@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { consumeApprovalToken, createApprovalToken, verifyApprovalToken } from "../lib/approval";
+import { createPreviewReceipt, prepareOperatorApproval } from "../lib/approval";
 import {
   credentialsFromEnv,
   isAuthorizedHeader,
@@ -15,7 +15,8 @@ import {
 import { formatRunSummary, parseRunSummary } from "../lib/summary";
 import { buildPreviewEvidence } from "../lib/preview";
 import { buildHistoricalRunEvidence, shortAuditValue } from "../lib/run-history";
-import { RunBusyError, withApprovalRunLock, withRunLock } from "../lib/run-lock";
+import { RunBusyError, withOperatorApprovalRunLock, withRunLock } from "../lib/run-lock";
+import { DEFAULT_INNGEST_MANIFEST_JSON } from "../lib/default-manifest";
 
 test("operator credentials stay server-side and Basic headers are checked", () => {
   const credentials = credentialsFromEnv({
@@ -65,63 +66,28 @@ test("limited JSON reader rejects oversized and malformed requests", async () =>
   );
 });
 
-test("approval tokens bind campaign, manifest, preflights, expiry, and typed phrase", () => {
-  const secret = "0123456789abcdef0123456789abcdef";
-  const created = createApprovalToken({
-    campaignId: "2f88d980-d4ce-4fb7-b3cc-fdf3503b05d3",
-    manifestJson: '{"name":"v4"}',
-    preflights: [{ slug: "owner/repo", preflightId: "preflight-0123456789" }],
-    concurrency: 1,
-    now: 1_000,
-    secret,
-  });
-  const verified = verifyApprovalToken({
-    token: created.token,
-    confirmation: "PUBLISH 1 PR",
-    campaignId: "2f88d980-d4ce-4fb7-b3cc-fdf3503b05d3",
-    manifestJson: '{"name":"v4"}',
-    now: 2_000,
-    secret,
-  });
-  assert.equal(verified.preflights[0]?.slug, "owner/repo");
-  consumeApprovalToken(created.token, created.expiresAt, 2_000);
-  assert.throws(
-    () => consumeApprovalToken(created.token, created.expiresAt, 2_000),
-    /already used/
-  );
-  assert.throws(
-    () =>
-      verifyApprovalToken({
-        token: created.token,
-        confirmation: "PUBLISH 1 PR",
-        campaignId: "2f88d980-d4ce-4fb7-b3cc-fdf3503b05d3",
-        manifestJson: '{"name":"changed"}',
-        now: 2_000,
-        secret,
-      }),
-    HttpInputError
-  );
-  assert.throws(
-    () =>
-      verifyApprovalToken({
-        token: created.token,
-        confirmation: "PUBLISH 1 PR",
-        campaignId: "2f88d980-d4ce-4fb7-b3cc-fdf3503b05d3",
-        manifestJson: '{"name":"v4"}',
-        now: 700_000,
-        secret,
-      }),
-    /expired/
-  );
-});
-
 test("a busy publication does not consume approval, but an acquired replay fails", async () => {
   const secret = "fedcba9876543210fedcba9876543210";
-  const approval = createApprovalToken({
+  const now = Date.now();
+  const preview = createPreviewReceipt({
     campaignId: "3f88d980-d4ce-4fb7-b3cc-fdf3503b05d3",
-    manifestJson: '{"name":"lock-order"}',
-    preflights: [{ slug: "owner/locked-repo", preflightId: "preflight-locked-0123456789" }],
-    concurrency: 1,
+    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+    repository: {
+      slug: "owner/locked-repo",
+      preflightId: `pf_${"a".repeat(64)}`,
+      artifactDigest: "b".repeat(64),
+      candidateTreeSha: "c".repeat(40),
+      previewCompletedAt: now - 1_000,
+    },
+    now,
+    secret,
+  });
+  const approval = prepareOperatorApproval({
+    previewReceipt: preview.previewReceipt,
+    ownerAuthorizationEnvelope: '{"signed":"owner"}',
+    campaignId: "3f88d980-d4ce-4fb7-b3cc-fdf3503b05d3",
+    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+    now: now + 1,
     secret,
   });
 
@@ -130,20 +96,20 @@ test("a busy publication does not consume approval, but an acquired replay fails
   const held = withRunLock(async () => blocker);
 
   await assert.rejects(
-    () => withApprovalRunLock(approval.token, approval.expiresAt, async () => "must not run"),
+    () => withOperatorApprovalRunLock(approval.operatorApprovalToken, approval.expiresAt, async () => "must not run"),
     RunBusyError
   );
   release();
   await held;
 
   let publications = 0;
-  await withApprovalRunLock(approval.token, approval.expiresAt, async () => {
+  await withOperatorApprovalRunLock(approval.operatorApprovalToken, approval.expiresAt, async () => {
     publications += 1;
   });
   assert.equal(publications, 1);
 
   await assert.rejects(
-    () => withApprovalRunLock(approval.token, approval.expiresAt, async () => {
+    () => withOperatorApprovalRunLock(approval.operatorApprovalToken, approval.expiresAt, async () => {
       publications += 1;
     }),
     /already used/
@@ -163,6 +129,7 @@ test("preview evidence exposes reviewable identity and checks without command ou
   const view = buildPreviewEvidence({
     slug: "owner/repo",
     status: "preview_ready",
+    preflightId: `pf_${"f".repeat(64)}`,
     report: {
       changedFiles: ["package.json", "src/client.ts"],
       entries: [
@@ -189,15 +156,20 @@ test("preview evidence exposes reviewable identity and checks without command ou
       baseSha: "b".repeat(40),
       headSha: "c".repeat(40),
       branch: "api-migrator/inngest-v4",
+      candidateTreeSha: "d".repeat(40),
+      previewCompletedAt: 1_700_000_000_000,
       blockers: [{ code: "manual_review_required", message: "one item needs review" }],
     },
   });
 
   assert.equal(view.publishable, true);
+  assert.equal(view.identity.preflightId, `pf_${"f".repeat(64)}`);
   assert.equal(view.identity.artifactDigest, `sha256:${"a".repeat(64)}`);
   assert.equal(view.identity.baseBranch, "main");
   assert.equal(view.identity.baseSha, "b".repeat(40));
   assert.equal(view.identity.headSha, "c".repeat(40));
+  assert.equal(view.identity.candidateTreeSha, "d".repeat(40));
+  assert.equal(view.identity.previewCompletedAt, 1_700_000_000_000);
   assert.deepEqual(view.changedFiles, ["package.json", "src/client.ts"]);
   assert.equal(view.verification.runner, "docker");
   assert.equal(view.verification.outcome, "passed");

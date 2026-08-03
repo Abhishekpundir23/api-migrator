@@ -58,6 +58,16 @@ test("database enforces relationships and atomically refreshes repository metada
     const run = createRun({ campaignId: campaign.id, repoId: repo.id, branch: "pilot/preview" });
     const scanning = updateRun(run.id, { status: "scanning" });
     assert.equal(scanning.finishedAt, null);
+    for (const length of [41, 63]) {
+      assert.throws(
+        () => updateRun(run.id, { status: "scanning", baseSha: "a".repeat(length) }),
+        /invalid base commit audit value/
+      );
+      assert.throws(
+        () => updateRun(run.id, { status: "scanning", headSha: "b".repeat(length) }),
+        /invalid base commit audit value/
+      );
+    }
     const ready = updateRun(run.id, {
       status: "preview_ready",
       summary: { applied: 2, review: 0, changedFiles: 1, introducedErrors: 0, verified: true },
@@ -126,7 +136,7 @@ test("migration preserves legacy rows and adds nullable publication identity", (
     migrate(db);
     migrate(db);
     const versionReader = new Database(path, { readonly: true });
-    assert.equal(versionReader.pragma("user_version", { simple: true }), 4);
+    assert.equal(versionReader.pragma("user_version", { simple: true }), 5);
     versionReader.close();
     const migrated = getRun("run-1");
     assert.ok(migrated);

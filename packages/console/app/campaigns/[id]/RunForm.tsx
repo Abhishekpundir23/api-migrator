@@ -7,34 +7,50 @@ import { buildPreviewEvidence, type PreviewResultInput } from "../../../lib/prev
 type ResultItem = PreviewResultInput;
 
 interface RunResponse {
-  mode?: "preview" | "publish";
+  mode?: "preview" | "prepare_publish" | "publish";
   error?: string;
   summary?: { results?: ResultItem[] };
-  approvalToken?: string | null;
+  previewReceipt?: string | null;
+  previewReceiptExpiresAt?: number | null;
+  operatorApprovalToken?: string | null;
   confirmationPhrase?: string | null;
   approvalExpiresAt?: number | null;
+  ownerAuthorizationDigest?: string | null;
+  manifestDigest?: string | null;
 }
 
-/** Local operator form: preview first, then explicitly approve publication. */
+/** Local operator form: preview, attach owner authorization, then approve. */
 export default function RunForm({ campaignId }: { campaignId: string }) {
   const router = useRouter();
   const [slugs, setSlugs] = useState("");
   const [results, setResults] = useState<ResultItem[]>([]);
-  const [approvalToken, setApprovalToken] = useState<string | null>(null);
+  const [previewReceipt, setPreviewReceipt] = useState<string | null>(null);
+  const [ownerAuthorizationEnvelope, setOwnerAuthorizationEnvelope] = useState("");
+  const [operatorApprovalToken, setOperatorApprovalToken] = useState<string | null>(null);
+  const [ownerAuthorizationDigest, setOwnerAuthorizationDigest] = useState<string | null>(null);
+  const [manifestDigest, setManifestDigest] = useState<string | null>(null);
   const [confirmationPhrase, setConfirmationPhrase] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"preview" | "publish" | null>(null);
+  const [busy, setBusy] = useState<"preview" | "prepare_publish" | "publish" | null>(null);
   const publishableCount = results.filter((result) => result.status === "preview_ready").length;
+
+  function clearFinalApproval() {
+    setOperatorApprovalToken(null);
+    setOwnerAuthorizationDigest(null);
+    setManifestDigest(null);
+    setConfirmationPhrase(null);
+    setConfirmation("");
+  }
 
   async function preview(e: React.FormEvent) {
     e.preventDefault();
     setBusy("preview");
     setError(null);
     setResults([]);
-    setApprovalToken(null);
-    setConfirmationPhrase(null);
-    setConfirmation("");
+    setPreviewReceipt(null);
+    setOwnerAuthorizationEnvelope("");
+    clearFinalApproval();
     const repoSlugs = slugs
       .split(/[\n,\s]+/)
       .map((s) => s.trim())
@@ -57,8 +73,7 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
         return;
       }
       setResults(data.summary?.results ?? []);
-      setApprovalToken(data.approvalToken ?? null);
-      setConfirmationPhrase(data.confirmationPhrase ?? null);
+      setPreviewReceipt(data.previewReceipt ?? null);
       setBusy(null);
       router.refresh();
     } catch (err: unknown) {
@@ -67,8 +82,49 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
     }
   }
 
+  async function preparePublish() {
+    if (!previewReceipt || publishableCount !== 1 || ownerAuthorizationEnvelope.length === 0) return;
+    setBusy("prepare_publish");
+    setError(null);
+    clearFinalApproval();
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "prepare_publish",
+          previewReceipt,
+          ownerAuthorizationEnvelope,
+        }),
+      });
+      const data = (await res.json()) as RunResponse;
+      if (!res.ok) {
+        setError(data.error ?? "publication preparation failed");
+        setBusy(null);
+        return;
+      }
+      setOperatorApprovalToken(data.operatorApprovalToken ?? null);
+      setOwnerAuthorizationDigest(data.ownerAuthorizationDigest ?? null);
+      setManifestDigest(data.manifestDigest ?? null);
+      setConfirmationPhrase(data.confirmationPhrase ?? null);
+      setBusy(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(null);
+    }
+  }
+
   async function publish() {
-    if (!approvalToken || !confirmationPhrase || publishableCount === 0) return;
+    if (!operatorApprovalToken || !confirmationPhrase || publishableCount !== 1) return;
+    const dispatchedToken = operatorApprovalToken;
+    const dispatchedEnvelope = ownerAuthorizationEnvelope;
+    const dispatchedConfirmation = confirmation;
+    // Once dispatched, the server may consume the one-use controls or create a
+    // PR even if the response is lost. Drop sensitive/stale state immediately;
+    // every retry must begin with a fresh preview and owner envelope.
+    setPreviewReceipt(null);
+    setOwnerAuthorizationEnvelope("");
+    clearFinalApproval();
     setBusy("publish");
     setError(null);
     try {
@@ -77,8 +133,9 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "publish",
-          approvalToken,
-          confirmation,
+          operatorApprovalToken: dispatchedToken,
+          ownerAuthorizationEnvelope: dispatchedEnvelope,
+          confirmation: dispatchedConfirmation,
         }),
       });
       const data = (await res.json()) as RunResponse;
@@ -87,9 +144,6 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
           setResults(data.summary.results ?? []);
           // The approval was consumed once publication acquired the run lock.
           // Outcome failures require a fresh preview before any retry.
-          setApprovalToken(null);
-          setConfirmationPhrase(null);
-          setConfirmation("");
         }
         setError(data.error ?? "publication failed");
         setBusy(null);
@@ -97,9 +151,6 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
         return;
       }
       setResults(data.summary?.results ?? []);
-      setApprovalToken(null);
-      setConfirmationPhrase(null);
-      setConfirmation("");
       setBusy(null);
       router.refresh();
     } catch (err: unknown) {
@@ -111,16 +162,17 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
   return (
     <form onSubmit={preview}>
       <div className="field">
-        <label>Repo slugs (one per line: owner/repo)</label>
+        <label>Repository slug (owner/repo; one repository in this milestone)</label>
         <textarea
           value={slugs}
           onChange={(e) => {
             setSlugs(e.target.value);
-            setApprovalToken(null);
-            setConfirmationPhrase(null);
-            setConfirmation("");
+            setResults([]);
+            setPreviewReceipt(null);
+            setOwnerAuthorizationEnvelope("");
+            clearFinalApproval();
           }}
-          placeholder={"owner/repo-1\nowner/repo-2"}
+          placeholder="owner/repo"
           style={{ minHeight: 100 }}
         />
       </div>
@@ -129,10 +181,10 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
         <section className="preview-results" aria-label="Migration preview evidence">
           <div className="preview-results-heading">
             <div>
-              <h3>{approvalToken ? "Preview evidence" : "Run evidence"}</h3>
+              <h3>{previewReceipt ? "Preview evidence" : "Run evidence"}</h3>
               <p className="muted">Review each repository&apos;s identity, files, checks, and warnings.</p>
             </div>
-            {approvalToken && <span className="badge preview_ready">{publishableCount} ready</span>}
+            {previewReceipt && <span className="badge preview_ready">1 ready</span>}
           </div>
           {results.map((result) => (
             <PreviewEvidenceCard result={result} key={`${result.slug}-${result.status}`} />
@@ -143,29 +195,56 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
         {busy === "preview" ? "Generating safe preview..." : "Preview migration"}
       </button>
 
-      {approvalToken && confirmationPhrase && publishableCount > 0 && (
+      {previewReceipt && publishableCount === 1 && (
         <div className="approval card">
-          <h3>Publish reviewed previews</h3>
+          <h3>Attach repository-owner authorization</h3>
           <p>
-            This approval covers {publishableCount} {publishableCount === 1 ? "repository" : "repositories"}
-            {" "}marked <code>preview_ready</code>. Re-check the artifact fingerprint, commit, files,
-            and verification evidence above before continuing.
+            Paste the separately signed owner envelope for this exact preview. It stays only in this
+            page&apos;s memory and the current request; the server never returns, logs, or persists it.
           </p>
-          <label htmlFor="confirmation">Type {confirmationPhrase} to confirm</label>
-          <input
-            id="confirmation"
-            value={confirmation}
-            onChange={(event) => setConfirmation(event.target.value)}
+          <label htmlFor="owner-authorization-envelope">Signed owner authorization envelope</label>
+          <textarea
+            id="owner-authorization-envelope"
+            value={ownerAuthorizationEnvelope}
+            onChange={(event) => {
+              setOwnerAuthorizationEnvelope(event.target.value);
+              clearFinalApproval();
+            }}
             autoComplete="off"
+            spellCheck={false}
+            style={{ minHeight: 150 }}
           />
           <button
             type="button"
-            className="btn danger"
-            disabled={busy !== null || confirmation !== confirmationPhrase}
-            onClick={publish}
+            className="btn"
+            disabled={busy !== null || ownerAuthorizationEnvelope.length === 0 || operatorApprovalToken !== null}
+            onClick={preparePublish}
           >
-            {busy === "publish" ? "Publishing approved PRs..." : "Publish approved PRs"}
+            {busy === "prepare_publish" ? "Binding exact authorization..." : "Prepare publication approval"}
           </button>
+
+          {operatorApprovalToken && confirmationPhrase && ownerAuthorizationDigest && (
+            <div className="evidence-section warning">
+              <p><strong>Exact envelope digest:</strong> <code>{ownerAuthorizationDigest}</code></p>
+              {manifestDigest ? <p><strong>Canonical manifest digest:</strong> <code>{manifestDigest}</code></p> : null}
+              <p>Re-check the preflight, artifact, candidate tree, and envelope digest before publishing.</p>
+              <label htmlFor="confirmation">Type {confirmationPhrase} to confirm</label>
+              <input
+                id="confirmation"
+                value={confirmation}
+                onChange={(event) => setConfirmation(event.target.value)}
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                className="btn danger"
+                disabled={busy !== null || confirmation !== confirmationPhrase}
+                onClick={publish}
+              >
+                {busy === "publish" ? "Publishing approved PR..." : "Publish approved PR"}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </form>
@@ -186,11 +265,19 @@ function PreviewEvidenceCard({ result }: { result: ResultItem }) {
       </header>
 
       <div className="evidence-grid">
+        <EvidenceValue label="Preflight ID" value={evidence.identity.preflightId} important />
         <EvidenceValue label="Artifact fingerprint" value={evidence.identity.artifactDigest} important />
+        <EvidenceValue label="Candidate tree" value={evidence.identity.candidateTreeSha} important />
         <EvidenceValue label="Base branch" value={evidence.identity.baseBranch} />
         <EvidenceValue label="Base commit" value={evidence.identity.baseSha} />
         <EvidenceValue label="Approved PR head" value={evidence.identity.headSha} />
         <EvidenceValue label="Proposed branch" value={evidence.identity.targetBranch} />
+        <EvidenceValue
+          label="Preview completed"
+          value={evidence.identity.previewCompletedAt === null
+            ? null
+            : new Date(evidence.identity.previewCompletedAt).toISOString()}
+        />
       </div>
 
       <details className="evidence-section" open>

@@ -35,36 +35,47 @@ suspension state, or selected-repository scope differs from policy.
 
 Public owner-authorized preview uses anonymous clone and no App. Private preview
 requires explicit pre-run owner approval for the exact selected-repository App
-installation and a read-only repository token. If a repository cannot use that
-path, private preview is blocked. Publication is a later, separate gate.
+installation and a read-only repository token with Contents, Metadata, and Pull
+requests read. If a repository cannot use that path, private preview is
+blocked. Publication is a later, separate gate.
 
 ## Token phases
 
 1. Public preview metadata/clone uses no credential when possible.
 2. A private preview may request a single-repository token with Contents read
-   and Metadata read when the pre-run authorization expressly permits it.
+   and Metadata and Pull requests read when the pre-run authorization expressly
+   permits it.
 3. A publish invocation has a separately evidenced single-repository read
    phase for repository discovery, clone, migration, and verification.
-4. A future publication-capable version may then request a distinct
-   single-repository token with Contents write, Pull requests write, and
-   Metadata read only after successful verification, current ruleset evidence,
-   and validation of the exact signed owner envelope in the same trusted
-   process immediately before token minting. Operator approval and a post-run
-   sidecar are not substitutes.
+4. The unreleased candidate's sole write-token broker may then request a
+   distinct single-repository token with Contents write, Pull requests write,
+   and Metadata read only after successful verification, zero blockers,
+   current evidence bindings, exact canonical Ed25519 owner-envelope
+   verification, and durable one-use consumption in the externally anchored
+   replay store. It rechecks live repository/base identity and owner
+   revocation/time immediately before and after token minting. Operator
+   approval and a post-run sidecar are not substitutes.
 5. Each phase records policy observation, exact capabilities, issue/expiry,
    and revocation evidence. Tokens are not cached or placed in URLs/arguments.
 
 The App private key remains outside the workspace in an owner-only regular,
 non-symlink file or an approved secret manager.
 
-`v0.1.0-pilot` does not enforce the signed owner envelope before step 3, so it
-must not mint a write token for or publish against external source.
+The direct CLI and package-root API are preview-only and cannot enter step 4.
+The local operator console is the candidate's only supported operator
+publication route. It accepts one exact repository, consumes a one-use preview
+receipt when it binds the exact owner-envelope bytes, and requires the resulting
+one-use operator token plus typed confirmation. Its write-capable executor is an
+explicitly internal console-integration subpath and must not be exposed or
+invoked as a separate route. This operator control is separate from, and cannot
+replace, the owner signature.
 
 ## Publication rulesets and CI evidence
 
 These are not preview prerequisites for an anonymous public repository. Before
-future external publication, the repository operator configures them without
-granting the App Administration permission:
+any sandbox publication drill, and again before any later external
+publication, the repository operator configures them without granting the App
+Administration permission:
 
 - `codex/api-migrator/*`: active enforcement on that exact target; restrict
   creation, update, deletion, and force-push/non-fast-forward changes; the sole
@@ -89,6 +100,11 @@ branch, modify workflow files, change rulesets, install itself elsewhere,
 access another repository, approve reviews, bypass failed verification, or
 perform organization administration.
 
-On `v0.1.0-pilot`, requesting an App write token or using `--publish` for an
-external repository is also prohibited, regardless of any post-run validator
-result.
+All failed, skipped, or unresolved verification and review findings are
+publication blockers; there is no override path. External-source write-token
+minting and publication remain prohibited until owner challenge/signing
+tooling, the disposable egress-filtered runner, current ruleset and required-CI
+evidence, and the supervised sandbox drill are complete. The private App stays
+installed only on the disposable sandbox. Dynamo, Toloka, and every designated
+professional or client-work repository remain categorically excluded from App
+access, clone, preview, and publication.

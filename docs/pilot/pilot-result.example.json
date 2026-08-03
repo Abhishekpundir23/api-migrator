@@ -80,8 +80,8 @@
       "preflightId": "pf_3333333333333333333333333333333333333333333333333333333333333333",
       "artifactDigest": "4444444444444444444444444444444444444444444444444444444444444444",
       "candidateBranch": "codex/api-migrator/inngest-inngest-v3-to-v4-46425a27878a430eb4c8298fde64b3102e3e5c69c94e0ef64e5db0b0ddad4efd",
-      "findingsDigest": "38c92446c9110724409d3a32352d9d04278a71350af913c48a2581f556063027",
-      "resolutionsDigest": "c2bf4b975e2b9be9ce4189ed9264ad99dfa55797eef47bf5482d25990ee2b78f",
+      "findingsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "resolutionsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "requiredCiDigest": "8c356c0ff9b9a2deef9a63f7de78f3c794fb1db959385c5d324bb89b8aae5abd",
       "allowedActions": [
         "use_private_app_for_publication",
@@ -115,39 +115,15 @@
     "candidateBranch": "codex/api-migrator/inngest-inngest-v3-to-v4-46425a27878a430eb4c8298fde64b3102e3e5c69c94e0ef64e5db0b0ddad4efd",
     "approvedHeadSha": "5555555555555555555555555555555555555555",
     "approvedBy": "pilot-operator",
-    "overrideUnsafe": true,
-    "overrideReason": "Owner and operator reviewed the exact F12 finding and accepted the container runtime evidence.",
+    "overrideUnsafe": false,
+    "overrideReason": null,
     "scannedFiles": 42,
     "changedFiles": 4,
     "appliedTransforms": 6,
-    "reviewItems": 1,
-    "manualReviewFindings": [
-      {
-        "findingId": "finding_f2789d4b738e0965864a4e5f45928214ed6cf2e972c12db2e5d4c05204d6ce32",
-        "code": "F12",
-        "file": "src/inngest/functions.ts",
-        "locationDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "messageDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "evidenceReference": "preview-example-001#finding-1",
-        "evidenceDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      }
-    ],
-    "manualReviewResolutions": [
-      {
-        "findingId": "finding_f2789d4b738e0965864a4e5f45928214ed6cf2e972c12db2e5d4c05204d6ce32",
-        "code": "F12",
-        "decision": "accepted",
-        "reason": "Deployment evidence shows a long-running container rather than a serverless timeout.",
-        "evidenceReference": "deployment-evidence-example-001",
-        "evidenceDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-      }
-    ],
-    "blockers": [
-      {
-        "code": "manual_review_required",
-        "message": "One runtime-container finding required exact owner and operator review before publication."
-      }
-    ],
+    "reviewItems": 0,
+    "manualReviewFindings": [],
+    "manualReviewResolutions": [],
+    "blockers": [],
     "verification": {
       "runner": "disposable-egress-filtered-pilot-v1",
       "overall": "passed",

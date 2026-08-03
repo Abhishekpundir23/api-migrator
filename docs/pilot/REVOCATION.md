@@ -24,12 +24,19 @@ a branch are separate decisions.
 Use the authorization record to identify every exact in-scope location:
 
 - disposable source and verification storage;
-- the isolated per-pilot SQLite database (never a shared database);
+- deletable run records in the isolated pilot database, or the entire matched
+  replay-store/database and external-anchor unit only under an explicit owner
+  security decision (never a shared database and never individual replay rows);
 - logs, reports, exports, and temporary files;
 - backups and synced copies;
 - completed authorization and feedback records;
 - pilot-specific credentials. A shared App private key is rotated or deleted
   only for suspected compromise or an explicitly approved App-wide shutdown.
+
+The owner-authorization consumption ledger has no ordinary deletion path and
+survives database reset. Never delete, replace, move, or recreate its external
+anchor as routine offboarding. Loss or deliberate whole-unit decommission is a
+security event because prior one-use consumption can no longer be proven.
 
 Resolve and validate every target before deletion. Do not use globs, unresolved
 environment variables, broad recursive targets, workspace roots, home
@@ -50,8 +57,8 @@ Record one owner instruction:
   through GitHub if desired;
 - use a separately implemented and audited exact-ref deletion procedure only
   when a new signed owner instruction binds the numeric repository ID, full
-  ref, expected head SHA, action, and expiry. `v0.1.0-pilot` has no such
-  procedure;
+  ref, expected head SHA, action, and expiry. The unreleased
+  owner-authorization candidate has no such procedure;
 - owner merges after current-head and CI verification;
 - no branch or PR was created.
 
@@ -85,6 +92,7 @@ Store outside Git:
 - token/App action;
 - branch/PR instruction and observed result;
 - each data location and deletion result;
+- replay-store and external-anchor retention or whole-unit decommission result;
 - credential rotations;
 - unresolved third-party retention;
 - owner confirmation reference and completion time.

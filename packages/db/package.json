@@ -15,7 +15,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "migrate": "tsx src/migrate.ts"
+    "migrate": "tsx src/migrate.ts",
+    "init:owner-store": "tsx src/init-owner-store.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.0",

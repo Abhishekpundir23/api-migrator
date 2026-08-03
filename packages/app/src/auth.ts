@@ -11,11 +11,23 @@ import { createPrivateKey } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { consumeOwnerAuthorization } from "@api-migrator/db";
+import {
+  assertConsumedOwnerGrant,
+  assertCurrentConsumedOwnerGrant,
+  assertCurrentOwnerGrant,
+  markGrantConsumed,
+  ownerAuthorizationConsumption,
+  ownerAuthorizationReceipt,
+  type ExpectedOwnerAuthorizationBindings,
+  type OwnerAuthorizationGrant,
+  type OwnerAuthorizationReceipt,
+} from "./owner-authorization.js";
 import { parseRepositorySlug } from "./repository.js";
 import { safeErrorMessage } from "./security.js";
 
 export type AuthMode = "github-app" | "gh-cli";
-export type AuthCapability = "read" | "write";
+type AuthCapability = "read" | "write";
 
 export const REQUIRED_GITHUB_APP_PERMISSIONS = Object.freeze({
   contents: "write",
@@ -26,6 +38,7 @@ export const REQUIRED_GITHUB_APP_PERMISSIONS = Object.freeze({
 const READ_TOKEN_PERMISSIONS = Object.freeze({
   contents: "read",
   metadata: "read",
+  pull_requests: "read",
 } as const);
 
 const MAX_PRIVATE_KEY_BYTES = 64 * 1024;
@@ -50,6 +63,23 @@ export interface AuthResult {
   actor: string;
   octokit: Octokit;
   mode: AuthMode;
+  capability: AuthCapability;
+  /** Exact App, installation, repository, and owner identities observed from GitHub. */
+  githubApp: GitHubAppAuthIdentity | null;
+}
+
+export interface GitHubAppAuthIdentity {
+  appId: number;
+  appSlug: string;
+  installationId: number;
+  repositoryId: number;
+  repositoryOwnerId: number;
+  repositorySlug: string;
+}
+
+export interface AuthorizedWriteAuthResult {
+  auth: AuthResult;
+  ownerAuthorizationReceipt: Readonly<OwnerAuthorizationReceipt>;
 }
 
 /**
@@ -200,36 +230,138 @@ export function isAppMode(env: NodeJS.ProcessEnv = process.env): boolean {
   return readAuthConfig(env).mode === "github-app";
 }
 
-export async function resolveAuth(slug: string, capability: AuthCapability): Promise<AuthResult> {
+export async function resolveReadAuth(slug: string): Promise<AuthResult> {
   const repository = parseRepositorySlug(slug);
   const config = readAuthConfig();
-  return resolveAuthConfig(config, repository, capability);
+  return resolveReadAuthConfig(config, repository);
 }
 
 /** Resolve auth only when the operator explicitly configured a mode. */
-export async function resolveOptionalAuth(
-  slug: string,
-  capability: AuthCapability
-): Promise<AuthResult | null> {
+export async function resolveOptionalReadAuth(slug: string): Promise<AuthResult | null> {
   const repository = parseRepositorySlug(slug);
   const config = readOptionalAuthConfig();
   if (!config) return null;
-  return resolveAuthConfig(config, repository, capability);
+  return resolveReadAuthConfig(config, repository);
 }
 
-function resolveAuthConfig(
+function resolveReadAuthConfig(
   config: AuthConfig,
-  repository: ReturnType<typeof parseRepositorySlug>,
-  capability: AuthCapability
+  repository: ReturnType<typeof parseRepositorySlug>
 ): Promise<AuthResult> | AuthResult {
-  return config.mode === "github-app" ? appAuth(config.app, repository, capability) : ghAuth();
+  return config.mode === "github-app" ? appAuth(config.app, repository, "read") : ghAuth("read");
+}
+
+/**
+ * The sole write-credential broker. It rechecks live repository/base identity,
+ * re-reads owner revocation state, irreversibly consumes the envelope in the
+ * durable replay ledger, and only then asks GitHub for one repository-scoped
+ * write token. gh-cli can never enter this path.
+ */
+export async function resolveAuthorizedWriteAuth(
+  slug: string,
+  input: {
+    readAuth: AuthResult;
+    ownerGrant: OwnerAuthorizationGrant;
+    expected: ExpectedOwnerAuthorizationBindings;
+    registryPath: string;
+  }
+): Promise<AuthorizedWriteAuthResult> {
+  const repository = parseRepositorySlug(slug);
+  const readIdentity = input.readAuth.githubApp;
+  if (
+    input.readAuth.mode !== "github-app" ||
+    input.readAuth.capability !== "read" ||
+    readIdentity === null
+  ) {
+    throw new Error("Owner-authorized publication requires GitHub App read authentication");
+  }
+  assertIdentityMatchesExpected(repository.slug, readIdentity, input.expected);
+  await assertLiveReadIdentityAndBase(
+    input.readAuth,
+    repository,
+    input.expected,
+    readIdentity
+  );
+
+  // Keep the revocation/time check as close as possible to irreversible
+  // consumption. ownerAuthorizationConsumption performs a second registry read.
+  assertCurrentOwnerGrant(input.ownerGrant, {
+    expected: input.expected,
+    registryPath: input.registryPath,
+  });
+  const consumption = ownerAuthorizationConsumption(input.ownerGrant, {
+    expected: input.expected,
+    registryPath: input.registryPath,
+  });
+  const stored = consumeOwnerAuthorization(consumption);
+  markGrantConsumed(input.ownerGrant, stored);
+  assertConsumedOwnerGrant(input.ownerGrant);
+
+  const config = readAuthConfig();
+  if (config.mode !== "github-app") {
+    throw new Error("Owner-authorized publication cannot use gh-cli authentication");
+  }
+  const writeAuth = await appAuth(config.app, repository, "write", {
+    beforeMint: async (observed) => {
+      assertObservedGitHubAppAndInstallationMatches(
+        observed,
+        readIdentity,
+        input.expected
+      );
+      await assertLiveReadIdentityAndBase(
+        input.readAuth,
+        repository,
+        input.expected,
+        readIdentity
+      );
+      assertCurrentConsumedOwnerGrant(input.ownerGrant, {
+        expected: input.expected,
+        registryPath: input.registryPath,
+      });
+    },
+    afterMint: async (minted) => {
+      if (minted.githubApp === null) {
+        throw new Error("GitHub App write credential is missing repository identity");
+      }
+      await assertLiveReadIdentityAndBase(
+        minted,
+        repository,
+        input.expected,
+        minted.githubApp
+      );
+      assertCurrentConsumedOwnerGrant(input.ownerGrant, {
+        expected: input.expected,
+        registryPath: input.registryPath,
+      });
+    },
+  });
+  try {
+    if (writeAuth.githubApp === null || !sameGitHubIdentity(writeAuth.githubApp, readIdentity)) {
+      throw new Error("GitHub App identity changed while minting the write credential");
+    }
+    assertIdentityMatchesExpected(repository.slug, writeAuth.githubApp, input.expected);
+    return {
+      auth: writeAuth,
+      ownerAuthorizationReceipt: ownerAuthorizationReceipt(input.ownerGrant),
+    };
+  } catch (error) {
+    await revokeInstallationToken(writeAuth.token);
+    throw error;
+  }
 }
 
 async function appAuth(
   app: AppCredentials,
   repository: ReturnType<typeof parseRepositorySlug>,
-  capability: AuthCapability
+  capability: AuthCapability,
+  writeGuards?: {
+    beforeMint: (identity: ObservedGitHubAppInstallationIdentity) => Promise<void>;
+    afterMint: (auth: AuthResult) => Promise<void>;
+  }
 ): Promise<AuthResult> {
+  if ((capability === "write") !== (writeGuards !== undefined)) {
+    throw new Error("GitHub App write authentication requires consumed owner-authorization guards");
+  }
   const appOctokit = new Octokit({
     authStrategy: createAppAuth,
     auth: { appId: app.appId, privateKey: app.privateKey },
@@ -253,6 +385,13 @@ async function appAuth(
 
     const tokenPermissions =
       capability === "write" ? REQUIRED_GITHUB_APP_PERMISSIONS : READ_TOKEN_PERMISSIONS;
+    if (writeGuards) {
+      await writeGuards.beforeMint({
+        appId: Number(app.appId),
+        appSlug: appInfo.slug!,
+        installationId: installation.id,
+      });
+    }
     const installationAuth = (await appOctokit.auth(
       githubInstallationTokenOptions(installation.id, repository.repo, capability) as never
     )) as InstallationAccessTokenAuthentication;
@@ -279,7 +418,23 @@ async function appAuth(
     }
 
     const actor = `${appInfo.slug!}[bot]`;
-    return { token: installationAuth.token, actor, octokit, mode: "github-app" };
+    const result: AuthResult = {
+      token: installationAuth.token,
+      actor,
+      octokit,
+      mode: "github-app",
+      capability,
+      githubApp: {
+        appId: Number(app.appId),
+        appSlug: appInfo.slug!,
+        installationId: installation.id,
+        repositoryId: repositoryInfo.id,
+        repositoryOwnerId: repositoryInfo.owner.id,
+        repositorySlug: repositoryInfo.full_name,
+      },
+    };
+    if (writeGuards) await writeGuards.afterMint(result);
+    return result;
   } catch (error) {
     if (issuedToken) await revokeInstallationToken(issuedToken);
     throw new Error(
@@ -289,6 +444,12 @@ async function appAuth(
 }
 
 type PermissionPolicy = Readonly<Record<string, string>>;
+
+interface ObservedGitHubAppInstallationIdentity {
+  appId: number;
+  appSlug: string;
+  installationId: number;
+}
 
 export function githubInstallationTokenOptions(
   installationId: number,
@@ -447,7 +608,10 @@ function assertNoEvents(events: unknown, context: string): void {
   }
 }
 
-function ghAuth(): AuthResult {
+function ghAuth(capability: AuthCapability): AuthResult {
+  if (capability !== "read") {
+    throw new Error("gh-cli cannot mint API Migrator write credentials");
+  }
   try {
     const token = execFileSync("gh", ["auth", "token"], {
       encoding: "utf8",
@@ -459,8 +623,86 @@ function ghAuth(): AuthResult {
       actor: "api-migrator",
       octokit: new Octokit({ auth: token }),
       mode: "gh-cli",
+      capability: "read",
+      githubApp: null,
     };
   } catch (error) {
     throw new Error(`gh-cli authentication failed: ${safeErrorMessage(error)}`);
   }
+}
+
+function assertIdentityMatchesExpected(
+  requestedSlug: string,
+  identity: GitHubAppAuthIdentity,
+  expected: ExpectedOwnerAuthorizationBindings
+): void {
+  if (
+    identity.repositorySlug.toLowerCase() !== requestedSlug.toLowerCase() ||
+    expected.repository.slug !== requestedSlug.toLowerCase() ||
+    identity.repositoryId !== expected.repository.id ||
+    identity.repositoryOwnerId !== expected.repository.ownerId ||
+    identity.appId !== expected.github.appId ||
+    identity.installationId !== expected.github.installationId
+  ) {
+    throw new Error("GitHub App identity does not match the owner-authorized repository scope");
+  }
+}
+
+function assertObservedGitHubAppAndInstallationMatches(
+  observed: ObservedGitHubAppInstallationIdentity,
+  readIdentity: GitHubAppAuthIdentity,
+  expected: ExpectedOwnerAuthorizationBindings
+): void {
+  if (
+    observed.appId !== readIdentity.appId ||
+    observed.appId !== expected.github.appId ||
+    observed.appSlug !== readIdentity.appSlug ||
+    observed.installationId !== readIdentity.installationId ||
+    observed.installationId !== expected.github.installationId
+  ) {
+    throw new Error("GitHub App or installation identity changed before write-token minting");
+  }
+}
+
+async function assertLiveReadIdentityAndBase(
+  auth: AuthResult,
+  repository: ReturnType<typeof parseRepositorySlug>,
+  expected: ExpectedOwnerAuthorizationBindings,
+  identity: GitHubAppAuthIdentity
+): Promise<void> {
+  try {
+    const [{ data: repositoryInfo }, { data: baseRef }] = await Promise.all([
+      auth.octokit.repos.get({ owner: repository.owner, repo: repository.repo }),
+      auth.octokit.git.getRef({
+        owner: repository.owner,
+        repo: repository.repo,
+        ref: `heads/${expected.base.branch}`,
+      }),
+    ]);
+    if (
+      repositoryInfo.full_name.toLowerCase() !== expected.repository.slug ||
+      repositoryInfo.id !== expected.repository.id ||
+      repositoryInfo.owner.id !== expected.repository.ownerId ||
+      repositoryInfo.id !== identity.repositoryId ||
+      repositoryInfo.owner.id !== identity.repositoryOwnerId ||
+      baseRef.object.sha !== expected.base.sha
+    ) {
+      throw new Error("repository or base identity changed after owner approval");
+    }
+  } catch (error) {
+    throw new Error(
+      `Could not revalidate owner-authorized repository identity: ${safeErrorMessage(error, [auth.token])}`
+    );
+  }
+}
+
+function sameGitHubIdentity(left: GitHubAppAuthIdentity, right: GitHubAppAuthIdentity): boolean {
+  return (
+    left.appId === right.appId &&
+    left.appSlug === right.appSlug &&
+    left.installationId === right.installationId &&
+    left.repositoryId === right.repositoryId &&
+    left.repositoryOwnerId === right.repositoryOwnerId &&
+    left.repositorySlug.toLowerCase() === right.repositorySlug.toLowerCase()
+  );
 }

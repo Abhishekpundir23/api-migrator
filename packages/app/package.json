@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./console-internal": {
+      "types": "./dist/console-internal.d.ts",
+      "default": "./dist/console-internal.js"
     }
   },
   "scripts": {

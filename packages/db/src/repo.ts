@@ -5,14 +5,42 @@
 
 import { desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { getDb, migrate } from "./client.js";
-import { providers, campaigns, repos, migrationRuns } from "./schema.js";
-import type { MigrationRunStatus } from "./schema.js";
+import { getDb, migrate, persistOwnerAuthorizationConsumption } from "./client.js";
+import {
+  providers,
+  campaigns,
+  repos,
+  migrationRuns,
+  ownerAuthorizationConsumptions,
+} from "./schema.js";
+import type { MigrationRunStatus, OwnerAuthorizationConsumption } from "./schema.js";
 
 export interface PublicationBlockerAudit {
   code: string;
   message: string;
 }
+
+export interface OwnerAuthorizationConsumptionInput {
+  authorizationId: string;
+  envelopeId: string;
+  envelopeDigest: string;
+  nonceDigest: string;
+  signerId: string;
+  keyId: string;
+  repositorySlug: string;
+  repositoryId: number;
+  baseSha: string;
+  preflightId: string;
+  artifactDigest: string;
+  manifestDigest: string;
+  candidateBranch: string;
+  candidateTreeSha: string;
+  expiresAt: number;
+}
+
+/** Deliberately does not reveal which replay key or persistence check failed. */
+export const OWNER_AUTHORIZATION_CONSUMPTION_REJECTED =
+  "owner authorization already consumed or unavailable";
 
 /** Ensure tables exist. Call at app boot. */
 export function init() {
@@ -92,6 +120,64 @@ export function upsertRepo(input: { slug: string; defaultBranch?: string; instal
 
 export function getRepoBySlug(slug: string) {
   return getDb().select().from(repos).where(eq(repos.slug, slug)).get();
+}
+
+// --- owner authorization replay/audit ----------------------------------------
+
+/**
+ * Atomically reserve an owner authorization before any write token is minted.
+ *
+ * The row is intentionally immutable and this package exposes no release or
+ * delete operation. A failed publication therefore cannot make the same
+ * authorization, envelope, or nonce reusable.
+ */
+export function consumeOwnerAuthorization(
+  input: OwnerAuthorizationConsumptionInput
+): OwnerAuthorizationConsumption {
+  const expiresAt = auditTimestamp(input.expiresAt, "expiresAt");
+
+  const value: Omit<OwnerAuthorizationConsumption, "consumedAt"> = {
+    authorizationId: auditIdentifier(input.authorizationId, "authorizationId"),
+    envelopeId: auditIdentifier(input.envelopeId, "envelopeId"),
+    envelopeDigest: auditSha256(input.envelopeDigest, "envelopeDigest"),
+    nonceDigest: auditSha256(input.nonceDigest, "nonceDigest"),
+    signerId: auditIdentifier(input.signerId, "signerId"),
+    keyId: auditIdentifier(input.keyId, "keyId"),
+    repositorySlug: auditRepositorySlug(input.repositorySlug),
+    repositoryId: auditGitHubId(input.repositoryId),
+    baseSha: auditGitSha(input.baseSha, "baseSha"),
+    preflightId: auditPreflightId(input.preflightId),
+    artifactDigest: auditSha256(input.artifactDigest, "artifactDigest"),
+    manifestDigest: auditSha256(input.manifestDigest, "manifestDigest"),
+    candidateBranch: auditGitBranch(input.candidateBranch),
+    candidateTreeSha: auditGitSha(input.candidateTreeSha, "candidateTreeSha"),
+    expiresAt,
+  };
+
+  try {
+    const db = getDb();
+    const result = persistOwnerAuthorizationConsumption(db, value);
+    if (result.expiredAfterInsert) throw new Error(OWNER_AUTHORIZATION_CONSUMPTION_REJECTED);
+    return result.stored;
+  } catch {
+    // Unique conflicts, database locks/corruption, and all other persistence
+    // failures are intentionally indistinguishable to the caller.
+    throw new Error(OWNER_AUTHORIZATION_CONSUMPTION_REJECTED);
+  }
+}
+
+/** Read-only audit lookup. There is intentionally no mutation/removal helper. */
+export function getOwnerAuthorizationConsumption(authorizationId: string) {
+  return getDb()
+    .select()
+    .from(ownerAuthorizationConsumptions)
+    .where(
+      eq(
+        ownerAuthorizationConsumptions.authorizationId,
+        auditIdentifier(authorizationId, "authorizationId")
+      )
+    )
+    .get();
 }
 
 // --- migration runs -----------------------------------------------------------
@@ -222,7 +308,9 @@ function auditDigest(value: string | null | undefined): string | null | undefine
 
 function auditCommit(value: string | null | undefined): string | null | undefined {
   if (value === undefined || value === null) return value;
-  if (!/^[a-f0-9]{40,64}$/.test(value)) throw new Error("invalid base commit audit value");
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)) {
+    throw new Error("invalid base commit audit value");
+  }
   return value;
 }
 
@@ -230,6 +318,102 @@ function auditBranch(value: string | null | undefined): string | null | undefine
   if (value === undefined || value === null) return value;
   if (!value || value.length > 240 || value !== value.trim() || /[\u0000-\u001f\u007f]/.test(value)) {
     throw new Error("invalid base branch audit value");
+  }
+  return value;
+}
+
+const MAX_AUDIT_TIMESTAMP = 8_640_000_000_000_000;
+const OWNER_SLUG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const REPOSITORY_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
+
+function auditIdentifier(value: string, label: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 128 ||
+    value !== value.trim() ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:@+-]*$/.test(value)
+  ) {
+    throw new Error(`invalid owner authorization ${label}`);
+  }
+  return value;
+}
+
+function auditSha256(value: string, label: string): string {
+  if (typeof value !== "string") throw new Error(`invalid owner authorization ${label}`);
+  const canonical = value.startsWith("sha256:") ? value.slice(7) : value;
+  if (!/^[a-f0-9]{64}$/.test(canonical)) {
+    throw new Error(`invalid owner authorization ${label}`);
+  }
+  return canonical;
+}
+
+function auditGitSha(value: string, label: string): string {
+  if (typeof value !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)) {
+    throw new Error(`invalid owner authorization ${label}`);
+  }
+  return value;
+}
+
+function auditPreflightId(value: string): string {
+  if (typeof value !== "string" || !/^pf_[a-f0-9]{64}$/.test(value)) {
+    throw new Error("invalid owner authorization preflightId");
+  }
+  return value;
+}
+
+function auditGitHubId(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("invalid owner authorization repositoryId");
+  }
+  return value;
+}
+
+function auditTimestamp(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_AUDIT_TIMESTAMP) {
+    throw new Error(`invalid owner authorization ${label}`);
+  }
+  return value;
+}
+
+function auditRepositorySlug(value: string): string {
+  if (typeof value !== "string" || value !== value.trim()) {
+    throw new Error("invalid owner authorization repositorySlug");
+  }
+  const parts = value.split("/");
+  if (parts.length !== 2) throw new Error("invalid owner authorization repositorySlug");
+  const [owner, repo] = parts as [string, string];
+  if (
+    !OWNER_SLUG.test(owner) ||
+    owner.includes("--") ||
+    !REPOSITORY_NAME.test(repo) ||
+    repo === "." ||
+    repo === ".." ||
+    repo.toLowerCase().endsWith(".git")
+  ) {
+    throw new Error("invalid owner authorization repositorySlug");
+  }
+  return `${owner}/${repo}`.toLowerCase();
+}
+
+function auditGitBranch(value: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 240 ||
+    value !== value.trim() ||
+    value === "@" ||
+    value.startsWith("-") ||
+    value.startsWith("/") ||
+    value.endsWith("/") ||
+    value.endsWith(".") ||
+    value.endsWith(".lock") ||
+    value.includes("..") ||
+    value.includes("@{") ||
+    /[\x00-\x20\x7f~^:?*[\\]/.test(value) ||
+    value.split("/").some((part) => part.length === 0 || part.startsWith(".") || part.endsWith("."))
+  ) {
+    throw new Error("invalid owner authorization candidateBranch");
   }
   return value;
 }

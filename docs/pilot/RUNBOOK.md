@@ -9,8 +9,9 @@ cannot be evidenced.
 - **Owner representative:** can authorize access to the exact repository and
   decides whether the migration pull request is accepted or merged.
 - **Migration operator:** runs authorized preview operations and records
-  evidence. The operator is not authorized to merge. On `v0.1.0-pilot`, the
-  operator is also not authorized to publish external-source changes.
+  evidence. The operator is not authorized to merge. External-source
+  publication remains disabled while the unreleased candidate's operational
+  release gates are incomplete.
 - **Technical reviewer:** reviews every changed file, manual-review item, and
   verification result. The operator and reviewer may be the same person only
   during the supervised internal pilot.
@@ -32,6 +33,8 @@ cannot be evidenced.
 - [ ] Retention, deletion, withdrawal, and incident contacts are complete.
 
 No clone, App installation, or preview may begin before this gate passes.
+Dynamo, Toloka, and every repository designated as professional or client work
+are excluded regardless of any other evidence or authorization record.
 
 ## Gate 2 — technical eligibility
 
@@ -56,14 +59,14 @@ fails closed. Do not improvise a broader transform during a live pilot.
 
 Do not hand-enter or reconstruct evidence digests from reformatted content.
 
-- `manifestJson` means the exact stored UTF-8 byte sequence used for the
-  campaign manifest before parsing or reserialization. For a DB-backed
-  campaign, it is the exact `campaigns.manifest` text value.
+- `manifestJson` means the canonical JSON emitted after the stored campaign
+  manifest is parsed, the one explicitly supported legacy runtime declaration
+  is upgraded, and the result is validated. The same canonical bytes are passed
+  to preview/publication and used by the console approval digest.
 - `manifestDigest` is the lowercase hexadecimal SHA-256 of those exact
-  `manifestJson` bytes. The trusted preview wrapper must export the storage
-  reference, byte length, and digest into restricted evidence. The current
-  built-in CLI does not export that value, which is one reason external
-  publication remains blocked on `v0.1.0-pilot`.
+  canonical `manifestJson` bytes. The trusted preview wrapper must export the
+  storage reference, byte length, and digest into restricted evidence. Do not
+  hash the legacy database text or a separately reformatted representation.
 - API Migrator canonical JSON v1 serializes arrays in their recorded order,
   serializes object keys in ascending JavaScript UTF-16 code-unit order, uses
   ordinary `JSON.stringify` string and primitive encoding, and emits no
@@ -97,15 +100,14 @@ Do not hand-enter or reconstruct evidence digests from reformatted content.
   `{ code, file, locationDigest, messageDigest }`.
 - `findingsDigest` is the canonical digest of the complete finding objects
   sorted by `findingId`.
-- A resolution object is
-  `{ findingId, code, decision, reason, evidenceReference, evidenceDigest }`.
-  `resolutionsDigest` is the canonical digest of the complete resolution
-  objects sorted by `findingId`. `evidenceDigest` is the lowercase SHA-256 of
-  the exact immutable evidence bytes named by `evidenceReference`.
+- `resolutionsDigest` is the canonical digest of an empty array. The current
+  candidate accepts no resolution or acknowledgement that bypasses a finding.
+  An eligible publication therefore has no manual-review findings; apply a
+  correction and rerun preview instead.
 
-The owner approval envelope must bind both set digests. A rule code alone is
-not a finding identity, and a reference without a content digest is not proof
-of the approved resolution.
+The owner approval envelope binds both set digests. A rule code alone is not a
+finding identity, and neither an operator nor an owner approval can override a
+finding.
 
 Exact App permission/event snapshots and ruleset configuration snapshots use
 their captured JSON byte strings and lowercase SHA-256 byte digests. The audit
@@ -165,16 +167,21 @@ installation.
 This gate applies only after the owner reviews the exact sanitized preview.
 
 - [ ] A separately signed owner approval envelope binds the authorization ID,
-  pilot ID, approver and authority reference, canonical slug and numeric
-  repository ID, base branch/SHA, engine tag/commit, manifest digest, preflight
-  ID, artifact digest, candidate branch, `findingsDigest`,
-  `resolutionsDigest`, authorized required-CI set digest, allowed publication
-  actions, issue/expiry times, and a replay-resistant nonce.
+  pilot ID, signer/key IDs, approval and pre-run authorization digests,
+  canonical slug and numeric owner/repository IDs, App/installation IDs, base
+  branch/SHA, engine tag/commit, canonical manifest byte length/digest,
+  preflight ID, artifact digest, candidate branch/tree, canonical empty
+  findings and resolutions digests, command-scope, runner-attestation, ruleset and
+  required-CI digests, exact remote-state-derived allowed actions and PR
+  number, preview/issue/validity/expiry times, and a replay-resistant nonce.
 - [ ] A trusted verifier authenticates the signature and approver, checks
   that approval occurred after preview completion, that both the pre-run
   authorization and envelope are currently unexpired, and that the nonce has
-  not been replayed. It compares every envelope field with the current run in
-  the same process immediately before write-token minting.
+  not been replayed. It compares every envelope field with the current run,
+  re-reads key and authorization revocation state, and durably consumes the
+  authorization in the externally anchored replay store before the sole
+  write-token broker can mint a token. Live repository/base and owner state are
+  rechecked immediately before and after minting.
 - [ ] App evidence separately records the publish invocation's read-access and
   write-access phases. Each binds App/installation IDs, canonical slug, numeric
   repository and selected-repository IDs, exact policy/event snapshots, token
@@ -190,10 +197,12 @@ This gate applies only after the owner reviews the exact sanitized preview.
   workflow/check/integration tuples authorized by the owner, approved PR head
   SHA, run/check URLs, conclusions, and observation timestamp.
 
-`v0.1.0-pilot` does not enforce the signed owner envelope before minting its
-write token. Therefore Gate 4B cannot pass for external source, even when a
-sidecar result validates. External publication remains disabled until that
-enforcement and its adversarial tests are implemented.
+The unreleased candidate enforces this signed boundary before write-token
+minting, and its direct CLI is preview-only. Gate 4B still cannot pass for
+external source until the owner challenge/signing tooling, disposable
+egress-filtered runner, current ruleset and required-CI evidence, and supervised
+sandbox publication drill are complete. A validating sidecar cannot replace
+any of these controls.
 
 ## Phase 1 — preview
 
@@ -231,14 +240,16 @@ validates runtime authorization nor grants permission for a later action.
    sites missing from the candidate set separately as known false negatives.
    The raw counts must satisfy `candidateSites = truePositives +
    falsePositives`.
-3. Assign every manual-review occurrence its canonical `findingId`; resolve
-   each occurrence separately and calculate the canonical finding- and
-   resolution-set digests. A verification failure or skipped check is not
-   overridable.
+3. Assign every manual-review occurrence its canonical `findingId` and record
+   the finding-set digest. Every occurrence is a blocker: correct it and rerun
+   preview until the finding list is empty. The resolution-set digest remains
+   the canonical digest of an empty array. Failed or skipped checks are equally
+   non-overrideable.
 4. Show the sanitized preview and patch to the owner representative.
-5. For future publication-capable versions, obtain the separately signed owner
-   envelope described in Gate 4B. A general pre-run approval, rule-code list,
-   sidecar record, or operator approval is not a substitute.
+5. For the candidate sandbox drill, use the dedicated owner challenge/signing
+   tooling to obtain the separately signed envelope described in Gate 4B. Do
+   not hand-assemble it. A general pre-run approval, rule-code list, sidecar
+   record, or operator approval is not a substitute.
 6. Record requested corrections and operator time separately from automatic
    execution time.
 7. If any artifact, base SHA, manifest, branch, or decision changes, rerun preview and
@@ -246,17 +257,33 @@ validates runtime authorization nor grants permission for a later action.
 
 ## Phase 3 — publication
 
-Do not run `--publish` against external source on `v0.1.0-pilot`. Its operator
-approval and post-run sidecar validation are not an enforced owner signature in
-the write-token path. The current publication command remains restricted to a
-disposable sandbox owned and explicitly approved by the operator.
+The direct CLI and package-root API have no publication mode. The CLI rejects
+publication or override flags. The local operator console is the only supported
+operator publication route and remains restricted to the disposable sandbox
+until every external release gate passes. Its write-capable executor is an
+explicitly internal console-integration subpath, not an alternate ceremony; do
+not expose or invoke it directly.
 
-A future version may publish externally only after Gate 4B is enforced before
-write-token minting. If manual-review findings are accepted, the envelope and
-reasoned override must cover the exact finding/resolution-set digests; neither
-may bypass failed or skipped verification. After publication, record the PR
-URL, repository slug and numeric ID, content-addressed branch, approved head
-SHA, base SHA, and required-check conclusions bound to that head. Do not merge.
+For the supervised sandbox drill only:
+
+1. Run console preview for exactly one repository and review the candidate
+   tree, report, and zero-blocker result.
+2. Supply the exact canonical Ed25519 owner envelope. Preparing publication
+   consumes the short-lived preview receipt and binds the SHA-256 digest of
+   those exact envelope bytes into a one-use operator token and typed
+   confirmation phrase.
+3. Submit the unchanged envelope bytes, token, and phrase. The runtime verifies
+   both operator control and owner authorization, consumes the owner envelope
+   in the durable externally anchored replay store, then permits the sole
+   write-token broker to act only on the exact observed remote state.
+4. Record the safe owner-authorization receipt, PR URL, repository slug and
+   numeric ID, content-addressed branch, candidate tree, approved head SHA,
+   base SHA, and required-check conclusions bound to that head. Never record
+   or echo the raw envelope, payload, signature, or private key.
+
+Every failed, skipped, or unresolved verification or review finding blocks
+publication. There is no operator or owner override. Apply corrections, rerun
+preview, and obtain a new signed envelope. Do not merge.
 
 ## Phase 4 — owner-controlled merge decision
 
@@ -277,12 +304,15 @@ state `not_opened`, `open`, `merged`, or `closed_unmerged`.
 
 1. Record raw quality counts, review/correction time, owner-estimated manual
    migration time, feedback, and the final PR state.
-2. Use an isolated per-pilot database and runner, then follow `REVOCATION.md`
-   for repository access, tokens, branch/PR disposition,
+2. Use an isolated per-pilot database/replay anchor and runner, then follow
+   `REVOCATION.md` for repository access, tokens, branch/PR disposition,
    temporary storage, local records, logs, backups, and key handling.
-3. Bind GitHub access, runner storage, pilot database, logs/exports/backups,
-   and authorization/feedback to their exact authorization deadlines and
-   deterministic per-pilot targets. Access may be removed after its final
+3. Bind GitHub access, runner storage, deletable run records or explicit
+   whole-store decommission, logs/exports/backups, and authorization/feedback
+   to their exact authorization deadlines and deterministic per-pilot targets.
+   Preserve replay consumption evidence and its anchor as a matched security
+   unit unless an explicit owner decision decommissions the whole unit. Access
+   may be removed after its final
    token use/revocation and the runner may be destroyed after its final run or
    publication action; neither waits for a later owner merge decision. Records
    needed for final disposition use the outcome observation as their lower
@@ -306,6 +336,7 @@ evidence is not a valid closeout.
 Stop without publication when any of these occurs:
 
 - authorization is missing, expired, withdrawn, or does not match the repo;
+- the repository is Dynamo, Toloka, or designated professional/client work;
 - the canonical slug or numeric repository ID differs across authorization,
   App, ruleset, CI, preview, or PR evidence;
 - the App or token can access an unexpected repository;
@@ -316,7 +347,7 @@ Stop without publication when any of these occurs:
 - an unresolved migration behavior is outside the supported inventory;
 - the base, preflight, artifact, branch, or PR head identity drifts;
 - required CI cannot validate the migrated application;
-- external publication is requested on `v0.1.0-pilot`, or the signed owner
-  envelope is missing, invalid, expired, replayed, or not enforced before
-  write-token minting;
+- external publication is requested before every release gate passes, or the
+  signed owner envelope is missing, invalid, expired, replayed, mismatched, or
+  cannot be durably consumed before write-token minting;
 - the owner requests a pause or revocation.

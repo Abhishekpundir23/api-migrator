@@ -1,4 +1,4 @@
-import { consumeApprovalToken } from "./approval";
+import { consumeOperatorApprovalToken } from "./approval";
 
 export class RunBusyError extends Error {
   constructor() {
@@ -20,8 +20,8 @@ export async function withRunLock<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Acquire the process lock before consuming a one-shot publication approval. */
-export function withApprovalRunLock<T>(
+/** Acquire the process lock before consuming a one-shot v2 operator approval. */
+export function withOperatorApprovalRunLock<T>(
   token: string,
   expiresAt: number,
   operation: () => Promise<T>
@@ -29,7 +29,7 @@ export function withApprovalRunLock<T>(
   return withRunLock(async () => {
     // This is deliberately the first action after lock acquisition. A busy
     // request never burns its token, while an acquired replay still fails.
-    consumeApprovalToken(token, expiresAt);
+    consumeOperatorApprovalToken(token, expiresAt);
     return operation();
   });
 }

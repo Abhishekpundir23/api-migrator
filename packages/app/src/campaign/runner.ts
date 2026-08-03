@@ -14,7 +14,7 @@ import {
   type PublicationOutcome,
   type PublicationRequest,
 } from "../publication.js";
-import { parseRepositorySlug, validateBranchName } from "../repository.js";
+import { parseRepositorySlug, stableStringify, validateBranchName } from "../repository.js";
 import { safeErrorMessage } from "../security.js";
 
 export interface RunCampaignInput {
@@ -48,6 +48,10 @@ export async function runCampaign(input: RunCampaignInput): Promise<CampaignRunS
   if (!campaign) throw new Error(`campaign ${input.campaignId} not found`);
   assertCampaignActive(campaign.status, input.campaignId);
   const manifest = parseStoredManifest(campaign.manifest);
+  // Bind the exact validated/upgraded manifest used by the engine. Legacy
+  // campaigns and newly stored campaigns therefore share one authorization
+  // digest and cannot diverge between console, preflight, and owner receipt.
+  const manifestJson = stableStringify(manifest);
   const branchOverride = input.branch ? validateBranchName(input.branch) : undefined;
   const repoSlugs = input.repoSlugs.map((slug) => parseRepositorySlug(slug).slug);
   if (new Set(repoSlugs).size !== repoSlugs.length) {
@@ -73,6 +77,7 @@ export async function runCampaign(input: RunCampaignInput): Promise<CampaignRunS
         const result: MigrateRepoResult = await migrateRepo({
           slug,
           manifest,
+          manifestJson,
           branch: branchOverride,
           publication: input.publication,
         });
@@ -98,7 +103,7 @@ export async function runCampaign(input: RunCampaignInput): Promise<CampaignRunS
           publicationBlockers: result.publication.blockers,
           approvedBy: result.publication.approvedBy ?? null,
           overrideUnsafe: result.publication.overridden,
-          overrideReason: result.publication.overrideReason ?? null,
+          overrideReason: null,
           branch: result.publication.branch,
         });
         results[index] = {
@@ -112,7 +117,8 @@ export async function runCampaign(input: RunCampaignInput): Promise<CampaignRunS
         };
       } catch (error) {
         const message = persistFailedRun(run.id, error);
-        results[index] = { slug, status: "failed", prUrl: null, error: message };
+        const prUrl = error instanceof PublicationAttemptError ? error.audit.prUrl ?? null : null;
+        results[index] = { slug, status: "failed", prUrl, error: message };
       }
     }
   }
@@ -137,7 +143,7 @@ export function buildFailedRunPatch(error: unknown) {
   const audit = error.audit;
   return {
     status: "failed" as const,
-    prUrl: null,
+    prUrl: audit.prUrl ?? null,
     summary: audit.report.summary,
     report: audit.report,
     error: message,
@@ -150,7 +156,7 @@ export function buildFailedRunPatch(error: unknown) {
     publicationBlockers: audit.publicationBlockers,
     approvedBy: audit.approvedBy,
     overrideUnsafe: audit.overrideUnsafe,
-    overrideReason: audit.overrideReason ?? null,
+    overrideReason: null,
     branch: audit.branch,
   };
 }

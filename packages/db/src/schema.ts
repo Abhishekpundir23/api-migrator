@@ -148,8 +148,161 @@ export const migrationRuns = sqliteTable(
   ]
 );
 
+/**
+ * Immutable, one-use owner-publication authorizations.
+ *
+ * Only digests and the minimum publication binding needed for replay defense
+ * are retained. In particular, signed payload bytes and signatures never
+ * belong in this table.
+ */
+export const ownerAuthorizationConsumptions = sqliteTable(
+  "owner_authorization_consumptions",
+  {
+    authorizationId: text("authorization_id").primaryKey(),
+    envelopeId: text("envelope_id").notNull().unique(),
+    envelopeDigest: text("envelope_digest").notNull().unique(),
+    nonceDigest: text("nonce_digest").notNull().unique(),
+    signerId: text("signer_id").notNull(),
+    keyId: text("key_id").notNull(),
+    repositorySlug: text("repository_slug").notNull(),
+    repositoryId: integer("repository_id").notNull(),
+    baseSha: text("base_sha").notNull(),
+    preflightId: text("preflight_id").notNull(),
+    artifactDigest: text("artifact_digest").notNull(),
+    manifestDigest: text("manifest_digest").notNull(),
+    candidateBranch: text("candidate_branch").notNull(),
+    candidateTreeSha: text("candidate_tree_sha").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    consumedAt: integer("consumed_at").notNull(),
+  },
+  (table) => [
+    index("owner_authorization_consumptions_repository_idx").on(
+      table.repositoryId,
+      table.consumedAt
+    ),
+    index("owner_authorization_consumptions_preflight_idx").on(table.preflightId),
+    check(
+      "owner_authorization_consumptions_authorization_id_valid",
+      sql`length(${table.authorizationId}) between 1 and 128`
+    ),
+    check(
+      "owner_authorization_consumptions_envelope_id_valid",
+      sql`length(${table.envelopeId}) between 1 and 128`
+    ),
+    check(
+      "owner_authorization_consumptions_envelope_digest_valid",
+      sql`length(${table.envelopeDigest}) = 64 and ${table.envelopeDigest} not glob '*[^0-9a-f]*'`
+    ),
+    check(
+      "owner_authorization_consumptions_nonce_digest_valid",
+      sql`length(${table.nonceDigest}) = 64 and ${table.nonceDigest} not glob '*[^0-9a-f]*'`
+    ),
+    check(
+      "owner_authorization_consumptions_signer_id_valid",
+      sql`length(${table.signerId}) between 1 and 128`
+    ),
+    check(
+      "owner_authorization_consumptions_key_id_valid",
+      sql`length(${table.keyId}) between 1 and 128`
+    ),
+    check(
+      "owner_authorization_consumptions_repository_slug_valid",
+      sql`length(${table.repositorySlug}) between 3 and 140`
+    ),
+    check(
+      "owner_authorization_consumptions_repository_id_valid",
+      sql`${table.repositoryId} > 0`
+    ),
+    check(
+      "owner_authorization_consumptions_base_sha_valid",
+      sql`length(${table.baseSha}) in (40, 64) and ${table.baseSha} not glob '*[^0-9a-f]*'`
+    ),
+    check(
+      "owner_authorization_consumptions_preflight_id_valid",
+      sql`length(${table.preflightId}) = 67 and substr(${table.preflightId}, 1, 3) = 'pf_' and substr(${table.preflightId}, 4) not glob '*[^0-9a-f]*'`
+    ),
+    check(
+      "owner_authorization_consumptions_artifact_digest_valid",
+      sql`length(${table.artifactDigest}) = 64 and ${table.artifactDigest} not glob '*[^0-9a-f]*'`
+    ),
+    check(
+      "owner_authorization_consumptions_manifest_digest_valid",
+      sql`length(${table.manifestDigest}) = 64 and ${table.manifestDigest} not glob '*[^0-9a-f]*'`
+    ),
+    check(
+      "owner_authorization_consumptions_candidate_branch_valid",
+      sql`length(${table.candidateBranch}) between 1 and 240`
+    ),
+    check(
+      "owner_authorization_consumptions_candidate_tree_sha_valid",
+      sql`length(${table.candidateTreeSha}) in (40, 64) and ${table.candidateTreeSha} not glob '*[^0-9a-f]*'`
+    ),
+    check(
+      "owner_authorization_consumptions_times_valid",
+      sql`${table.consumedAt} > 0 and ${table.expiresAt} > ${table.consumedAt}`
+    ),
+  ]
+);
+
+/** Operator-pinned identity for the durable replay ledger's physical store. */
+export const ownerAuthorizationStoreIdentity = sqliteTable(
+  "owner_authorization_store_identity",
+  {
+    singleton: integer("singleton").primaryKey(),
+    storeId: text("store_id").notNull().unique(),
+    databasePath: text("database_path").notNull(),
+    device: text("device").notNull(),
+    inode: text("inode").notNull(),
+    linkCount: integer("link_count").notNull(),
+    anchorPath: text("anchor_path").notNull(),
+    anchorDevice: text("anchor_device").notNull(),
+    anchorInode: text("anchor_inode").notNull(),
+    anchorDigest: text("anchor_digest").notNull(),
+    initializedAt: integer("initialized_at").notNull(),
+  },
+  (table) => [
+    check("owner_authorization_store_identity_singleton", sql`${table.singleton} = 1`),
+    check(
+      "owner_authorization_store_identity_store_id_valid",
+      sql`length(${table.storeId}) between 16 and 128`
+    ),
+    check(
+      "owner_authorization_store_identity_path_valid",
+      sql`length(${table.databasePath}) between 1 and 4096`
+    ),
+    check(
+      "owner_authorization_store_identity_device_valid",
+      sql`length(${table.device}) between 1 and 32 and ${table.device} not glob '*[^0-9]*'`
+    ),
+    check(
+      "owner_authorization_store_identity_inode_valid",
+      sql`length(${table.inode}) between 1 and 32 and ${table.inode} not glob '*[^0-9]*'`
+    ),
+    check("owner_authorization_store_identity_link_count_valid", sql`${table.linkCount} > 0`),
+    check(
+      "owner_authorization_store_identity_anchor_path_valid",
+      sql`length(${table.anchorPath}) between 1 and 4096`
+    ),
+    check(
+      "owner_authorization_store_identity_anchor_device_valid",
+      sql`length(${table.anchorDevice}) between 1 and 32 and ${table.anchorDevice} not glob '*[^0-9]*'`
+    ),
+    check(
+      "owner_authorization_store_identity_anchor_inode_valid",
+      sql`length(${table.anchorInode}) between 1 and 32 and ${table.anchorInode} not glob '*[^0-9]*'`
+    ),
+    check(
+      "owner_authorization_store_identity_anchor_digest_valid",
+      sql`length(${table.anchorDigest}) = 64 and ${table.anchorDigest} not glob '*[^0-9a-f]*'`
+    ),
+    check("owner_authorization_store_identity_time_valid", sql`${table.initializedAt} > 0`),
+  ]
+);
+
 export type Provider = typeof providers.$inferSelect;
 export type Campaign = typeof campaigns.$inferSelect;
 export type Repo = typeof repos.$inferSelect;
 export type MigrationRun = typeof migrationRuns.$inferSelect;
 export type MigrationRunStatus = MigrationRun["status"];
+export type OwnerAuthorizationConsumption = typeof ownerAuthorizationConsumptions.$inferSelect;
+export type OwnerAuthorizationStoreIdentity = typeof ownerAuthorizationStoreIdentity.$inferSelect;

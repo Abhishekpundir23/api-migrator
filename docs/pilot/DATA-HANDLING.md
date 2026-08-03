@@ -14,8 +14,11 @@ claim multi-tenant or public-service readiness.
 | Exact `manifestJson` bytes, byte length, storage reference, and digest | Restricted campaign/pilot evidence | Persistent until authorized deletion | Never reconstruct the digest from reformatted JSON |
 | Canonical command scope and trusted runner execution attestation | Restricted runner/pilot evidence | Persistent until authorized deletion | Fixed safe profile; bind exact bytes, digest, pilot/repository identity, image, checks, and observation time |
 | Repository slug, branch, SHAs, preflight ID, artifact digest, PR URL | Local SQLite and GitHub PR audit text | Persistent until authorized deletion; GitHub follows owner policy | Required for provenance and review |
-| Operator decision and override reason | Local SQLite / PR audit text | Persistent until authorized deletion | Named, bounded, and sanitized |
+| Operator identity and publication-attempt decision | Local SQLite / PR audit text | Persistent until authorized deletion | Named, bounded, and sanitized; there is no blocker override |
 | Completed owner authorization and feedback | Restricted pilot record store outside Git | Per authorization record | Never commit to this repository |
+| Raw owner envelope | Local console UI/process memory for one attempt | Transient | Exact bytes are bounded and digested; never log, persist, or echo payload/signature material |
+| Owner public-key registry and revocation state | Owner-only regular file outside the workspace | Security-policy lifetime | Exact canonical Ed25519 public keys only; re-read at verification and token boundaries |
+| Owner-authorization consumption ledger and external anchor | Persistent SQLite replay store plus a separate owner-only anchor | Security-state lifetime | Initialized explicitly; unique authorization/envelope/nonce bindings survive ordinary reset and are backed up as one security unit |
 | GitHub App private key | Owner-only path or secret manager outside workspace | Until rotation/revocation | Never expose to repository processes or reports |
 | Read/write installation-token phases | Process memory and temporary Git askpass environments | Temporary | Separate one-repository capabilities; independently evidenced and revoked on best-effort cleanup; never cached |
 
@@ -42,18 +45,24 @@ owner-approval evidence that omits or disagrees on that identity is invalid.
 ## Persistent records
 
 SQLite may contain repository slugs, paths, structured diagnostics, run status,
-branch and PR URLs, SHAs, blockers, operator identity, and override reasons. It
-is local pilot storage, not a tenant-isolated service.
+branch and PR URLs, SHAs, blockers, operator identity, and safe
+owner-authorization consumption receipts. It is local pilot storage, not a
+tenant-isolated service. The replay ledger has no ordinary deletion path and is
+preserved by database reset; do not treat routine pilot cleanup as authority to
+erase it or replace its external anchor.
 
 For every pilot:
 
 1. Configure a separate `API_MIGRATOR_DB_PATH` for the exact pilot in restricted
    storage outside the workspace. Do not reuse or delete a shared database.
-2. Record the exact database, runner, log, export, backup, authorization, and
-   feedback targets plus their access lists outside Git.
-3. Set separate deletion deadlines for GitHub access, runner storage, the
-   pilot database, logs/exports/backups, and authorization/feedback in the
-   authorization record. A blank deadline blocks the run.
+2. Record the exact database, external replay-anchor, runner, log, export,
+   backup, authorization, and feedback targets plus their access lists outside
+   Git. Back up the database and anchor as one security unit while keeping the
+   live anchor outside the database cleanup directory.
+3. Set separate deadlines for GitHub access, runner storage, deletable run
+   records or explicit whole-store decommission, logs/exports/backups, and
+   authorization/feedback in the authorization record. A blank deadline blocks
+   the run.
 4. Do not copy raw command output, secrets, source excerpts, or unnecessary
    owner personal data into metrics or feedback records.
 5. Keep backups and exported reports within the same retention and deletion
@@ -79,10 +88,13 @@ repository, code, or PR identity without separate permission.
 
 ## Deletion and withdrawal
 
-Follow `REVOCATION.md`. Deletion covers disposable source, local database rows
-or isolated pilot database, logs, exports, backups, authorization records, and
-feedback. GitHub branches, pull requests, audit logs, caches, and backups are
-controlled by GitHub and the repository owner; do not promise secure erasure.
+Follow `REVOCATION.md`. Deletion covers disposable source, deletable run records
+or an explicitly decommissioned isolated store, logs, exports, backups,
+authorization records, and feedback. One-use consumption evidence and its
+external anchor remain replay-security state unless an explicit owner security
+decision decommissions the entire matched store/anchor unit. GitHub branches,
+pull requests, audit logs, caches, and backups are controlled by GitHub and the
+repository owner; do not promise secure erasure.
 
 ## Incident handling
 
@@ -105,7 +117,10 @@ These limits prohibit public App expansion. They do not override the exact
 authorization, selected-repository, disposable-runner, or stop conditions in
 the runbook.
 
-The sidecar result validator is a post-run audit aid and is not invoked before
-GitHub write-token minting. External-source publication remains blocked on
-`v0.1.0-pilot` until separately signed owner approval is validated and bound to
-the current run before any write capability is issued.
+The sidecar result validator is a post-run audit aid and is not part of the
+authorization boundary. The unreleased candidate validates an exact canonical
+Ed25519 owner envelope and durably consumes it before the sole write-token
+broker can issue capability. External-source publication nevertheless remains
+blocked until owner challenge/signing tooling, the disposable egress-filtered
+runner, current ruleset and required-CI evidence, and a supervised sandbox
+publication drill are complete.

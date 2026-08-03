@@ -1,6 +1,4 @@
 export {
-  migrateRepo,
-  publicationRequiresAuthentication,
   publicationPushArgs,
   type MigrateRepoInput,
   type MigrateRepoResult,
@@ -12,30 +10,38 @@ export {
   type QueueOptions,
 } from "./queue.js";
 export {
-  runCampaign,
   assertCampaignActive,
   parseStoredManifest,
   type RunCampaignInput,
   type CampaignRunSummary,
 } from "./campaign/runner.js";
 export {
-  resolveAuth,
-  resolveOptionalAuth,
+  resolveReadAuth,
+  resolveOptionalReadAuth,
   readAuthConfig,
   readOptionalAuthConfig,
   readAppCredentials,
   isAppMode,
   type AuthConfig,
-  type AuthCapability,
   type AuthMode,
   type AppCredentials,
   type AuthResult,
+  type GitHubAppAuthIdentity,
 } from "./auth.js";
+export {
+  OWNER_AUTHORIZATION_AUDIENCE,
+  OWNER_AUTHORIZATION_SIGNATURE_DOMAIN,
+  OWNER_AUTHORIZATION_MAX_TTL_MS,
+  canonicalSha256,
+  type OwnerAuthorizationAction,
+  type OwnerAuthorizationPayload,
+  type OwnerAuthorizationReceipt,
+  type ExpectedOwnerAuthorizationBindings,
+} from "./owner-authorization.js";
 export {
   publicationBlockers,
   createPreflightId,
   assertRemoteBranchMatchesArtifact,
-  validatePublicationRequest,
   PublicationAttemptError,
   type PublicationRequest,
   type PublicationOutcome,
