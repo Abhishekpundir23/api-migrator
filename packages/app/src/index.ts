@@ -39,6 +39,35 @@ export {
   type ExpectedOwnerAuthorizationBindings,
 } from "./owner-authorization.js";
 export {
+  OWNER_AUTHORIZATION_CHALLENGE_KIND,
+  OWNER_AUTHORIZATION_CHALLENGE_MAX_AGE_MS,
+  OWNER_AUTHORIZATION_CHALLENGE_MAX_TTL_MS,
+  createOwnerAuthorizationChallenge,
+  parseOwnerAuthorizationChallenge,
+  type OwnerAuthorizationChallengeV1,
+  type OwnerAuthorizationChallengeArtifact,
+  type CreateOwnerAuthorizationChallengeInput,
+} from "./owner-challenge.js";
+export {
+  PUBLICATION_RUNNER_PROFILE,
+  PUBLICATION_RUNNER_PLAN_MIN_TTL_MS,
+  PUBLICATION_RUNNER_PLAN_MAX_TTL_MS,
+  PUBLICATION_RUNNER_ATTESTATION_DOMAIN,
+  createPublicationRunnerPlan,
+  validatePublicationRunnerPlan,
+  assertPublicationRunnerPlanCurrent,
+  verifyPublicationRunnerAttestation,
+  type RunnerEgressDestination,
+  type CreatePublicationRunnerPlanInput,
+  type PublicationRunnerPlan,
+  type PublicationRunnerPlanRecord,
+  type PublicationRunnerOutput,
+  type RunnerCheckEvidence,
+  type PublicationRunnerAttestation,
+  type RunnerAttestationTrust,
+  type VerifiedPublicationRunnerAttestation,
+} from "./publication-runner.js";
+export {
   publicationBlockers,
   createPreflightId,
   assertRemoteBranchMatchesArtifact,

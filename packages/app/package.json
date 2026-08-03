@@ -19,7 +19,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
-    "migrate": "tsx src/cli.ts"
+    "migrate": "tsx src/cli.ts",
+    "owner:sign": "tsx src/owner-sign-cli.ts"
   },
   "dependencies": {
     "@api-migrator/engine": "*",

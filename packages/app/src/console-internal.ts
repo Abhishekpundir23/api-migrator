@@ -9,6 +9,10 @@
  */
 export {
   runCampaign,
+  prepareCampaignOwnerChallenge,
+  verifyCampaignOwnerAuthorizationEnvelope,
   type RunCampaignInput,
   type CampaignRunSummary,
+  type PrepareCampaignOwnerChallengeInput,
+  type VerifyCampaignOwnerAuthorizationInput,
 } from "./campaign/runner.js";

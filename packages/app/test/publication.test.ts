@@ -44,6 +44,7 @@ const manifest: Manifest = {
 
 const PREVIEW_COMPLETED_AT = 2_000_000_000_000;
 const OWNER_ENVELOPE = "{}";
+const OWNER_CHALLENGE_DIGEST = `sha256:${"f".repeat(64)}`;
 
 function publishRequest(preflightId = `pf_${"a".repeat(64)}`) {
   return {
@@ -52,6 +53,7 @@ function publishRequest(preflightId = `pf_${"a".repeat(64)}`) {
     preflightId,
     previewCompletedAt: PREVIEW_COMPLETED_AT,
     ownerAuthorizationEnvelope: OWNER_ENVELOPE,
+    ownerChallengeDigest: OWNER_CHALLENGE_DIGEST,
   };
 }
 
@@ -253,7 +255,24 @@ test("the non-durable job queue rejects publishing before starting the batch", a
 
   await assert.rejects(
     () => runCampaignJobs([publishJob]),
-    /DB-backed runCampaign workflow/
+    /DB-backed console workflow/
+  );
+
+  const challengeJob = {
+    id: "unsafe-challenge",
+    slug: "owner/repo",
+    manifest,
+    ownerChallenge: {
+      preflightId: `pf_${"a".repeat(64)}`,
+      artifactDigest: "b".repeat(64),
+      candidateTreeSha: "c".repeat(40),
+      previewCompletedAt: Date.now(),
+      previewReceiptExpiresAt: Date.now() + 60_000,
+    },
+  } as unknown as MigrationJob;
+  await assert.rejects(
+    () => runCampaignJobs([challengeJob]),
+    /DB-backed console workflow/
   );
 });
 
@@ -270,6 +289,10 @@ test("malformed operator approvals and unsupported fields fail closed", () => {
   assert.throws(
     () => validatePublicationRequest({ ...publishRequest(preflightId), ownerAuthorizationEnvelope: "" }),
     /bounded signed owner authorization/
+  );
+  assert.throws(
+    () => validatePublicationRequest({ ...publishRequest(preflightId), ownerChallengeDigest: "" }),
+    /issued owner challenge digest/
   );
   const exact = "{\"version\":1}\n";
   const request = validatePublicationRequest({

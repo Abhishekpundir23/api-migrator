@@ -4,6 +4,8 @@ import type { OwnerAuthorizationReceipt } from "./owner-authorization.js";
 import { stableStringify } from "./repository.js";
 import { redactText } from "./security.js";
 
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
+
 export type PublicationRequest =
   | { mode: "preview" }
   | {
@@ -20,6 +22,8 @@ export type PublicationRequest =
        * persisted in run records.
        */
       ownerAuthorizationEnvelope: string;
+      /** Exact server-issued challenge digest bound into the signed envelope. */
+      ownerChallengeDigest: string;
     };
 
 export type PublicationBlockerCode =
@@ -234,11 +238,15 @@ export function validatePublicationRequest(request: PublicationRequest | undefin
   ) {
     throw new Error("Publishing requires a bounded signed owner authorization envelope");
   }
+  if (typeof request.ownerChallengeDigest !== "string" || !DIGEST.test(request.ownerChallengeDigest)) {
+    throw new Error("Publishing requires the exact issued owner challenge digest");
+  }
   const keys = Object.keys(request).sort();
   const expectedKeys = [
     "approvedBy",
     "mode",
     "ownerAuthorizationEnvelope",
+    "ownerChallengeDigest",
     "preflightId",
     "previewCompletedAt",
   ];

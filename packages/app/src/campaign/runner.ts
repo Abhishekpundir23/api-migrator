@@ -16,6 +16,8 @@ import {
 } from "../publication.js";
 import { parseRepositorySlug, stableStringify, validateBranchName } from "../repository.js";
 import { safeErrorMessage } from "../security.js";
+import type { OwnerAuthorizationChallengeArtifact } from "../owner-challenge.js";
+import { verifyOwnerAuthorizationEnvelope } from "../owner-authorization.js";
 
 export interface RunCampaignInput {
   campaignId: string;
@@ -41,6 +43,90 @@ export interface CampaignRunSummary {
   campaignId: string;
   total: number;
   results: CampaignRepoResult[];
+}
+
+export interface PrepareCampaignOwnerChallengeInput {
+  campaignId: string;
+  repository: {
+    slug: string;
+    preflightId: string;
+    artifactDigest: string;
+    candidateTreeSha: string;
+    previewCompletedAt: number;
+  };
+  previewReceiptExpiresAt: number;
+}
+
+export interface VerifyCampaignOwnerAuthorizationInput
+  extends PrepareCampaignOwnerChallengeInput {
+  /** Exact canonical envelope bytes supplied by the repository owner. */
+  ownerAuthorizationEnvelope: string;
+  /** Exact digest from the server-authenticated challenge receipt. */
+  ownerChallengeDigest: string;
+}
+
+/**
+ * Rerun one exact reviewed preview and prepare its owner challenge without
+ * creating a run record, consuming the preview receipt, or requesting write
+ * authentication. The repository pipeline independently rechecks every byte
+ * and live remote identity before returning challenge material.
+ */
+export async function prepareCampaignOwnerChallenge(
+  input: PrepareCampaignOwnerChallengeInput
+): Promise<OwnerAuthorizationChallengeArtifact> {
+  const campaign = getCampaign(input.campaignId);
+  if (!campaign) throw new Error(`campaign ${input.campaignId} not found`);
+  assertCampaignActive(campaign.status, input.campaignId);
+  const manifest = parseStoredManifest(campaign.manifest);
+  const manifestJson = stableStringify(manifest);
+  const slug = parseRepositorySlug(input.repository.slug).slug;
+  const result = await migrateRepo({
+    slug,
+    manifest,
+    manifestJson,
+    publication: { mode: "preview" },
+    ownerChallenge: {
+      preflightId: input.repository.preflightId,
+      artifactDigest: input.repository.artifactDigest,
+      candidateTreeSha: input.repository.candidateTreeSha,
+      previewCompletedAt: input.repository.previewCompletedAt,
+      previewReceiptExpiresAt: input.previewReceiptExpiresAt,
+    },
+  });
+  if (
+    result.prUrl !== null ||
+    result.changed !== true ||
+    result.publication.mode !== "preview" ||
+    result.publication.status !== "preview_ready" ||
+    result.preflightId !== input.repository.preflightId ||
+    normalizeDigest(result.artifactDigest) !== normalizeDigest(input.repository.artifactDigest) ||
+    result.publication.candidateTreeSha !== input.repository.candidateTreeSha ||
+    result.ownerChallenge === undefined
+  ) {
+    throw new Error("Owner challenge preparation did not reproduce the reviewed preview");
+  }
+  return result.ownerChallenge;
+}
+
+/**
+ * Reproduce the reviewed preview and verify an owner envelope against every
+ * resulting live binding without consuming the envelope or minting a token.
+ * Verification details stay internal so malformed signature material can
+ * never be reflected into an HTTP response.
+ */
+export async function verifyCampaignOwnerAuthorizationEnvelope(
+  input: VerifyCampaignOwnerAuthorizationInput
+): Promise<{ verified: true; challenge: OwnerAuthorizationChallengeArtifact } | { verified: false }> {
+  const challenge = await prepareCampaignOwnerChallenge(input);
+  try {
+    verifyOwnerAuthorizationEnvelope(input.ownerAuthorizationEnvelope, {
+      expected: challenge.challenge.bindings,
+      expectedChallengeDigest: input.ownerChallengeDigest,
+    });
+  } catch {
+    return { verified: false };
+  }
+  return { verified: true, challenge };
 }
 
 export async function runCampaign(input: RunCampaignInput): Promise<CampaignRunSummary> {
@@ -208,3 +294,7 @@ const AUDITED_INNGEST_RUNTIME_POLICY = {
     dockerfile: "Dockerfile",
   },
 } as const;
+
+function normalizeDigest(value: string): string {
+  return value.startsWith("sha256:") ? value : `sha256:${value}`;
+}

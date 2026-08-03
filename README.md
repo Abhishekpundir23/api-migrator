@@ -2,7 +2,7 @@
 
 API Migrator is an operator-reviewed pilot for upgrading application code when an API provider ships a breaking TypeScript SDK release.
 
-**Current status:** sandbox-validated internal pilot. This checkout now enforces a separately signed, exact-preview owner authorization before the only GitHub App write-token broker can mint a token. It also durably consumes that authorization in an externally anchored replay ledger. External-source execution and publication nevertheless remain disabled until the owner challenge/signing workflow, disposable egress-filtered runner, repository ruleset evidence, required-CI evidence, and a supervised sandbox drill are complete. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
+**Current status:** sandbox-validated internal pilot. This checkout now generates a canonical, read-only owner challenge, signs it with a separately operated offline Ed25519 tool, and enforces the resulting exact-preview authorization before the only GitHub App write-token broker can mint a token. It also durably consumes that authorization in an externally anchored replay ledger. External-source execution and publication nevertheless remain disabled until the disposable egress-filtered runner is independently provisioned and attested, repository ruleset and required-CI evidence are validated, and a supervised sandbox drill passes. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
 
 The first product goal is deliberately narrow: create a complete, verified migration preview for one repository, let a human review it, and publish a PR only after explicit approval. It never auto-merges.
 
@@ -15,9 +15,10 @@ Publishing is a separate action from analysis:
 1. An authenticated local operator enters one approved `owner/repo` slug.
 2. **Preview** clones and analyzes each repository without pushing a branch or opening a PR.
 3. Unsafe or incomplete results are blocked. A publishable result receives a preflight ID bound to the repository, base commit, target branch, candidate Git tree, manifest, verification report, and exact changed-file bytes and modes.
-4. The repository owner separately signs a canonical, short-lived Ed25519 envelope covering that exact preview, App/repository identities, policy evidence, current remote action, and a replay-resistant nonce.
-5. The console binds the exact envelope bytes into a separate short-lived operator token and asks for an exact confirmation phrase.
-6. **Publish** reruns the repository, verifies the owner signature against an owner-only out-of-workspace registry, atomically consumes the envelope in the durable replay ledger, and only then requests a single-repository write token. Any stale base, remote-state drift, changed artifact, expired/revoked/replayed authorization, failed/skipped verification, or manual-review item fails closed. No blocker is overrideable.
+4. **Prepare owner challenge** reruns that exact preview using only a single-repository read token, rechecks current base/branch/PR and App identities, and emits canonical challenge bytes, their digest, and an opaque server-authenticated challenge receipt binding that digest to the preview. It consumes no preview receipt and performs no remote mutation.
+5. The repository owner reviews the displayed repository, App, base, tree, action, and evidence bindings, then operates the offline signer with an explicit approval of that exact challenge digest. The signed payload binds the digest; the signer writes a new owner-only envelope file and prints only a safe receipt.
+6. **Prepare publication** requires the exact challenge receipt, independently reruns the exact preview with GitHub App read identity, and verifies that the owner-signed challenge digest and every fresh binding match without consuming either receipt. Only after that succeeds does the console consume the one-use preview receipt, bind the challenge and exact envelope bytes into a separate short-lived operator token, and ask for an exact confirmation phrase. Missing, forged, cross-preview, stale, expired, or revoked material leaves the preview receipt unused.
+7. **Publish** independently reruns the repository and recomputes every binding, verifies the owner signature against an owner-only out-of-workspace registry, atomically consumes the envelope in the durable replay ledger, and only then requests a single-repository write token. Any stale base, remote-state drift, changed artifact, expired/revoked/replayed authorization, failed/skipped verification, or manual-review item fails closed. No blocker is overrideable.
 
 The console adds several guardrails around that flow:
 
@@ -47,6 +48,14 @@ The engine includes experimental Inngest TypeScript SDK v3→v4 and Knock Node S
 The Inngest v4 campaign also migrates the deployment floor to Node 20+, pins its audited Node 22.23.2 Docker profile and Dockerfile frontend by digest, and verifies the post-edit package and Dockerfile declarations. This pilot accepts only the exact audited three-stage Fly/Next.js Docker recipe; it is not a general Dockerfile rewriter. A complete repository Docker build and default-command smoke test still belong in a disposable, secret-free CI worker; the local verifier does not execute repository Dockerfiles on the host daemon.
 
 SQLite is for local pilot state. Foreign keys are enabled, migrations are idempotent, and the console stores structured reports and run metadata. Source trees are processed in disposable working directories rather than stored in the database.
+
+The package root also exposes a fail-closed pre-publication runner plan and
+signed-attestation verifier. The accompanying
+[Linux operator primitive](ops/publication-runner/README.md) is a reviewable
+contract and wrapper, not a runner deployment or proof that an attestation was
+independently observed and signed. External-source publication remains disabled
+until that runner (including its required L7 egress gateway) is provisioned and
+attested and every remaining pilot gate is completed.
 
 ## Local setup
 
@@ -104,7 +113,29 @@ Preview the built-in Inngest campaign from the CLI without publishing anything:
 npm run migrate -- owner/repo
 ```
 
-The command prints the preflight ID, exact base commit, blockers, artifact fingerprint, and candidate tree. The direct CLI and package-root API are preview-only. The local console is the only supported operator publication route and uses distinct preview, owner-envelope, and operator-confirmation stages. Its write-capable campaign executor is isolated behind an explicitly internal package subpath for console integration and must not be exposed as an API or invoked outside that ceremony. External publication remains disabled until the missing challenge/signing and runner gates are completed and drilled.
+The command prints the preflight ID, exact base commit, blockers, artifact fingerprint, and candidate tree. The direct CLI and package-root API are preview-only. The local console is the only supported operator publication route and uses distinct preview, read-only challenge, offline owner-envelope, and operator-confirmation stages. Its write-capable campaign executor is isolated behind an explicitly internal package subpath for console integration and must not be exposed as an API or invoked outside that ceremony. External publication remains disabled until the runner, ruleset/CI-evidence, and supervised-drill gates are completed.
+
+### Owner challenge and offline signing
+
+The console's **Generate owner challenge** action is read-only but authenticated: it reruns the exact preview, requires the selected-repository GitHub App identity, rechecks current remote state, and downloads canonical challenge JSON. Store that file, the Ed25519 private key, the public-key registry, and signer output in a restrictive owner-controlled directory outside this workspace. On Unix-like systems, set files and the directory to owner-only permissions before signing.
+
+After independently reviewing the exact challenge summary and digest, run:
+
+```bash
+npm run owner:sign -- \
+  --challenge /absolute/owner-only/challenge.json \
+  --registry /absolute/owner-only/owner-keys.json \
+  --key /absolute/owner-only/owner-key.pem \
+  --out /absolute/owner-only/new-envelope.json \
+  --approve-challenge-digest sha256:REVIEWED_DIGEST \
+  --authorization-id authorization-id \
+  --signer-id owner-signer-id \
+  --key-id owner-key-id
+```
+
+The signer accepts only canonical, blocker-free challenges less than ten minutes old, binds the exact reviewed challenge digest into the signed payload, limits the challenge and envelope window to 30 minutes and the underlying authorization expiry, verifies exact Ed25519 registry/key/repository correspondence, refuses symlinks, hard links, weak permissions, workspace-contained inputs, and existing output paths, then round-trips the new envelope through the runtime verifier. It fsyncs a new `0600` output file and its restrictive parent directory. Standard output contains only a safe receipt; it never contains private-key, payload, signature, or envelope bytes. Attach the resulting file through the console file selector before the opaque challenge receipt expires.
+
+The current challenge receipt never extends the original ten-minute preview receipt. This deliberately fail-closed pilot is therefore limited to small repositories whose challenge rerun, human signing step, and prepare-publication rerun all fit inside the displayed deadline. Expiry requires a completely new preview; do not lengthen or bypass the receipt locally.
 
 ## Commands and automated checks
 
@@ -113,10 +144,12 @@ The command prints the preflight ID, exact base commit, blockers, artifact finge
 | `npm run build` | Builds engine, DB, and app before the Next.js console |
 | `npm run typecheck` | Builds package declarations, then type-checks every workspace |
 | `npm test` | Runs the workspace unit and migration-fixture tests that exist in this checkout |
-| `npm run ci` | Runs ordered package builds, type-checks, workspace and pilot-evidence tests, example sidecar validation, and the console production build |
+| `npm run ci` | Runs ordered package builds, type-checks, workspace, pilot-evidence, and runner-script checks, example sidecar validation, and the console production build |
+| `npm run test:ops` | Syntax-checks the credential-free Linux runner primitive |
 | `npm run db:migrate` | Creates/updates the local SQLite bootstrap schema and indexes |
 | `npm run db:init-owner-store -- --activate` | One-time creation of the externally anchored owner-authorization replay store |
 | `npm run migrate -- owner/repo` | Generates a non-publishing Inngest migration preview for one approved repository |
+| `npm run owner:sign -- ...` | Reviews and signs one exact canonical challenge into a new owner-only envelope file without GitHub access |
 
 GitHub Actions runs `npm run ci` on pushes and pull requests. CI uses only its read-only checkout token, does not persist that credential, does not configure application GitHub credentials, push branches, open real PRs, or prove customer-repository compatibility. A real pilot still requires operator review and evidence from approved repositories.
 
@@ -130,7 +163,7 @@ until the runbook's authorization and isolation gates are satisfied.
 The sidecar result validator is a post-run audit aid. It is not consulted by the
 GitHub write-token path and cannot authorize preview, publication, or merge.
 
-Before charging for a provider campaign, complete the owner-challenge tooling and egress-filtered runner, pass a supervised disposable-sandbox publication drill, then run owner-authorized previews on 5–10 repositories and record the evidence below. Do not publish external source merely because the signature and replay primitives exist.
+Before charging for a provider campaign, independently deploy and attest the egress-filtered runner, validate ruleset and required-CI evidence, pass a supervised disposable-sandbox publication drill, then run owner-authorized previews on 5–10 repositories and record the evidence below. Do not publish external source merely because the challenge, signature, and replay primitives exist.
 
 - affected-usage precision and false positives;
 - dependency and lockfile updates;

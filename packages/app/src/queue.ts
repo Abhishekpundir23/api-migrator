@@ -9,7 +9,7 @@
 import { migrateRepo, type MigrateRepoInput, type MigrateRepoResult } from "./github.js";
 import { safeErrorMessage } from "./security.js";
 
-export interface MigrationJob extends Omit<MigrateRepoInput, "publication"> {
+export interface MigrationJob extends Omit<MigrateRepoInput, "publication" | "ownerChallenge"> {
   id: string;
   /** This non-durable queue is preview-only; publishing must use runCampaign. */
   publication?: { mode: "preview" };
@@ -42,8 +42,13 @@ export async function runCampaignJobs(
 ): Promise<MigrationJobResult[]> {
   // Validate the complete batch before starting any work. A JavaScript caller
   // can bypass the TypeScript shape, so keep the runtime check fail-closed too.
-  if (jobs.some((job) => (job as MigrateRepoInput).publication?.mode === "publish")) {
-    throw new Error("Publishing requires the DB-backed runCampaign workflow; runCampaignJobs is preview-only");
+  if (jobs.some((job) => {
+    const untrusted = job as MigrateRepoInput;
+    return untrusted.publication?.mode === "publish" || untrusted.ownerChallenge !== undefined;
+  })) {
+    throw new Error(
+      "Publishing and owner-challenge preparation require the DB-backed console workflow; runCampaignJobs is preview-only"
+    );
   }
   const concurrency = Math.max(1, opts.concurrency ?? 2);
   const results: MigrationJobResult[] = new Array(jobs.length);

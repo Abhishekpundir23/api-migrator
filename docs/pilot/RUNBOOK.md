@@ -132,6 +132,14 @@ token, policy, and required-CI bindings rather than trusting a digest alone.
 The current local Docker verifier is useful engineering evidence but does not,
 by itself, satisfy this external-source gate.
 
+The [publication-runner contract and Linux wrapper](../../ops/publication-runner/README.md)
+are reviewable primitives for this gate. They are not a deployed runner and do
+not prove that a signed attestation was independently observed or issued. Its
+numeric-IP nftables filter also requires a separately deployed L7 gateway to
+enforce the registry TLS hostname, certificate, and redirect policy.
+External-source publication remains disabled until those controls and the
+other Gate 4B prerequisites are evidenced in the supervised drill.
+
 ## Gate 4A — preview access
 
 For a public repository:
@@ -166,8 +174,21 @@ installation.
 
 This gate applies only after the owner reviews the exact sanitized preview.
 
+- [ ] The console's read-only challenge action reruns the exact candidate with
+  the selected-repository App read identity, verifies the unconsumed preview
+  receipt, current base, immutable migration branch/PR state, candidate tree,
+  and every runtime evidence binding, then emits canonical challenge bytes and
+  a digest plus an opaque HMAC receipt that binds that digest to the exact
+  preview, without requesting a write token or mutating GitHub.
+- [ ] The owner reviews the challenge's numeric repository/App identities,
+  base, candidate tree, action sequence, and evidence digests outside the
+  operator process. The offline signer requires explicit approval of that exact
+  challenge digest and uses only owner-only, non-symlinked files outside the
+  workspace. It creates a new `0600` envelope file and never prints raw key,
+  payload, signature, or envelope bytes.
 - [ ] A separately signed owner approval envelope binds the authorization ID,
-  pilot ID, signer/key IDs, approval and pre-run authorization digests,
+  pilot ID, signer/key IDs, approval and pre-run authorization digests, the
+  exact server-issued owner-challenge digest,
   canonical slug and numeric owner/repository IDs, App/installation IDs, base
   branch/SHA, engine tag/commit, canonical manifest byte length/digest,
   preflight ID, artifact digest, candidate branch/tree, canonical empty
@@ -197,12 +218,12 @@ This gate applies only after the owner reviews the exact sanitized preview.
   workflow/check/integration tuples authorized by the owner, approved PR head
   SHA, run/check URLs, conclusions, and observation timestamp.
 
-The unreleased candidate enforces this signed boundary before write-token
-minting, and its direct CLI is preview-only. Gate 4B still cannot pass for
-external source until the owner challenge/signing tooling, disposable
-egress-filtered runner, current ruleset and required-CI evidence, and supervised
-sandbox publication drill are complete. A validating sidecar cannot replace
-any of these controls.
+The unreleased candidate enforces this challenge/signature boundary before
+write-token minting, and its direct migration CLI is preview-only. Gate 4B still
+cannot pass for external source until the disposable egress-filtered runner is
+independently provisioned and attested, current ruleset and required-CI evidence
+are validated, and the supervised sandbox publication drill is complete. A
+validating sidecar cannot replace any of these controls.
 
 ## Phase 1 — preview
 
@@ -246,13 +267,17 @@ validates runtime authorization nor grants permission for a later action.
    the canonical digest of an empty array. Failed or skipped checks are equally
    non-overrideable.
 4. Show the sanitized preview and patch to the owner representative.
-5. For the candidate sandbox drill, use the dedicated owner challenge/signing
-   tooling to obtain the separately signed envelope described in Gate 4B. Do
-   not hand-assemble it. A general pre-run approval, rule-code list, sidecar
-   record, or operator approval is not a substitute.
-6. Record requested corrections and operator time separately from automatic
+5. In the local console, use **Generate owner challenge** to rerun and bind the
+   exact preview. Preserve the canonical challenge outside Git with owner-only
+   permissions and compare its displayed digest with the downloaded bytes.
+6. For the candidate sandbox drill, use `npm run owner:sign -- ...` with
+   `--approve-challenge-digest` equal to the independently reviewed digest to
+   create the separately signed envelope described in Gate 4B. Do not
+   hand-assemble it. A general pre-run approval, rule-code list, sidecar record,
+   or operator approval is not a substitute.
+7. Record requested corrections and operator time separately from automatic
    execution time.
-7. If any artifact, base SHA, manifest, branch, or decision changes, rerun preview and
+8. If any artifact, base SHA, manifest, branch, or decision changes, rerun preview and
    obtain approval for the new preflight.
 
 ## Phase 3 — publication
@@ -268,15 +293,24 @@ For the supervised sandbox drill only:
 
 1. Run console preview for exactly one repository and review the candidate
    tree, report, and zero-blocker result.
-2. Supply the exact canonical Ed25519 owner envelope. Preparing publication
-   consumes the short-lived preview receipt and binds the SHA-256 digest of
-   those exact envelope bytes into a one-use operator token and typed
-   confirmation phrase.
-3. Submit the unchanged envelope bytes, token, and phrase. The runtime verifies
+2. Generate the read-only owner challenge, review its exact digest and summary,
+   sign it offline, and attach the new envelope file without printing or
+   hand-editing its bytes. The opaque challenge receipt does not extend the
+   original ten-minute preview deadline; this drill is limited to small
+   repositories whose reruns and human signing step fit inside that window.
+   Expiry requires a completely new preview.
+3. Preparing publication requires the opaque challenge receipt, first reruns
+   the exact candidate with GitHub App read identity, and verifies the
+   owner-signed challenge digest and every fresh live binding without consuming
+   either receipt. Only after that succeeds does it consume the short-lived
+   preview receipt and bind the challenge digest plus SHA-256 digest of those
+   exact envelope bytes into a one-use operator token and typed confirmation
+   phrase. Rejected or cross-preview material leaves the preview receipt unused.
+4. Submit the unchanged envelope bytes, token, and phrase. The runtime verifies
    both operator control and owner authorization, consumes the owner envelope
    in the durable externally anchored replay store, then permits the sole
    write-token broker to act only on the exact observed remote state.
-4. Record the safe owner-authorization receipt, PR URL, repository slug and
+5. Record the safe owner-authorization receipt, PR URL, repository slug and
    numeric ID, content-addressed branch, candidate tree, approved head SHA,
    base SHA, and required-check conclusions bound to that head. Never record
    or echo the raw envelope, payload, signature, or private key.

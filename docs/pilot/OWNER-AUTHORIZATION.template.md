@@ -115,8 +115,14 @@ List the authority, target, reason, deadline, and evidence for every exception.
 This section records the inputs to the unreleased candidate's exact canonical
 Ed25519 owner envelope. Complete it only after the owner has reviewed the
 sanitized preview and patch. Do not hand-build or hand-edit the envelope:
-owner challenge/signing tooling is still a release gate. A change to any bound
-field requires a new preview and envelope.
+generate the canonical challenge through the read-only console stage, review
+its exact digest and summary, and use the offline signer with explicit
+`--approve-challenge-digest`. A change to any bound field requires a new preview,
+challenge, and envelope. The challenge expires no later than the authenticated
+preview receipt. Preserve the console's opaque challenge receipt only in the
+current local UI session; it binds the issued challenge digest to that exact
+preview and is required when attaching the envelope. An expired or consumed
+receipt requires a completely new preview.
 
 The outer envelope contains exactly `version`, `keyId`, canonical unpadded
 base64url `payload`, and `signature`. The payload contains exactly the runtime
@@ -128,6 +134,7 @@ not commit, log, echo, or place it in the sidecar.
 - Pilot ID:
 - Owner signer ID and key ID:
 - Publication approval evidence digest:
+- Exact server-issued owner-challenge digest:
 - Exact preview completion time (Unix epoch milliseconds):
 - Issued-at, not-before, envelope expiry, and authorization expiry (Unix epoch
   milliseconds):
@@ -156,6 +163,12 @@ request. A pull-request number is bound only for the update action.
 - [ ] The owner key registry is an owner-only regular file outside the
   workspace and contains the exact Ed25519 public key, signer/repository scope,
   validity interval, fingerprint, and current key/authorization revocations.
+- [ ] The canonical challenge, registry, private key, and new envelope path are
+  owner-controlled, non-symlinked, outside the workspace, and have owner-only
+  permissions. The reviewed challenge digest exactly equals the offline
+  signer's `--approve-challenge-digest` value, the signed payload's
+  `challengeDigest`, and the digest bound by the opaque console challenge
+  receipt.
 - [ ] Approval occurred after the exact preview completed; this pre-run
   authorization and the envelope will both be unexpired at write-token
   minting.
@@ -180,10 +193,11 @@ authorization; and rechecks live state immediately before and after the sole
 write-token broker mints a token. A safe consumption receipt contains digests
 and identifiers only, never the raw payload or signature.
 
-External-source publication remains disabled until owner challenge/signing
-tooling, the disposable egress-filtered runner, current ruleset and required-CI
-evidence, and a supervised sandbox publication drill are complete. Completing
-this record does not waive those gates.
+External-source publication remains disabled until the disposable
+egress-filtered runner is independently provisioned and attested, current
+ruleset and required-CI evidence are validated, and a supervised sandbox
+publication drill is complete. Completing this record does not waive those
+gates.
 
 The approved head SHA is recorded after publication. Before any merge decision,
 the owner must verify that the PR still belongs to the exact numeric repository

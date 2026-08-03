@@ -12,6 +12,7 @@ import {
   type RunMigrationOptions,
 } from "@api-migrator/engine";
 import {
+  readAuthConfig,
   resolveAuthorizedWriteAuth,
   resolveReadAuth,
   resolveOptionalReadAuth,
@@ -55,6 +56,12 @@ import {
   type RemotePublicationState,
 } from "./owner-publication-policy.js";
 import { verifyOwnerAuthorizationEnvelope } from "./owner-authorization.js";
+import type { OwnerAuthorizationChallengeArtifact } from "./owner-challenge.js";
+import {
+  prepareOwnerAuthorizationChallenge,
+  validateOwnerChallengePreparationRequest,
+  type OwnerChallengePreparationRequest,
+} from "./owner-challenge-preparation.js";
 import {
   createAskPassScript,
   gitAuthenticationEnv,
@@ -74,6 +81,11 @@ export interface MigrateRepoInput {
   branch?: string;
   /** Omitted means preview. Publication is never the default. */
   publication?: PublicationRequest;
+  /**
+   * Internal console-only request to rerun and bind one authenticated preview
+   * into a read-only owner challenge. It is mutually exclusive with publish.
+   */
+  ownerChallenge?: OwnerChallengePreparationRequest;
 }
 
 export interface MigrateRepoResult {
@@ -83,6 +95,8 @@ export interface MigrateRepoResult {
   preflightId: string;
   artifactDigest: string;
   publication: PublicationOutcome;
+  /** Present only on the internal, read-only owner-challenge path. */
+  ownerChallenge?: OwnerAuthorizationChallengeArtifact;
   error?: string;
 }
 
@@ -110,6 +124,18 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
   const repository = parseRepositorySlug(input.slug);
   const manifestJson = exactManifestJson(input.manifest, input.manifestJson);
   const publication = validatePublicationRequest(input.publication);
+  const ownerChallenge = input.ownerChallenge === undefined
+    ? null
+    : validateOwnerChallengePreparationRequest(input.ownerChallenge);
+  if (ownerChallenge !== null && publication.mode !== "preview") {
+    throw new Error("Owner challenge preparation is mutually exclusive with publication");
+  }
+  // Challenge preparation is an App-bound owner ceremony. Reject gh-cli
+  // before resolving any credential, querying GitHub, or cloning a repository;
+  // an ambient user PAT must never cross this boundary.
+  if (ownerChallenge !== null && readAuthConfig().mode !== "github-app") {
+    throw new Error("Owner challenge preparation requires GitHub App authentication");
+  }
   const requestedBase = input.baseBranch ? validateBranchName(input.baseBranch) : undefined;
   const workdir = mkdtempSync(join(tmpdir(), "api-migrator-"));
   const isolatedHome = join(workdir, "home");
@@ -133,8 +159,14 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
 
     let baseBranch: string;
     let gitEnv: NodeJS.ProcessEnv | null = null;
-    if (publicationRequiresAuthentication(publication)) {
+    if (publicationRequiresAuthentication(publication) || ownerChallenge !== null) {
       auth = await resolveReadAuth(repository.slug);
+      if (
+        ownerChallenge !== null &&
+        (auth.mode !== "github-app" || auth.capability !== "read" || auth.githubApp === null)
+      ) {
+        throw new Error("Owner challenge preparation requires GitHub App read authentication");
+      }
       authTokens.push(auth.token);
       authSessions.push(auth);
       baseBranch = requestedBase ?? (await discoverDefaultBranch(auth, repository));
@@ -237,8 +269,9 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       manifest: input.manifest,
       report,
     });
-    const previewCompletedAt =
-      publication.mode === "publish" ? publication.previewCompletedAt : Date.now();
+    const previewCompletedAt = publication.mode === "publish"
+      ? publication.previewCompletedAt
+      : ownerChallenge?.previewCompletedAt ?? Date.now();
 
     const common = {
       preflightId,
@@ -252,6 +285,9 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     };
 
     if (!changed) {
+      if (ownerChallenge !== null) {
+        throw new Error("Owner challenge is unavailable because the reviewed preview has no changes");
+      }
       return {
         report,
         prUrl: null,
@@ -262,7 +298,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       };
     }
 
-    if (publication.mode === "preview") {
+    if (publication.mode === "preview" && ownerChallenge === null) {
       return {
         report,
         prUrl: null,
@@ -276,6 +312,66 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
           overridden: false,
         },
       };
+    }
+
+    if (ownerChallenge !== null) {
+      if (!auth || !gitEnv) throw new Error("Owner challenge preparation requires resolved GitHub authentication");
+      if (auth.mode !== "github-app" || auth.githubApp === null) {
+        throw new Error("Owner challenge preparation requires GitHub App authentication");
+      }
+      assertCanonicalRemote(repoPath, repository, cleanEnv);
+      const reviewedRemote = await inspectRemotePublicationState(
+        auth,
+        repository,
+        branch,
+        baseBranch,
+        baseSha,
+        candidateTreeSha
+      );
+      const ownerPolicy = readOwnerPublicationPolicy();
+      const expectedOwnerBindings = buildExpectedOwnerAuthorizationBindings({
+        policy: ownerPolicy,
+        previewCompletedAt: ownerChallenge.previewCompletedAt,
+        repositorySlug: repository.slug,
+        github: auth.githubApp,
+        baseBranch,
+        baseSha,
+        manifestJson,
+        preflightId,
+        artifactDigest: artifact.digest,
+        candidateBranch: branch,
+        candidateTreeSha,
+        report,
+        remote: reviewedRemote,
+      });
+      const preparedChallenge = prepareOwnerAuthorizationChallenge({
+        request: ownerChallenge,
+        current: {
+          preflightId,
+          artifactDigest: artifact.digest,
+          candidateTreeSha,
+        },
+        expected: expectedOwnerBindings,
+        blockers,
+      });
+      return {
+        report,
+        prUrl: null,
+        changed: true,
+        preflightId,
+        artifactDigest: artifact.digest,
+        publication: {
+          ...common,
+          mode: "preview",
+          status: "preview_ready",
+          overridden: false,
+        },
+        ownerChallenge: preparedChallenge,
+      };
+    }
+
+    if (publication.mode !== "publish") {
+      throw new Error("Invalid owner publication state");
     }
 
     // A stale/mismatched preview is never overrideable.
@@ -336,6 +432,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       publication.ownerAuthorizationEnvelope,
       {
         expected: expectedOwnerBindings,
+        expectedChallengeDigest: publication.ownerChallengeDigest,
         registryPath: ownerPolicy.registryPath,
       }
     );

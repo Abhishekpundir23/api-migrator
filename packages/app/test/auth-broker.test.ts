@@ -126,6 +126,7 @@ function ownerFixture(suffix: string): OwnerFixture {
     keyId: `owner-key-${suffix}`,
     approvalEvidenceDigest: digest(`approval-${suffix}`),
     preRunAuthorizationDigest: digest(`pre-run-${suffix}`),
+    challengeDigest: digest(`challenge-${suffix}`),
     previewCompletedAt: now - 5_000,
     issuedAt: now - 4_000,
     notBefore: now - 3_000,
@@ -220,6 +221,7 @@ function ownerFixture(suffix: string): OwnerFixture {
   const grant = verifyOwnerAuthorizationEnvelope(envelope, {
     registryPath,
     expected,
+    expectedChallengeDigest: payload.challengeDigest,
   });
 
   return {

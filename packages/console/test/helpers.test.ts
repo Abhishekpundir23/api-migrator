@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPreviewReceipt, prepareOperatorApproval } from "../lib/approval";
+import {
+  createOwnerChallengeReceipt,
+  createPreviewReceipt,
+  prepareOperatorApproval,
+} from "../lib/approval";
 import {
   credentialsFromEnv,
   isAuthorizedHeader,
@@ -82,8 +86,18 @@ test("a busy publication does not consume approval, but an acquired replay fails
     now,
     secret,
   });
+  const challenge = createOwnerChallengeReceipt({
+    previewReceipt: preview.previewReceipt,
+    campaignId: "3f88d980-d4ce-4fb7-b3cc-fdf3503b05d3",
+    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+    ownerChallengeDigest: `sha256:${"d".repeat(64)}`,
+    challengeExpiresAt: now + 5 * 60 * 1_000,
+    now: now + 1,
+    secret,
+  });
   const approval = prepareOperatorApproval({
     previewReceipt: preview.previewReceipt,
+    ownerChallengeReceipt: challenge.ownerChallengeReceipt,
     ownerAuthorizationEnvelope: '{"signed":"owner"}',
     campaignId: "3f88d980-d4ce-4fb7-b3cc-fdf3503b05d3",
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,

@@ -15,6 +15,10 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  canonicalJson,
+  parseCanonicalJson as parseStrictCanonicalJson,
+} from "./canonical-json.js";
 import { parseRepositorySlug, validateBranchName } from "./repository.js";
 
 export const OWNER_AUTHORIZATION_AUDIENCE = "api-migrator:owner-publication:v1";
@@ -46,6 +50,8 @@ export interface OwnerAuthorizationPayload {
   keyId: string;
   approvalEvidenceDigest: string;
   preRunAuthorizationDigest: string;
+  /** Exact server-issued owner challenge reviewed before this envelope was signed. */
+  challengeDigest: string;
   previewCompletedAt: number;
   issuedAt: number;
   notBefore: number;
@@ -111,6 +117,8 @@ export interface ExpectedOwnerAuthorizationBindings {
 
 export interface VerifyOwnerAuthorizationInput {
   expected: ExpectedOwnerAuthorizationBindings;
+  /** Exact digest from the server-authenticated challenge receipt. */
+  expectedChallengeDigest: string;
   /** Defaults to API_MIGRATOR_OWNER_KEY_REGISTRY_PATH. */
   registryPath?: string;
   /** Testable clock, expressed as Unix epoch milliseconds. */
@@ -216,6 +224,10 @@ export function verifyOwnerAuthorizationEnvelope(
 ): OwnerAuthorizationGrant {
   const now = validTimestamp(input.now ?? Date.now(), "verification clock");
   const expected = validateExpectedBindings(input.expected);
+  const expectedChallengeDigest = validDigest(
+    input.expectedChallengeDigest,
+    "expected challengeDigest"
+  );
   const envelope = asRecord(
     parseCanonicalJson(envelopeJson, MAX_ENVELOPE_BYTES, "owner authorization envelope"),
     "owner authorization envelope"
@@ -235,6 +247,9 @@ export function verifyOwnerAuthorizationEnvelope(
     parseCanonicalJson(payloadJson, MAX_PAYLOAD_BYTES, "owner authorization payload")
   );
   if (payload.keyId !== envelopeKeyId) reject("envelope keyId does not match payload keyId");
+  if (payload.challengeDigest !== expectedChallengeDigest) {
+    reject("signed payload does not bind the exact issued owner challenge");
+  }
 
   const signatureBytes = decodeCanonicalBase64Url(encodedSignature, "signature");
   if (signatureBytes.length !== 64) reject("Ed25519 signature must be exactly 64 bytes");
@@ -416,6 +431,7 @@ function validatePayload(value: unknown): OwnerAuthorizationPayload {
     "keyId",
     "approvalEvidenceDigest",
     "preRunAuthorizationDigest",
+    "challengeDigest",
     "previewCompletedAt",
     "issuedAt",
     "notBefore",
@@ -449,6 +465,7 @@ function validatePayload(value: unknown): OwnerAuthorizationPayload {
     keyId: validIdentifier(object.keyId, "keyId"),
     approvalEvidenceDigest: validDigest(object.approvalEvidenceDigest, "approvalEvidenceDigest"),
     preRunAuthorizationDigest: validDigest(object.preRunAuthorizationDigest, "preRunAuthorizationDigest"),
+    challengeDigest: validDigest(object.challengeDigest, "challengeDigest"),
     previewCompletedAt: validTimestamp(object.previewCompletedAt, "previewCompletedAt"),
     issuedAt: validTimestamp(object.issuedAt, "issuedAt"),
     notBefore: validTimestamp(object.notBefore, "notBefore"),
@@ -934,58 +951,13 @@ function grantState(grant: OwnerAuthorizationGrant): GrantState {
 }
 
 function parseCanonicalJson(input: unknown, maxBytes: number, label: string): unknown {
-  if (typeof input !== "string" || input.length === 0 || Buffer.byteLength(input, "utf8") > maxBytes) {
-    reject(`${label} is missing or exceeds the supported size`);
-  }
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(input);
-  } catch {
-    reject(`${label} is not valid JSON`);
-  }
-  let canonical: string;
-  try {
-    canonical = canonicalJson(parsed);
-  } catch {
-    reject(`${label} contains unsupported JSON values`);
-  }
-  if (canonical !== input) {
-    reject(`${label} is not canonical JSON (including duplicate keys)`);
-  }
-  return parsed;
-}
-
-function canonicalJson(value: unknown, ancestors = new Set<object>()): string {
-  if (value === null) return "null";
-  if (typeof value === "string") {
-    assertValidUnicode(value);
-    return JSON.stringify(value);
-  }
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new Error("unsafe JSON number");
-    return String(value);
-  }
-  if (typeof value !== "object") throw new Error("unsupported JSON value");
-  if (ancestors.has(value)) throw new Error("cyclic JSON value");
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      return `[${value.map((entry) => canonicalJson(entry, ancestors)).join(",")}]`;
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) throw new Error("non-plain JSON object");
-    const object = value as Record<string, unknown>;
-    const keys = Object.keys(object).sort();
-    for (const key of keys) {
-      assertValidUnicode(key);
-      if (object[key] === undefined) throw new Error("undefined JSON member");
-    }
-    return `{${keys
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key], ancestors)}`)
-      .join(",")}}`;
-  } finally {
-    ancestors.delete(value);
+    return parseStrictCanonicalJson(input, maxBytes, label);
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message.replace(/^Canonical JSON rejected:\s*/, "")
+      : `${label} is invalid`;
+    reject(message);
   }
 }
 

@@ -6,8 +6,35 @@ import { buildPreviewEvidence, type PreviewResultInput } from "../../../lib/prev
 
 type ResultItem = PreviewResultInput;
 
+interface OwnerChallengeReview {
+  pilotId: string;
+  approvalEvidenceDigest: string;
+  preRunAuthorizationDigest: string;
+  previewCompletedAt: number;
+  authorizationExpiresAt: number;
+  repository: { slug: string; id: number; ownerId: number };
+  github: { appId: number; installationId: number };
+  base: { branch: string; sha: string };
+  engine: { tag: string; commit: string };
+  manifest: { byteLength: number; digest: string };
+  preview: {
+    preflightId: string;
+    artifactDigest: string;
+    candidateBranch: string;
+    candidateTreeSha: string;
+    findingsDigest: string;
+    resolutionsDigest: string;
+    commandScopeDigest: string;
+    runnerAttestationDigest: string;
+    rulesetDigest: string;
+    requiredCiDigest: string;
+  };
+  allowedActions: string[];
+  pullRequestNumber: number | null;
+}
+
 interface RunResponse {
-  mode?: "preview" | "prepare_publish" | "publish";
+  mode?: "preview" | "prepare_owner_challenge" | "prepare_publish" | "publish";
   error?: string;
   summary?: { results?: ResultItem[] };
   previewReceipt?: string | null;
@@ -17,6 +44,12 @@ interface RunResponse {
   approvalExpiresAt?: number | null;
   ownerAuthorizationDigest?: string | null;
   manifestDigest?: string | null;
+  challengeJson?: string | null;
+  challengeDigest?: string | null;
+  challengeExpiresAt?: number | null;
+  ownerChallengeReceipt?: string | null;
+  ownerChallengeDigest?: string | null;
+  review?: OwnerChallengeReview | null;
 }
 
 /** Local operator form: preview, attach owner authorization, then approve. */
@@ -25,6 +58,13 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
   const [slugs, setSlugs] = useState("");
   const [results, setResults] = useState<ResultItem[]>([]);
   const [previewReceipt, setPreviewReceipt] = useState<string | null>(null);
+  const [challengeJson, setChallengeJson] = useState<string | null>(null);
+  const [challengeDigest, setChallengeDigest] = useState<string | null>(null);
+  const [challengeExpiresAt, setChallengeExpiresAt] = useState<number | null>(null);
+  // Opaque server receipt: retained only in memory for prepare_publish and
+  // never rendered, downloaded, logged, or placed in a DOM attribute.
+  const [ownerChallengeReceipt, setOwnerChallengeReceipt] = useState<string | null>(null);
+  const [challengeReview, setChallengeReview] = useState<OwnerChallengeReview | null>(null);
   const [ownerAuthorizationEnvelope, setOwnerAuthorizationEnvelope] = useState("");
   const [operatorApprovalToken, setOperatorApprovalToken] = useState<string | null>(null);
   const [ownerAuthorizationDigest, setOwnerAuthorizationDigest] = useState<string | null>(null);
@@ -32,7 +72,9 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
   const [confirmationPhrase, setConfirmationPhrase] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"preview" | "prepare_publish" | "publish" | null>(null);
+  const [busy, setBusy] = useState<
+    "preview" | "prepare_owner_challenge" | "prepare_publish" | "publish" | null
+  >(null);
   const publishableCount = results.filter((result) => result.status === "preview_ready").length;
 
   function clearFinalApproval() {
@@ -43,12 +85,21 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
     setConfirmation("");
   }
 
+  function clearOwnerChallenge() {
+    setChallengeJson(null);
+    setChallengeDigest(null);
+    setChallengeExpiresAt(null);
+    setOwnerChallengeReceipt(null);
+    setChallengeReview(null);
+  }
+
   async function preview(e: React.FormEvent) {
     e.preventDefault();
     setBusy("preview");
     setError(null);
     setResults([]);
     setPreviewReceipt(null);
+    clearOwnerChallenge();
     setOwnerAuthorizationEnvelope("");
     clearFinalApproval();
     const repoSlugs = slugs
@@ -82,8 +133,67 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
     }
   }
 
+  async function prepareOwnerChallenge() {
+    if (!previewReceipt || publishableCount !== 1 || operatorApprovalToken !== null) return;
+    setBusy("prepare_owner_challenge");
+    setError(null);
+    clearOwnerChallenge();
+    setOwnerAuthorizationEnvelope("");
+    clearFinalApproval();
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "prepare_owner_challenge", previewReceipt }),
+      });
+      const data = (await res.json()) as RunResponse;
+      if (!res.ok) {
+        setError(data.error ?? "owner challenge preparation failed");
+        setBusy(null);
+        return;
+      }
+      if (
+        !data.challengeJson ||
+        !data.challengeDigest ||
+        !data.challengeExpiresAt ||
+        !data.ownerChallengeReceipt
+      ) {
+        clearOwnerChallenge();
+        setError("owner challenge response was incomplete; generate a new challenge");
+        setBusy(null);
+        return;
+      }
+      setChallengeJson(data.challengeJson);
+      setChallengeDigest(data.challengeDigest);
+      setChallengeExpiresAt(data.challengeExpiresAt);
+      setOwnerChallengeReceipt(data.ownerChallengeReceipt);
+      setChallengeReview(data.review ?? null);
+      setBusy(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(null);
+    }
+  }
+
+  function downloadOwnerChallenge() {
+    if (!challengeJson || !challengeDigest) return;
+    const blob = new Blob([challengeJson], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `api-migrator-owner-challenge-${challengeDigest.slice(7, 19)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function preparePublish() {
-    if (!previewReceipt || publishableCount !== 1 || ownerAuthorizationEnvelope.length === 0) return;
+    if (
+      !previewReceipt ||
+      !challengeDigest ||
+      !ownerChallengeReceipt ||
+      publishableCount !== 1 ||
+      ownerAuthorizationEnvelope.length === 0
+    ) return;
     setBusy("prepare_publish");
     setError(null);
     clearFinalApproval();
@@ -94,6 +204,7 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
         body: JSON.stringify({
           action: "prepare_publish",
           previewReceipt,
+          ownerChallengeReceipt,
           ownerAuthorizationEnvelope,
         }),
       });
@@ -103,10 +214,26 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
         setBusy(null);
         return;
       }
-      setOperatorApprovalToken(data.operatorApprovalToken ?? null);
-      setOwnerAuthorizationDigest(data.ownerAuthorizationDigest ?? null);
-      setManifestDigest(data.manifestDigest ?? null);
-      setConfirmationPhrase(data.confirmationPhrase ?? null);
+      if (
+        data.ownerChallengeDigest !== challengeDigest ||
+        !data.operatorApprovalToken ||
+        !data.confirmationPhrase ||
+        !data.ownerAuthorizationDigest ||
+        !data.manifestDigest
+      ) {
+        setOwnerChallengeReceipt(null);
+        clearFinalApproval();
+        setError("publication approval response was incomplete or mismatched; run a new preview");
+        setBusy(null);
+        return;
+      }
+      setOperatorApprovalToken(data.operatorApprovalToken);
+      setOwnerAuthorizationDigest(data.ownerAuthorizationDigest);
+      setManifestDigest(data.manifestDigest);
+      setConfirmationPhrase(data.confirmationPhrase);
+      // The one-use preview is consumed now and the operator token carries the
+      // digest; the raw challenge receipt has no further purpose.
+      setOwnerChallengeReceipt(null);
       setBusy(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -124,6 +251,7 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
     // every retry must begin with a fresh preview and owner envelope.
     setPreviewReceipt(null);
     setOwnerAuthorizationEnvelope("");
+    clearOwnerChallenge();
     clearFinalApproval();
     setBusy("publish");
     setError(null);
@@ -165,10 +293,12 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
         <label>Repository slug (owner/repo; one repository in this milestone)</label>
         <textarea
           value={slugs}
+          disabled={operatorApprovalToken !== null}
           onChange={(e) => {
             setSlugs(e.target.value);
             setResults([]);
             setPreviewReceipt(null);
+            clearOwnerChallenge();
             setOwnerAuthorizationEnvelope("");
             clearFinalApproval();
           }}
@@ -191,33 +321,163 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
           ))}
         </section>
       )}
-      <button type="submit" className="btn" disabled={busy !== null}>
+      <button
+        type="submit"
+        className="btn"
+        disabled={busy !== null || operatorApprovalToken !== null}
+      >
         {busy === "preview" ? "Generating safe preview..." : "Preview migration"}
       </button>
 
       {previewReceipt && publishableCount === 1 && (
         <div className="approval card">
-          <h3>Attach repository-owner authorization</h3>
+          <h3>Create repository-owner challenge</h3>
           <p>
-            Paste the separately signed owner envelope for this exact preview. It stays only in this
-            page&apos;s memory and the current request; the server never returns, logs, or persists it.
+            Re-run this exact preview with read-only GitHub App identity and current remote-state checks,
+            then download the canonical challenge for offline owner review and signing.
           </p>
-          <label htmlFor="owner-authorization-envelope">Signed owner authorization envelope</label>
-          <textarea
-            id="owner-authorization-envelope"
-            value={ownerAuthorizationEnvelope}
-            onChange={(event) => {
-              setOwnerAuthorizationEnvelope(event.target.value);
-              clearFinalApproval();
-            }}
-            autoComplete="off"
-            spellCheck={false}
-            style={{ minHeight: 150 }}
-          />
           <button
             type="button"
             className="btn"
-            disabled={busy !== null || ownerAuthorizationEnvelope.length === 0 || operatorApprovalToken !== null}
+            disabled={busy !== null || operatorApprovalToken !== null}
+            onClick={prepareOwnerChallenge}
+          >
+            {busy === "prepare_owner_challenge" ? "Rechecking exact preview..." : "Generate owner challenge"}
+          </button>
+          {challengeJson && challengeDigest ? (
+            <div className="evidence-section">
+              <p><strong>Challenge digest:</strong> <code>{challengeDigest}</code></p>
+              <p>
+                <strong>Challenge expires:</strong>{" "}
+                {challengeExpiresAt ? new Date(challengeExpiresAt).toISOString() : "Not reported"}
+              </p>
+              {challengeReview ? (
+                <div className="evidence-grid">
+                  <EvidenceValue label="Pilot ID" value={challengeReview.pilotId} />
+                  <EvidenceValue label="Repository" value={challengeReview.repository.slug} important />
+                  <EvidenceValue label="Repository ID" value={String(challengeReview.repository.id)} />
+                  <EvidenceValue label="Owner ID" value={String(challengeReview.repository.ownerId)} />
+                  <EvidenceValue label="GitHub App ID" value={String(challengeReview.github.appId)} />
+                  <EvidenceValue label="Installation ID" value={String(challengeReview.github.installationId)} />
+                  <EvidenceValue label="Base branch" value={challengeReview.base.branch} />
+                  <EvidenceValue label="Base commit" value={challengeReview.base.sha} important />
+                  <EvidenceValue label="Engine tag" value={challengeReview.engine.tag} />
+                  <EvidenceValue label="Engine commit" value={challengeReview.engine.commit} />
+                  <EvidenceValue
+                    label="Manifest bytes"
+                    value={String(challengeReview.manifest.byteLength)}
+                  />
+                  <EvidenceValue label="Manifest digest" value={challengeReview.manifest.digest} important />
+                  <EvidenceValue
+                    label="Preview completed"
+                    value={new Date(challengeReview.previewCompletedAt).toISOString()}
+                  />
+                  <EvidenceValue
+                    label="Authorization expires"
+                    value={new Date(challengeReview.authorizationExpiresAt).toISOString()}
+                  />
+                  <EvidenceValue
+                    label="Approval evidence"
+                    value={challengeReview.approvalEvidenceDigest}
+                  />
+                  <EvidenceValue
+                    label="Pre-run authorization"
+                    value={challengeReview.preRunAuthorizationDigest}
+                  />
+                  <EvidenceValue label="Preflight ID" value={challengeReview.preview.preflightId} important />
+                  <EvidenceValue label="Artifact digest" value={challengeReview.preview.artifactDigest} important />
+                  <EvidenceValue label="Candidate branch" value={challengeReview.preview.candidateBranch} />
+                  <EvidenceValue label="Candidate tree" value={challengeReview.preview.candidateTreeSha} important />
+                  <EvidenceValue label="Findings set" value={challengeReview.preview.findingsDigest} />
+                  <EvidenceValue label="Resolutions set" value={challengeReview.preview.resolutionsDigest} />
+                  <EvidenceValue label="Command scope" value={challengeReview.preview.commandScopeDigest} />
+                  <EvidenceValue label="Allowed actions" value={challengeReview.allowedActions.join(" → ")} />
+                  <EvidenceValue
+                    label="Pull request"
+                    value={challengeReview.pullRequestNumber === null
+                      ? "Create new"
+                      : String(challengeReview.pullRequestNumber)}
+                  />
+                  <EvidenceValue
+                    label="Runner attestation"
+                    value={challengeReview.preview.runnerAttestationDigest}
+                  />
+                  <EvidenceValue label="Ruleset evidence" value={challengeReview.preview.rulesetDigest} />
+                  <EvidenceValue label="Required CI" value={challengeReview.preview.requiredCiDigest} />
+                </div>
+              ) : null}
+              <p className="muted">
+                Download outside the project workspace, set the file to owner-only permissions, and
+                compare this digest when invoking the offline signer.
+              </p>
+              <button type="button" className="btn" onClick={downloadOwnerChallenge}>
+                Download canonical challenge
+              </button>
+            </div>
+          ) : null}
+
+          <h3>Attach repository-owner authorization</h3>
+          <p>
+            Select the separately signed owner-envelope file for this exact preview. Its bytes stay only
+            in this page&apos;s memory and the current request; the server never returns, logs, or persists it.
+          </p>
+          <label htmlFor="owner-authorization-envelope">Signed owner authorization envelope file</label>
+          <input
+            key={`${previewReceipt}:${challengeDigest ?? "no-challenge"}`}
+            id="owner-authorization-envelope"
+            type="file"
+            accept="application/json,.json"
+            disabled={ownerChallengeReceipt === null || operatorApprovalToken !== null}
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              if (!file) {
+                setOwnerAuthorizationEnvelope("");
+                clearFinalApproval();
+                return;
+              }
+              if (file.size <= 0 || file.size > 64 * 1024) {
+                setOwnerAuthorizationEnvelope("");
+                setError("Owner envelope must be a non-empty file of at most 65536 bytes.");
+                clearFinalApproval();
+                return;
+              }
+              try {
+                const bytes = new Uint8Array(await file.arrayBuffer());
+                // Preserve a leading BOM as data so the strict canonical
+                // verifier rejects it instead of silently changing file bytes.
+                const exactEnvelope = new TextDecoder("utf-8", {
+                  fatal: true,
+                  ignoreBOM: true,
+                }).decode(bytes);
+                const roundTrip = new TextEncoder().encode(exactEnvelope);
+                if (
+                  roundTrip.length !== bytes.length ||
+                  roundTrip.some((value, index) => value !== bytes[index])
+                ) {
+                  throw new Error("owner envelope bytes changed during UTF-8 decoding");
+                }
+                setOwnerAuthorizationEnvelope(exactEnvelope);
+                setError(null);
+              } catch {
+                setOwnerAuthorizationEnvelope("");
+                setError("Owner envelope must contain valid UTF-8 JSON bytes.");
+              }
+              clearFinalApproval();
+            }}
+          />
+          {ownerAuthorizationEnvelope.length > 0 ? (
+            <p className="muted">Envelope loaded: {new TextEncoder().encode(ownerAuthorizationEnvelope).length} bytes.</p>
+          ) : null}
+          <button
+            type="button"
+            className="btn"
+            disabled={
+              busy !== null ||
+              challengeDigest === null ||
+              ownerChallengeReceipt === null ||
+              ownerAuthorizationEnvelope.length === 0 ||
+              operatorApprovalToken !== null
+            }
             onClick={preparePublish}
           >
             {busy === "prepare_publish" ? "Binding exact authorization..." : "Prepare publication approval"}

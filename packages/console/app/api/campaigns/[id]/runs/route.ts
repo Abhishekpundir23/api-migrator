@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { init, getCampaign } from "@api-migrator/db";
-import { runCampaign } from "@api-migrator/app/console-internal";
+import {
+  prepareCampaignOwnerChallenge,
+  runCampaign,
+  verifyCampaignOwnerAuthorizationEnvelope,
+} from "@api-migrator/app/console-internal";
 import { credentialsFromEnv } from "../../../../../lib/operator-auth";
 import {
+  createOwnerChallengeReceipt,
   createPreviewReceipt,
   prepareOperatorApproval,
   validateOwnerAuthorizationEnvelope,
+  verifyOwnerChallengeReceipt,
+  verifyPreviewReceipt,
   verifyOperatorApprovalToken,
 } from "../../../../../lib/approval";
 import {
@@ -30,7 +37,8 @@ export const maxDuration = 300;
 /**
  * POST /api/campaigns/[id]/runs — run the campaign against a list of repos.
  * Preview body: { action: "preview", repoSlugs: ["owner/repo"] }
- * Prepare body: { action: "prepare_publish", previewReceipt: "...", ownerAuthorizationEnvelope: "..." }
+ * Challenge body: { action: "prepare_owner_challenge", previewReceipt: "..." }
+ * Prepare body: { action: "prepare_publish", previewReceipt: "...", ownerChallengeReceipt: "...", ownerAuthorizationEnvelope: "..." }
  * Publish body: { action: "publish", operatorApprovalToken: "...", ownerAuthorizationEnvelope: "...", confirmation: "..." }
  *
  * Preview receipts cannot publish. The first pilot milestone supports exactly
@@ -87,18 +95,116 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       );
     }
 
+    if (action === "prepare_owner_challenge") {
+      const prepared = await withRunLock(async () => {
+        const preview = verifyPreviewReceipt({
+          previewReceipt: body.previewReceipt,
+          campaignId: id,
+          manifestJson: campaign.manifest,
+        });
+        // The repository rerun is read-only. Recheck the receipt after the
+        // potentially long operation so an expired/consumed receipt can never
+        // leave the UI with an unusable challenge.
+        const challenge = await prepareCampaignOwnerChallenge({
+          campaignId: id,
+          repository: preview.repository,
+          previewReceiptExpiresAt: preview.expiresAt,
+        });
+        verifyPreviewReceipt({
+          previewReceipt: body.previewReceipt,
+          campaignId: id,
+          manifestJson: campaign.manifest,
+        });
+        const receipt = createOwnerChallengeReceipt({
+          previewReceipt: body.previewReceipt,
+          campaignId: id,
+          manifestJson: campaign.manifest,
+          ownerChallengeDigest: challenge.challengeDigest,
+          challengeExpiresAt: challenge.expiresAt,
+        });
+        return { challenge, receipt };
+      });
+      const bindings = prepared.challenge.challenge.bindings;
+      return NextResponse.json({
+        mode: "prepare_owner_challenge",
+        challengeJson: prepared.challenge.challengeJson,
+        challengeDigest: prepared.challenge.challengeDigest,
+        challengeExpiresAt: prepared.challenge.expiresAt,
+        // Returned only so this browser session can complete prepare_publish;
+        // the UI never renders or logs the raw receipt.
+        ownerChallengeReceipt: prepared.receipt.ownerChallengeReceipt,
+        review: {
+          pilotId: bindings.pilotId,
+          approvalEvidenceDigest: bindings.approvalEvidenceDigest,
+          preRunAuthorizationDigest: bindings.preRunAuthorizationDigest,
+          previewCompletedAt: bindings.previewCompletedAt,
+          authorizationExpiresAt: bindings.authorizationExpiresAt,
+          repository: bindings.repository,
+          github: bindings.github,
+          base: bindings.base,
+          engine: bindings.engine,
+          manifest: bindings.manifest,
+          preview: bindings.preview,
+          allowedActions: bindings.allowedActions,
+          pullRequestNumber: bindings.pullRequestNumber,
+        },
+      });
+    }
+
     if (action === "prepare_publish") {
-      const prepared = prepareOperatorApproval({
-        previewReceipt: body.previewReceipt,
-        ownerAuthorizationEnvelope: body.ownerAuthorizationEnvelope,
-        campaignId: id,
-        manifestJson: campaign.manifest,
+      const ownerAuthorizationEnvelope = validateOwnerAuthorizationEnvelope(
+        body.ownerAuthorizationEnvelope
+      );
+      const prepared = await withRunLock(async () => {
+        const challengeReceipt = verifyOwnerChallengeReceipt({
+          ownerChallengeReceipt: body.ownerChallengeReceipt,
+          previewReceipt: body.previewReceipt,
+          campaignId: id,
+          manifestJson: campaign.manifest,
+        });
+        const preview = verifyPreviewReceipt({
+          previewReceipt: body.previewReceipt,
+          campaignId: id,
+          manifestJson: campaign.manifest,
+        });
+        const verification = await verifyCampaignOwnerAuthorizationEnvelope({
+          campaignId: id,
+          repository: preview.repository,
+          previewReceiptExpiresAt: preview.expiresAt,
+          ownerAuthorizationEnvelope,
+          ownerChallengeDigest: challengeReceipt.ownerChallengeDigest,
+        });
+        if (!verification.verified) {
+          throw new HttpInputError(
+            "owner authorization envelope is invalid, expired, revoked, or does not match this preview",
+            409
+          );
+        }
+        // Check freshness and one-shot state again immediately before the
+        // synchronous exchange consumes this receipt.
+        const reverifiedChallengeReceipt = verifyOwnerChallengeReceipt({
+          ownerChallengeReceipt: body.ownerChallengeReceipt,
+          previewReceipt: body.previewReceipt,
+          campaignId: id,
+          manifestJson: campaign.manifest,
+        });
+        if (reverifiedChallengeReceipt.ownerChallengeDigest !== challengeReceipt.ownerChallengeDigest) {
+          throw new HttpInputError("owner challenge receipt changed during verification", 409);
+        }
+        return prepareOperatorApproval({
+          previewReceipt: body.previewReceipt,
+          ownerChallengeReceipt: body.ownerChallengeReceipt,
+          ownerAuthorizationEnvelope,
+          campaignId: id,
+          manifestJson: campaign.manifest,
+        });
       });
       return NextResponse.json({
         mode: "prepare_publish",
         operatorApprovalToken: prepared.operatorApprovalToken,
         confirmationPhrase: prepared.confirmationPhrase,
         approvalExpiresAt: prepared.expiresAt,
+        ownerChallengeDigest: prepared.ownerChallengeDigest,
         ownerAuthorizationDigest: prepared.ownerAuthorizationDigest,
         manifestDigest: prepared.manifestDigest,
         repository: prepared.repository,
@@ -131,6 +237,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
               preflightId: approval.repository.preflightId,
               previewCompletedAt: approval.repository.previewCompletedAt,
               ownerAuthorizationEnvelope,
+              ownerChallengeDigest: approval.ownerChallengeDigest,
             },
           });
           return summary.results;
@@ -149,7 +256,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json(response.body, { status: response.status });
     }
 
-    throw new HttpInputError("action must be preview, prepare_publish, or publish");
+    throw new HttpInputError(
+      "action must be preview, prepare_owner_challenge, prepare_publish, or publish"
+    );
   } catch (error) {
     if (error instanceof HttpInputError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
