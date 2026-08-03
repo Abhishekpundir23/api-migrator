@@ -6,6 +6,7 @@ import {
   canonicalDigest,
   deriveCandidateBranch,
   deriveFindingId,
+  digestFindingSet,
   digestRequiredCiSet,
   digestResolutionSet,
   validatePilotResult,
@@ -38,7 +39,7 @@ function previewCopy() {
   const record = copy();
   record.authorization.postPreviewPublication = null;
   record.run.publicationMode = "preview";
-  record.run.publicationStatus = "blocked";
+  record.run.publicationStatus = "preview_ready";
   record.run.publicationAttemptedAt = null;
   record.run.approvedHeadSha = null;
   record.run.approvedBy = null;
@@ -71,6 +72,12 @@ test("Draft 2020-12 shape rejects missing, unknown, and malformed fields", () =>
   const malformed = copy();
   malformed.run.scannedFiles = -7;
   assert.match(messages(malformed), /schema \/run\/scannedFiles.*must be >= 0/);
+
+  for (const length of [41, 63]) {
+    const ambiguousSha = copy();
+    ambiguousSha.repository.baseSha = "a".repeat(length);
+    assert.match(messages(ambiguousSha), /schema \/repository\/baseSha/);
+  }
 });
 
 test("repository and branch rules mirror the runtime boundary", () => {
@@ -304,6 +311,10 @@ test("publish App evidence records separate read and write phases with revocatio
 
   const blockedWrite = copy();
   blockedWrite.run.publicationStatus = "blocked";
+  blockedWrite.run.blockers = [{
+    code: "manual_review_required",
+    message: "Publication remains blocked before write-token issuance.",
+  }];
   blockedWrite.run.approvedHeadSha = null;
   blockedWrite.outcome.ownerDisposition = "pending";
   blockedWrite.outcome.pullRequestState = "not_opened";
@@ -329,31 +340,56 @@ test("publication mode and status follow the runtime state machine", () => {
 });
 
 test("every manual finding has stable identity and its own resolution", () => {
-  const record = copy();
-  record.run.reviewItems = 4;
+  const finding = {
+    findingId: "",
+    code: "F12",
+    file: "src/inngest/functions.ts",
+    locationDigest: "a".repeat(64),
+    messageDigest: "b".repeat(64),
+    evidenceReference: "preview-example-001#finding-1",
+    evidenceDigest: "c".repeat(64),
+  };
+  finding.findingId = deriveFindingId(finding);
+
+  const record = previewCopy();
+  record.run.manualReviewFindings = [finding];
+  record.run.reviewItems = 2;
   assert.match(messages(record), /reviewItems must equal/);
 
-  const identity = copy();
+  const identity = previewCopy();
+  identity.run.manualReviewFindings = [structuredClone(finding)];
+  identity.run.reviewItems = 1;
+  identity.run.blockers = [{
+    code: "manual_review_required",
+    message: "One exact finding remains unresolved.",
+  }];
+  identity.run.publicationStatus = "blocked";
+  identity.review.unresolvedReviewItems = 1;
   identity.run.manualReviewFindings[0].file = "src/changed.ts";
   assert.match(messages(identity), /invalid stable identity/);
-  assert.equal(deriveFindingId(example.run.manualReviewFindings[0]), example.run.manualReviewFindings[0].findingId);
+  assert.equal(deriveFindingId(finding), finding.findingId);
 });
 
-test("owner approval binds the complete resolution contents", () => {
+test("owner approval binds empty finding and resolution sets after blockers are cleared", () => {
   const record = copy();
-  record.run.manualReviewResolutions[0].reason = "A different resolution was substituted after approval.";
+  record.authorization.postPreviewPublication.resolutionsDigest = "9".repeat(64);
   assert.match(messages(record), /resolutionsDigest does not match/);
-  assert.equal(
-    digestResolutionSet(example.run.manualReviewResolutions),
-    example.authorization.postPreviewPublication.resolutionsDigest
-  );
+  assert.equal(digestFindingSet([]), example.authorization.postPreviewPublication.findingsDigest);
+  assert.equal(digestResolutionSet([]), example.authorization.postPreviewPublication.resolutionsDigest);
 });
 
-test("manual-review publication requires an explicit override", () => {
-  const record = copy();
-  record.run.overrideUnsafe = false;
-  record.run.overrideReason = null;
-  assert.match(messages(record), /pr_opened with manual review requires an explicit override/);
+test("manual-review blockers cannot publish or be overridden", () => {
+  const override = copy();
+  override.run.overrideUnsafe = true;
+  override.run.overrideReason = "Attempted manual-review override.";
+  assert.match(messages(override), /schema \/run\/overrideUnsafe|publication overrides are disabled/);
+
+  const blockedPublication = copy();
+  blockedPublication.run.blockers.push({
+    code: "manual_review_required",
+    message: "One exact finding remains unresolved.",
+  });
+  assert.match(messages(blockedPublication), /pr_opened cannot retain publication blockers/);
 });
 
 test("candidate counts retain the raw precision denominator", () => {

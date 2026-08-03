@@ -2,32 +2,30 @@
 
 API Migrator is an operator-reviewed pilot for upgrading application code when an API provider ships a breaking TypeScript SDK release.
 
-**Current status:** sandbox-validated internal pilot, pinned as `v0.1.0-pilot`. It has completed one disposable sandbox migration end to end, but it has not yet been validated on independent owner-controlled repositories. External-source execution remains blocked until its authorization, disposable-runner, egress-control, and preview-access gates are evidenced. External-source publication is additionally blocked on `v0.1.0-pilot`: the current product does not enforce a separately signed and validated owner approval envelope in the write-token path. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
+**Current status:** sandbox-validated internal pilot. This checkout now enforces a separately signed, exact-preview owner authorization before the only GitHub App write-token broker can mint a token. It also durably consumes that authorization in an externally anchored replay ledger. External-source execution and publication nevertheless remain disabled until the owner challenge/signing workflow, disposable egress-filtered runner, repository ruleset evidence, required-CI evidence, and a supervised sandbox drill are complete. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
 
 The first product goal is deliberately narrow: create a complete, verified migration preview for one repository, let a human review it, and publish a PR only after explicit approval. It never auto-merges.
 
 ## Safety model
 
-The publication flow below describes the existing disposable-sandbox path and
-the intended future product. On `v0.1.0-pilot`, do not use it for external
-source because owner approval is not technically enforced before write-token
-minting.
+The publication flow below is a security boundary under active pilot validation. Do not use it for external source until every remaining gate above has evidence.
 
 Publishing is a separate action from analysis:
 
-1. An authenticated local operator enters up to 10 approved `owner/repo` slugs.
+1. An authenticated local operator enters one approved `owner/repo` slug.
 2. **Preview** clones and analyzes each repository without pushing a branch or opening a PR.
-3. Unsafe or incomplete results are blocked. A publishable result receives a preflight ID bound to the repository, base commit, target branch, manifest, verification report, and the exact changed-file bytes and modes.
-4. The console issues a signed, short-lived approval token and asks the operator to type an exact confirmation phrase.
-5. **Publish** reruns the repository and opens a PR only if the exact artifact fingerprint still matches. A stale base, changed output, failed/skipped verification, or unresolved manual-review item fails closed. Verification failures cannot be overridden; the CLI can record a reasoned operator acknowledgment for manual-review items only.
+3. Unsafe or incomplete results are blocked. A publishable result receives a preflight ID bound to the repository, base commit, target branch, candidate Git tree, manifest, verification report, and exact changed-file bytes and modes.
+4. The repository owner separately signs a canonical, short-lived Ed25519 envelope covering that exact preview, App/repository identities, policy evidence, current remote action, and a replay-resistant nonce.
+5. The console binds the exact envelope bytes into a separate short-lived operator token and asks for an exact confirmation phrase.
+6. **Publish** reruns the repository, verifies the owner signature against an owner-only out-of-workspace registry, atomically consumes the envelope in the durable replay ledger, and only then requests a single-repository write token. Any stale base, remote-state drift, changed artifact, expired/revoked/replayed authorization, failed/skipped verification, or manual-review item fails closed. No blocker is overrideable.
 
 The console adds several guardrails around that flow:
 
 - server-side HTTP Basic authentication; credentials are not included in client JavaScript;
 - localhost-only access by default;
-- 32 KiB JSON request limit, strict GitHub slug validation, a 10-repository batch limit, and a concurrency cap;
+- 192 KiB JSON request limit (including an exact owner envelope capped at 64 KiB), strict GitHub slug validation, and one repository per owner-authorized run;
 - one active migration batch per console process;
-- signed approval tokens that expire after 10 minutes and reject replay within the running console process;
+- domain-separated preview and operator tokens that expire after 10 minutes, plus durable cross-process owner-envelope replay rejection;
 - no unsafe override exposed in the web UI.
 
 HTTP Basic authentication is only appropriate on loopback or behind TLS. Do not enable remote access over plain HTTP.
@@ -61,12 +59,14 @@ cp .env.example .env
 
 Replace all operator secrets in `.env`. `OPERATOR_APPROVAL_SECRET` must contain at least 32 bytes and should be independent of the password. Relative `API_MIGRATOR_DB_PATH` values are resolved from the repository root so the database command, CLI, and console use the same file.
 
-Initialize the local database and validate the checkout:
+Initialize preview-only local state and validate the checkout:
 
 ```bash
 npm run db:migrate
 npm run ci
 ```
+
+The write path additionally requires a one-time [replay-store ceremony](packages/db/OWNER_AUTHORIZATION_STORE.md). Configure `API_MIGRATOR_REPLAY_STORE_ID` and an absolute `API_MIGRATOR_REPLAY_ANCHOR_PATH` in a separate owner-controlled persistent directory, then run `npm run db:init-owner-store -- --activate`. The command exclusively creates an owner-only anchor and will not overwrite or silently adopt an existing anchor. A missing, replaced, or orphaned database/anchor is an incident and keeps publication disabled.
 
 Start the loopback operator console:
 
@@ -78,7 +78,7 @@ Open [http://localhost:3000](http://localhost:3000) and enter the configured ope
 
 ### GitHub credentials
 
-Public-repository previews first use anonymous, credential-free cloning. For an explicitly owner-authorized private preview—or sandbox-only publication—set `API_MIGRATOR_AUTH_MODE=github-app`, keep the first-pilot App private, configure access only to the exact selected repository, then set `GH_APP_ID` and exactly one of `GH_APP_PRIVATE_KEY_PATH` (preferred for a local pilot) or `GH_APP_PRIVATE_KEY`; `GH_APP_INSTALLATION_ID` is optional and is checked against the requested repository. Private previews fall back to those credentials only when that mode was explicitly configured. They receive a single-repository read token. The current code can mint a single-repository write token after verification and operator approval, but that is not sufficient owner authorization for external source and remains sandbox-only on `v0.1.0-pilot`. App tokens are revoked on best-effort job cleanup and are never cached across jobs. Preview does not grant permission to publish.
+Public-repository previews first use anonymous, credential-free cloning. For an explicitly owner-authorized private preview—or a future supervised sandbox publication—set `API_MIGRATOR_AUTH_MODE=github-app`, keep the first-pilot App private, configure access only to the exact selected sandbox repository, then set `GH_APP_ID` and exactly one of `GH_APP_PRIVATE_KEY_PATH` (preferred for a local pilot) or `GH_APP_PRIVATE_KEY`; `GH_APP_INSTALLATION_ID` is optional and is checked against the requested repository. Private previews fall back to those credentials only when that mode was explicitly configured. They receive a single-repository read token. A write token is available only through the internal owner-authorized broker after live signature, policy, remote-state, and durable replay checks. App tokens are revoked on best-effort cleanup and are never cached across jobs. Preview never grants permission to publish.
 
 A GitHub App publication invocation uses two separately scoped installation
 tokens: read access for repository discovery/clone and a later write token for
@@ -86,7 +86,7 @@ the approved branch and PR. Pilot evidence must record both phases separately,
 including exact repository scope, policy snapshots, issuance, expiry, and
 best-effort revocation.
 
-For a local pilot on repositories you control, `API_MIGRATOR_AUTH_MODE=gh-cli` explicitly opts into the current `gh` CLI identity. That mode is rejected when `NODE_ENV=production`; there is no implicit credential fallback.
+For a local preview on repositories you control, `API_MIGRATOR_AUTH_MODE=gh-cli` explicitly opts into the current `gh` CLI identity. That mode is rejected for publication and when `NODE_ENV=production`; there is no implicit credential fallback.
 
 Do not place a personal token in repository URLs, command arguments, reports, or database errors. The App identity, installation, repository selection, permissions, events, and returned token scope are checked before use. GitHub's REST response does not expose the App webhook's `Active` flag, so disabling it remains an operator-verified registration control; the runtime independently requires an empty event subscription. The local PEM path must be absolute, owner-only, regular, non-symlinked, and outside the workspace. Every root env file loaded by the CLI or console must also be owner-only, regular, and non-symlinked. GitHub credentials are absent from verification subprocesses. Credentialed Git commands do not inherit ambient proxy, custom-CA, Git, or Node preload settings. Verification uses a Git-free working tree and a digest-pinned Docker image; compiler, test, and lint checks have no network and a read-only repository mount. The trusted compiler redirects incremental build metadata to container-temporary storage, and any non-file compiler diagnostic or unclassified process output makes verification incomplete rather than becoming a baseline exception. Dependency installation uses ordinary Docker bridge networking after rejecting custom registry configuration and non-registry lock sources, with lifecycle scripts disabled. This is policy validation, not network-level egress filtering, so the pilot remains limited to operator-approved repositories. Before accepting hostile multi-tenant input, move installation and checks to a dedicated, egress-filtered disposable VM or job runner.
 
@@ -104,7 +104,7 @@ Preview the built-in Inngest campaign from the CLI without publishing anything:
 npm run migrate -- owner/repo
 ```
 
-The command prints the preflight ID, exact base commit, blockers, and artifact fingerprint. For an operator-owned disposable sandbox only, publishing requires rerunning it with explicit `--publish`, `--preflight`, and `--approved-by` arguments. Those flags do not authorize external-source publication on `v0.1.0-pilot`.
+The command prints the preflight ID, exact base commit, blockers, artifact fingerprint, and candidate tree. The direct CLI and package-root API are preview-only. The local console is the only supported operator publication route and uses distinct preview, owner-envelope, and operator-confirmation stages. Its write-capable campaign executor is isolated behind an explicitly internal package subpath for console integration and must not be exposed as an API or invoked outside that ceremony. External publication remains disabled until the missing challenge/signing and runner gates are completed and drilled.
 
 ## Commands and automated checks
 
@@ -115,6 +115,7 @@ The command prints the preflight ID, exact base commit, blockers, and artifact f
 | `npm test` | Runs the workspace unit and migration-fixture tests that exist in this checkout |
 | `npm run ci` | Runs ordered package builds, type-checks, workspace and pilot-evidence tests, example sidecar validation, and the console production build |
 | `npm run db:migrate` | Creates/updates the local SQLite bootstrap schema and indexes |
+| `npm run db:init-owner-store -- --activate` | One-time creation of the externally anchored owner-authorization replay store |
 | `npm run migrate -- owner/repo` | Generates a non-publishing Inngest migration preview for one approved repository |
 
 GitHub Actions runs `npm run ci` on pushes and pull requests. CI uses only its read-only checkout token, does not persist that credential, does not configure application GitHub credentials, push branches, open real PRs, or prove customer-repository compatibility. A real pilot still requires operator review and evidence from approved repositories.
@@ -129,9 +130,7 @@ until the runbook's authorization and isolation gates are satisfied.
 The sidecar result validator is a post-run audit aid. It is not consulted by the
 GitHub write-token path and cannot authorize preview, publication, or merge.
 
-Before charging for a provider campaign, run owner-authorized previews on 5–10
-repositories and record the evidence below. Do not publish externally until a
-later version enforces the signed owner envelope at the write boundary.
+Before charging for a provider campaign, complete the owner-challenge tooling and egress-filtered runner, pass a supervised disposable-sandbox publication drill, then run owner-authorized previews on 5–10 repositories and record the evidence below. Do not publish external source merely because the signature and replay primitives exist.
 
 - affected-usage precision and false positives;
 - dependency and lockfile updates;

@@ -12,7 +12,7 @@ const ajv = new Ajv2020({ allErrors: true, strict: true });
 addFormats(ajv);
 const validateShape = ajv.compile(schema);
 
-const SHA = /^[a-f0-9]{40,64}$/;
+const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const PREFLIGHT = /^pf_[a-f0-9]{64}$/;
 const OPERATOR = /^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,99}$/;
@@ -649,14 +649,11 @@ export function validatePilotResult(record) {
   if (findings.length > 0 && !blockerCodes.includes("manual_review_required")) {
     fail("manual-review findings require a manual_review_required blocker");
   }
-  if (run.overrideUnsafe === true) {
-    if (!blockerCodes.includes("manual_review_required")) fail("override requires a manual-review blocker");
-    if (blockerCodes.some((code) => code !== "manual_review_required")) fail("verification blockers cannot be overridden");
+  if (run.overrideUnsafe !== false || run.overrideReason !== null) {
+    fail("publication overrides are disabled");
   }
-  if (run.publicationStatus === "pr_opened"
-      && blockerCodes.includes("manual_review_required")
-      && run.overrideUnsafe !== true) {
-    fail("pr_opened with manual review requires an explicit override");
+  if (run.publicationStatus === "pr_opened" && blockers.length > 0) {
+    fail("pr_opened cannot retain publication blockers");
   }
 
   const publicationApproval = authorization.postPreviewPublication;

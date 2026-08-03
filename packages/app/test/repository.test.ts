@@ -98,3 +98,15 @@ test("manifest branches are stable, migration/base-specific, owned, and valid", 
     assert.throws(() => validateBranchName(invalid), /Invalid git branch/);
   }
 });
+
+test("migration branches accept only exact SHA-1 or SHA-256 object-id lengths", () => {
+  const artifactDigest = "b".repeat(64);
+  assert.doesNotThrow(() => defaultMigrationBranch(manifest, "main", "a".repeat(40), artifactDigest));
+  assert.doesNotThrow(() => defaultMigrationBranch(manifest, "main", "a".repeat(64), artifactDigest));
+  for (const length of [39, 41, 63, 65]) {
+    assert.throws(
+      () => defaultMigrationBranch(manifest, "main", "a".repeat(length), artifactDigest),
+      /Invalid base commit id/
+    );
+  }
+});

@@ -1,4 +1,7 @@
-export const MAX_JSON_BYTES = 32 * 1024;
+// A signed owner envelope may itself be 64 KiB. JSON string escaping can make
+// the transport representation larger, so keep the whole request bounded
+// while leaving room for the exact, unmodified envelope bytes.
+export const MAX_JSON_BYTES = 192 * 1024;
 export const MAX_REPOS_PER_RUN = 10;
 export const MAX_RUN_CONCURRENCY = 2;
 

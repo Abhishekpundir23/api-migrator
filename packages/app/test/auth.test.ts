@@ -283,7 +283,7 @@ test("installation IDs and token requests are repository- and capability-scoped"
     type: "installation",
     installationId: 456,
     repositoryNames: ["sandbox"],
-    permissions: { contents: "read", metadata: "read" },
+    permissions: { contents: "read", metadata: "read", pull_requests: "read" },
   });
   assert.deepEqual(githubInstallationTokenOptions(456, "sandbox", "write"), {
     type: "installation",
@@ -303,12 +303,13 @@ test("returned installation tokens must be exact, single-repository capabilities
     repositorySelection: "selected" as const,
     repositoryIds: [789],
     repositoryNames: ["sandbox"],
-    permissions: { contents: "read", metadata: "read" },
+    permissions: { contents: "read", metadata: "read", pull_requests: "read" },
   };
   assert.doesNotThrow(() =>
     assertGitHubInstallationTokenPolicy(token, 456, "sandbox", {
       contents: "read",
       metadata: "read",
+      pull_requests: "read",
     })
   );
   assert.throws(

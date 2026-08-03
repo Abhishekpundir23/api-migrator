@@ -29,7 +29,7 @@ import {
   reconcilePr,
   reconcilePrWithAudit,
 } from "../src/github.js";
-import { persistFailedRun } from "../src/campaign/runner.js";
+import { buildFailedRunPatch, persistFailedRun } from "../src/campaign/runner.js";
 import { runCampaignJobs, type MigrationJob } from "../src/queue.js";
 import { parseRepositorySlug } from "../src/repository.js";
 
@@ -40,6 +40,38 @@ const manifest: Manifest = {
   runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
   package: { name: "inngest", from: "^3", to: "^4" },
   peerFloors: [],
+};
+
+const PREVIEW_COMPLETED_AT = 2_000_000_000_000;
+const OWNER_ENVELOPE = "{}";
+
+function publishRequest(preflightId = `pf_${"a".repeat(64)}`) {
+  return {
+    mode: "publish" as const,
+    approvedBy: "operator@example.com",
+    preflightId,
+    previewCompletedAt: PREVIEW_COMPLETED_AT,
+    ownerAuthorizationEnvelope: OWNER_ENVELOPE,
+  };
+}
+
+const ownerAuthorizationReceipt = {
+  authorizationId: "authorization-test",
+  envelopeId: "envelope-test",
+  envelopeDigest: `sha256:${"1".repeat(64)}`,
+  nonceDigest: `sha256:${"2".repeat(64)}`,
+  signerId: "owner-test",
+  keyId: "owner-key-test",
+  repositorySlug: "owner/repo",
+  repositoryId: 123,
+  baseSha: "c".repeat(40),
+  preflightId: `pf_${"a".repeat(64)}`,
+  artifactDigest: `sha256:${"b".repeat(64)}`,
+  manifestDigest: `sha256:${"3".repeat(64)}`,
+  candidateBranch: "codex/api-migrator/inngest-post-push",
+  candidateTreeSha: "e".repeat(40),
+  expiresAt: PREVIEW_COMPLETED_AT + 60_000,
+  consumedAt: PREVIEW_COMPLETED_AT + 1_000,
 };
 
 function report(options: { skipped?: boolean; ok?: boolean; review?: boolean } = {}): MigrationReport {
@@ -83,9 +115,7 @@ test("preview is the default publication mode", () => {
   assert.deepEqual(validatePublicationRequest(undefined), { mode: "preview" });
   assert.equal(publicationRequiresAuthentication({ mode: "preview" }), false);
   assert.equal(publicationRequiresAuthentication({
-    mode: "publish",
-    approvedBy: "operator",
-    preflightId: `pf_${"a".repeat(64)}`,
+    ...publishRequest(),
   }), true);
 });
 
@@ -132,6 +162,7 @@ test("preflight ids bind repository, base commit, manifest, and report", () => {
     baseBranch: "main",
     baseSha: "a".repeat(40),
     targetBranch: "codex/api-migrator/inngest-abc",
+    candidateTreeSha: "b".repeat(40),
     artifactDigest: "c".repeat(64),
     manifest,
     report: report(),
@@ -144,6 +175,7 @@ test("preflight ids bind repository, base commit, manifest, and report", () => {
   assert.equal(first, createPreflightId({ ...input, report: noisy }));
   assert.notEqual(first, createPreflightId({ ...input, baseSha: "b".repeat(40) }));
   assert.notEqual(first, createPreflightId({ ...input, targetBranch: "codex/api-migrator/inngest-def" }));
+  assert.notEqual(first, createPreflightId({ ...input, candidateTreeSha: "d".repeat(40) }));
   assert.notEqual(first, createPreflightId({ ...input, artifactDigest: "d".repeat(64) }));
   const changedRuntime = report();
   changedRuntime.verification.checks.runtime = {
@@ -156,26 +188,22 @@ test("preflight ids bind repository, base commit, manifest, and report", () => {
   assert.notEqual(first, createPreflightId({ ...input, report: changedRuntime }));
 });
 
-test("publish approval must match the exact preview and unsafe override is separate", () => {
+test("publish approval must match the exact preview and no blocker is overrideable", () => {
   const preflightId = `pf_${"a".repeat(64)}`;
   const blocker = [{ code: "manual_review_required" as const, message: "1 item requires review" }];
-  const normal = validatePublicationRequest({ mode: "publish", approvedBy: "operator@example.com", preflightId });
-  assert.throws(() => assertPublicationAllowed(normal as Extract<typeof normal, { mode: "publish" }>, preflightId, blocker), /blocked/);
-
-  const override = validatePublicationRequest({
-    mode: "publish",
-    approvedBy: "operator@example.com",
-    preflightId,
-    overrideUnsafe: true,
-    overrideReason: "Manually reviewed the flagged call site",
-  });
+  const normal = validatePublicationRequest(publishRequest(preflightId));
   assert.deepEqual(
-    assertPublicationAllowed(override as Extract<typeof override, { mode: "publish" }>, preflightId, blocker),
-    { overridden: true }
+    assertPublicationAllowed(normal as Extract<typeof normal, { mode: "publish" }>, preflightId, []),
+    { overridden: false }
+  );
+  assert.throws(() => assertPublicationAllowed(normal as Extract<typeof normal, { mode: "publish" }>, preflightId, blocker), /blocked/);
+  assert.throws(
+    () => assertPublicationAllowed(normal as Extract<typeof normal, { mode: "publish" }>, `pf_${"b".repeat(64)}`, blocker),
+    /stale/
   );
   assert.throws(
-    () => assertPublicationAllowed(override as Extract<typeof override, { mode: "publish" }>, `pf_${"b".repeat(64)}`, blocker),
-    /stale/
+    () => validatePublicationRequest({ ...publishRequest(preflightId), overrideUnsafe: true } as never),
+    /unknown or unsupported/
   );
 });
 
@@ -186,6 +214,8 @@ test("a stale publish preflight cannot become a successful no-change result", ()
     baseBranch: "main",
     baseSha: "c".repeat(40),
     branch: "codex/api-migrator/inngest-current",
+    candidateTreeSha: "e".repeat(40),
+    previewCompletedAt: PREVIEW_COMPLETED_AT,
     artifactDigest: "d".repeat(64),
     blockers: [],
   };
@@ -197,20 +227,16 @@ test("a stale publish preflight cannot become a successful no-change result", ()
 
   assert.throws(
     () => createNoChangesOutcome({
-      mode: "publish",
-      approvedBy: "operator",
-      preflightId: `pf_${"a".repeat(64)}`,
+      ...publishRequest(`pf_${"a".repeat(64)}`),
     }, identity),
     /stale/
   );
 
   const valid = createNoChangesOutcome({
-    mode: "publish",
-    approvedBy: "operator",
-    preflightId: currentPreflightId,
+    ...publishRequest(currentPreflightId),
   }, identity);
   assert.equal(valid.status, "no_changes");
-  assert.equal(valid.approvedBy, "operator");
+  assert.equal(valid.approvedBy, "operator@example.com");
 });
 
 test("the non-durable job queue rejects publishing before starting the batch", async () => {
@@ -231,52 +257,34 @@ test("the non-durable job queue rejects publishing before starting the batch", a
   );
 });
 
-test("malformed operator approvals and override reasons fail closed", () => {
+test("malformed operator approvals and unsupported fields fail closed", () => {
   const preflightId = `pf_${"a".repeat(64)}`;
   assert.throws(
-    () => validatePublicationRequest({ mode: "publish", approvedBy: "", preflightId }),
+    () => validatePublicationRequest({ ...publishRequest(preflightId), approvedBy: "" }),
     /operator identity/
   );
   assert.throws(
-    () =>
-      validatePublicationRequest({
-        mode: "publish",
-        approvedBy: "operator",
-        preflightId,
-        overrideUnsafe: true,
-        overrideReason: "short",
-      }),
-    /10–500/
+    () => validatePublicationRequest({ ...publishRequest(preflightId), previewCompletedAt: 0 }),
+    /preview completion/
   );
-});
-
-test("override reasons are trimmed and redacted before becoming audit data", () => {
-  const token = "ghp_overrideSecret123456";
+  assert.throws(
+    () => validatePublicationRequest({ ...publishRequest(preflightId), ownerAuthorizationEnvelope: "" }),
+    /bounded signed owner authorization/
+  );
+  const exact = "{\"version\":1}\n";
   const request = validatePublicationRequest({
-    mode: "publish",
-    approvedBy: "operator",
-    preflightId: `pf_${"a".repeat(64)}`,
-    overrideUnsafe: true,
-    overrideReason: `  Reviewed flagged call; token=${token}  `,
+    ...publishRequest(preflightId),
+    ownerAuthorizationEnvelope: exact,
   });
-  assert.equal(request.mode, "publish");
-  assert.equal(request.overrideReason?.startsWith("Reviewed flagged call"), true);
-  assert.match(request.overrideReason ?? "", /\[REDACTED GITHUB TOKEN\]|\[REDACTED\]/);
-  assert.equal(JSON.stringify(request).includes(token), false);
+  assert.equal(request.mode === "publish" && request.ownerAuthorizationEnvelope, exact);
 });
 
-test("verification failures are absolute and cannot be overridden", () => {
+test("verification failures are absolute", () => {
   const preflightId = `pf_${"a".repeat(64)}`;
-  const override = validatePublicationRequest({
-    mode: "publish",
-    approvedBy: "operator",
-    preflightId,
-    overrideUnsafe: true,
-    overrideReason: "Reviewed but verification must remain absolute",
-  });
+  const approval = validatePublicationRequest(publishRequest(preflightId));
   assert.throws(
     () => assertPublicationAllowed(
-      override as Extract<typeof override, { mode: "publish" }>,
+      approval as Extract<typeof approval, { mode: "publish" }>,
       preflightId,
       [{ code: "verification_failed", message: "tests failed" }]
     ),
@@ -305,6 +313,81 @@ test("an existing migration branch is reusable only for the exact tree and base 
     }),
     /does not match the approved artifact and base/
   );
+  const exactSha256 = {
+    expectedBaseSha: "b".repeat(64),
+    expectedTreeSha: "c".repeat(64),
+    remoteCommitSha: "a".repeat(64),
+    remoteParentShas: ["b".repeat(64)],
+    remoteTreeSha: "c".repeat(64),
+  };
+  assert.doesNotThrow(() => assertRemoteBranchMatchesArtifact("a".repeat(64), exactSha256));
+  for (const length of [39, 41, 63, 65]) {
+    assert.throws(
+      () => assertRemoteBranchMatchesArtifact("a".repeat(length), exact),
+      /invalid remote branch commit id/
+    );
+    assert.throws(
+      () => assertRemoteBranchMatchesArtifact(remoteSha, {
+        ...exact,
+        remoteTreeSha: "c".repeat(length),
+      }),
+      /invalid commit recovery metadata/
+    );
+  }
+});
+
+test("PR reconciliation rejects intermediate-length Git object ids before an API write", async () => {
+  const repository = parseRepositorySlug("owner/repo");
+  let writes = 0;
+  const auth = {
+    token: "secret-token",
+    actor: "api-migrator[bot]",
+    mode: "github-app",
+    octokit: {
+      pulls: {
+        create: async () => {
+          writes += 1;
+          throw new Error("must not be reached");
+        },
+        update: async () => {
+          writes += 1;
+          throw new Error("must not be reached");
+        },
+      },
+    },
+  } as unknown as AuthResult;
+
+  for (const length of [41, 63]) {
+    await assert.rejects(
+      reconcilePr(
+        auth,
+        repository,
+        "codex/api-migrator/inngest-abc",
+        "main",
+        "Migration",
+        "Evidence",
+        null,
+        "a".repeat(length),
+        "b".repeat(40)
+      ),
+      /Invalid expected migration commit id/
+    );
+    await assert.rejects(
+      reconcilePr(
+        auth,
+        repository,
+        "codex/api-migrator/inngest-abc",
+        "main",
+        "Migration",
+        "Evidence",
+        null,
+        "a".repeat(40),
+        "b".repeat(length)
+      ),
+      /Invalid expected base commit id/
+    );
+  }
+  assert.equal(writes, 0);
 });
 
 test("new immutable branch pushes require the remote ref to remain absent", () => {
@@ -398,7 +481,7 @@ test("an identical immutable remote branch skips push and reuses the matching PR
   ]);
 });
 
-test("PR reconciliation rejects head races and closes only a mismatched newly created PR", async () => {
+test("PR reconciliation rejects head races without unsigned compensating writes", async () => {
   const repository = parseRepositorySlug("owner/repo");
   const expectedHead = "a".repeat(40);
   const expectedBase = "c".repeat(40);
@@ -441,7 +524,7 @@ test("PR reconciliation rejects head races and closes only a mismatched newly cr
   assert.equal(existingUpdates[0]?.state, undefined, "a pre-existing PR must never be auto-closed");
 
   const createCalls: Array<Record<string, unknown>> = [];
-  const closeCalls: Array<Record<string, unknown>> = [];
+  const unauthorizedUpdates: Array<Record<string, unknown>> = [];
   const createAuth = {
     token: "secret-token",
     actor: "api-migrator[bot]",
@@ -460,34 +543,110 @@ test("PR reconciliation rejects head races and closes only a mismatched newly cr
           };
         },
         update: async (input: Record<string, unknown>) => {
-          closeCalls.push(input);
+          unauthorizedUpdates.push(input);
           return { data: {} };
         },
       },
     },
   } as unknown as AuthResult;
 
-  await assert.rejects(
-    reconcilePr(
+  const audit: PublicationAttemptAudit = {
+    publicationMode: "publish",
+    preflightId: `pf_${"a".repeat(64)}`,
+    artifactDigest: "b".repeat(64),
+    baseSha: expectedBase,
+    baseBranch: "main",
+    headSha: expectedHead,
+    branch: "codex/api-migrator/inngest-abc",
+    candidateTreeSha: "e".repeat(40),
+    ownerAuthorizationReceipt,
+    publicationBlockers: [],
+    approvedBy: "operator",
+    overrideUnsafe: false,
+    report: report(),
+  };
+  let racedCreateFailure: unknown;
+  try {
+    await reconcilePrWithAudit(
       createAuth,
       repository,
-      "codex/api-migrator/inngest-abc",
-      "main",
       "Migration",
       "Evidence",
       null,
-      expectedHead,
-      expectedBase
-    ),
-    /New pull request head or approved base changed/
-  );
+      audit
+    );
+    assert.fail("raced PR creation should fail");
+  } catch (error) {
+    racedCreateFailure = error;
+  }
+  assert.ok(racedCreateFailure instanceof PublicationAttemptError);
+  assert.match(racedCreateFailure.message, /created pull request remains open/);
+  assert.equal(racedCreateFailure.audit.pullRequestNumber, 41);
+  assert.equal(racedCreateFailure.audit.prUrl, "https://github.com/owner/repo/pull/41");
+  assert.equal(buildFailedRunPatch(racedCreateFailure).prUrl, racedCreateFailure.audit.prUrl);
   assert.equal(createCalls.length, 1);
-  assert.deepEqual(closeCalls, [{
-    owner: "owner",
-    repo: "repo",
-    pull_number: 41,
-    state: "closed",
-  }]);
+  assert.deepEqual(
+    unauthorizedUpdates,
+    [],
+    "a create-only owner envelope must not be expanded into a PR update or close"
+  );
+
+  try {
+    const db = getDb(":memory:");
+    migrate(db);
+    const provider = createProvider({ name: "Inngest", slug: "inngest" });
+    const campaign = createCampaign({
+      providerId: provider.id,
+      name: "Inngest v3 to v4",
+      manifest,
+      status: "active",
+    });
+    const repo = upsertRepo({ slug: repository.slug });
+    const run = createRun({
+      campaignId: campaign.id,
+      repoId: repo.id,
+      branch: "codex/api-migrator/pending",
+    });
+    persistFailedRun(run.id, racedCreateFailure);
+    assert.equal(getRun(run.id)?.prUrl, "https://github.com/owner/repo/pull/41");
+  } finally {
+    closeDb();
+  }
+
+  const foreignUrlAuth = {
+    ...createAuth,
+    octokit: {
+      pulls: {
+        ...createAuth.octokit.pulls,
+        create: async () => ({
+          data: {
+            number: 42,
+            html_url: "https://github.com/another-owner/another-repo/pull/42",
+            head: { sha: expectedHead },
+            base: { ref: "main", sha: expectedBase },
+          },
+        }),
+      },
+    },
+  } as unknown as AuthResult;
+  let foreignUrlFailure: unknown;
+  try {
+    await reconcilePrWithAudit(
+      foreignUrlAuth,
+      repository,
+      "Migration",
+      "Evidence",
+      null,
+      audit
+    );
+    assert.fail("a foreign created-PR URL should fail closed");
+  } catch (error) {
+    foreignUrlFailure = error;
+  }
+  assert.ok(foreignUrlFailure instanceof PublicationAttemptError);
+  assert.match(foreignUrlFailure.message, /mismatched created pull request URL/);
+  assert.equal(foreignUrlFailure.audit.pullRequestNumber, 42);
+  assert.equal(foreignUrlFailure.audit.prUrl, "https://github.com/owner/repo/pull/42");
 });
 
 test("a push-success then PR-failure persists the exact publication attempt", async () => {
@@ -516,13 +675,14 @@ test("a push-success then PR-failure persists the exact publication attempt", as
     baseBranch: "main",
     headSha: "d".repeat(40),
     branch: "codex/api-migrator/inngest-post-push",
+    candidateTreeSha: "e".repeat(40),
+    ownerAuthorizationReceipt,
     publicationBlockers: [{
       code: "manual_review_required",
       message: "1 unresolved item requires manual review",
     }],
     approvedBy: "operator",
-    overrideUnsafe: true,
-    overrideReason: "Operator reviewed the exact flagged call site",
+    overrideUnsafe: false,
     report: migrationReport,
   };
 
@@ -570,8 +730,8 @@ test("a push-success then PR-failure persists the exact publication attempt", as
     assert.equal(stored.headSha, audit.headSha);
     assert.equal(stored.branch, audit.branch);
     assert.equal(stored.approvedBy, audit.approvedBy);
-    assert.equal(stored.overrideUnsafe, true);
-    assert.equal(stored.overrideReason, audit.overrideReason);
+    assert.equal(stored.overrideUnsafe, false);
+    assert.equal(stored.overrideReason, null);
     assert.deepEqual(JSON.parse(stored.publicationBlockers ?? "null"), audit.publicationBlockers);
     assert.deepEqual(JSON.parse(stored.report ?? "null"), migrationReport);
     assert.equal((stored.error ?? "").includes(secret), false);

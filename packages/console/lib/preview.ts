@@ -25,6 +25,7 @@ export interface PreviewVerificationInput {
 export interface PreviewResultInput {
   slug: string;
   status: string;
+  preflightId?: unknown;
   prUrl?: string | null;
   error?: string;
   report?: {
@@ -44,6 +45,8 @@ export interface PreviewResultInput {
     baseSha?: unknown;
     headSha?: unknown;
     branch?: unknown;
+    candidateTreeSha?: unknown;
+    previewCompletedAt?: unknown;
     blockers?: unknown;
   };
 }
@@ -55,11 +58,14 @@ export interface PreviewEvidenceView {
   prUrl: string | null;
   error: string | null;
   identity: {
+    preflightId: string | null;
     artifactDigest: string | null;
     baseBranch: string | null;
     baseSha: string | null;
     headSha: string | null;
     targetBranch: string | null;
+    candidateTreeSha: string | null;
+    previewCompletedAt: number | null;
   };
   changedFiles: string[];
   verification: {
@@ -106,11 +112,14 @@ export function buildPreviewEvidence(result: PreviewResultInput): PreviewEvidenc
     prUrl: safeHttpUrl(result.prUrl),
     error: safeText(result.error, 500),
     identity: {
+      preflightId: safeText(result.preflightId, 80),
       artifactDigest: safeText(result.publication?.artifactDigest, 240),
       baseBranch: safeText(result.publication?.baseBranch, 240),
       baseSha: safeText(result.publication?.baseSha, 240),
       headSha: safeText(result.publication?.headSha, 240),
       targetBranch: safeText(result.publication?.branch, 240),
+      candidateTreeSha: safeText(result.publication?.candidateTreeSha, 240),
+      previewCompletedAt: safeTimestamp(result.publication?.previewCompletedAt),
     },
     changedFiles: stringList(result.report?.changedFiles, 1_000),
     verification: {
@@ -146,6 +155,10 @@ export function buildPreviewEvidence(result: PreviewResultInput): PreviewEvidenc
       };
     }),
   };
+}
+
+function safeTimestamp(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : null;
 }
 
 function verificationOutcome(

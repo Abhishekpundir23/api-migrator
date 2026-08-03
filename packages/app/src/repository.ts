@@ -86,7 +86,7 @@ export function defaultMigrationBranch(
   baseSha: string,
   artifactDigest: string
 ): string {
-  if (!/^[a-f0-9]{40,64}$/.test(baseSha)) throw new Error("Invalid base commit id for migration branch");
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseSha)) throw new Error("Invalid base commit id for migration branch");
   if (!/^[a-f0-9]{64}$/.test(artifactDigest)) throw new Error("Invalid artifact digest for migration branch");
   const label = slugify(`${manifest.provider}-${manifest.transformSet}`);
   const digest = createHash("sha256")

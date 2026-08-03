@@ -223,8 +223,8 @@
         "candidateBranch": { "$ref": "#/$defs/gitRefName" },
         "approvedHeadSha": { "oneOf": [{ "$ref": "#/$defs/gitSha" }, { "type": "null" }] },
         "approvedBy": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,99}$" },
-        "overrideUnsafe": { "type": "boolean" },
-        "overrideReason": { "type": ["string", "null"], "minLength": 10, "maxLength": 500 },
+        "overrideUnsafe": { "const": false },
+        "overrideReason": { "type": "null" },
         "scannedFiles": { "$ref": "#/$defs/nonNegativeInteger" },
         "changedFiles": { "$ref": "#/$defs/nonNegativeInteger" },
         "appliedTransforms": { "$ref": "#/$defs/nonNegativeInteger" },
@@ -564,44 +564,6 @@
     },
     {
       "if": {
-        "required": ["run"],
-        "properties": {
-          "run": {
-            "type": "object",
-            "required": ["overrideUnsafe"],
-            "properties": { "overrideUnsafe": { "const": true } }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "run": {
-            "type": "object",
-            "properties": {
-              "overrideReason": { "type": "string", "minLength": 10 },
-              "blockers": {
-                "type": "array",
-                "contains": {
-                  "type": "object",
-                  "required": ["code"],
-                  "properties": { "code": { "const": "manual_review_required" } }
-                }
-              }
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "run": {
-            "type": "object",
-            "properties": { "overrideReason": { "type": "null" } }
-          }
-        }
-      }
-    },
-    {
-      "if": {
         "required": ["outcome"],
         "properties": {
           "outcome": {
@@ -652,7 +614,7 @@
   ],
   "$defs": {
     "githubId": { "type": "integer", "minimum": 1 },
-    "gitSha": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+    "gitSha": { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
     "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "preflightId": { "type": "string", "pattern": "^pf_[a-f0-9]{64}$" },
     "engineTag": { "type": "string", "pattern": "^v[0-9]+[.][0-9]+[.][0-9]+(?:-[A-Za-z0-9.-]+)?$" },

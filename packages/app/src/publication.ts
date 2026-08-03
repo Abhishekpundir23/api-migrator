@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Manifest, MigrationReport } from "@api-migrator/engine";
+import type { OwnerAuthorizationReceipt } from "./owner-authorization.js";
 import { stableStringify } from "./repository.js";
 import { redactText } from "./security.js";
 
@@ -11,10 +12,14 @@ export type PublicationRequest =
       approvedBy: string;
       /** Exact id returned by a preview of the same base SHA and report. */
       preflightId: string;
-      /** Explicit operator acknowledgment for manual-review flags only. */
-      overrideUnsafe?: boolean;
-      /** Mandatory audit reason whenever overrideUnsafe is true. */
-      overrideReason?: string;
+      /** Completion time returned by the exact reviewed preview. */
+      previewCompletedAt: number;
+      /**
+       * Separately signed repository-owner authorization. The raw envelope is
+       * verified and consumed only at the write-token boundary and is never
+       * persisted in run records.
+       */
+      ownerAuthorizationEnvelope: string;
     };
 
 export type PublicationBlockerCode =
@@ -34,19 +39,31 @@ export interface PublicationOutcome {
   baseBranch: string;
   baseSha: string;
   branch: string;
+  /** Exact candidate Git tree reviewed by the repository owner. */
+  candidateTreeSha: string;
+  /** Completion time of the exact preview authorized by the owner. */
+  previewCompletedAt: number;
   /** Exact GitHub PR head observed after publication. */
   headSha?: string;
   artifactDigest: string;
   blockers: PublicationBlocker[];
-  overridden: boolean;
+  /** Publication blockers are absolute; outcomes are never overridden. */
+  overridden: false;
   approvedBy?: string;
-  /** Sanitized audit reason, present only for an applied manual-review override. */
-  overrideReason?: string;
+  /** Safe one-use proof; raw signed bytes and signatures are never returned. */
+  ownerAuthorizationReceipt?: Readonly<OwnerAuthorizationReceipt>;
 }
 
 export type PublicationIdentity = Pick<
   PublicationOutcome,
-  "preflightId" | "baseBranch" | "baseSha" | "branch" | "artifactDigest" | "blockers"
+  | "preflightId"
+  | "baseBranch"
+  | "baseSha"
+  | "branch"
+  | "candidateTreeSha"
+  | "previewCompletedAt"
+  | "artifactDigest"
+  | "blockers"
 >;
 
 /**
@@ -62,10 +79,14 @@ export interface PublicationAttemptAudit {
   baseBranch: string;
   headSha: string;
   branch: string;
+  candidateTreeSha: string;
+  ownerAuthorizationReceipt: Readonly<OwnerAuthorizationReceipt>;
+  /** Safe evidence when GitHub created a PR but its returned identity raced. */
+  pullRequestNumber?: number;
+  prUrl?: string;
   publicationBlockers: PublicationBlocker[];
   approvedBy: string;
-  overrideUnsafe: boolean;
-  overrideReason?: string;
+  overrideUnsafe: false;
   report: MigrationReport;
 }
 
@@ -135,6 +156,7 @@ export function createPreflightId(input: {
   baseBranch: string;
   baseSha: string;
   targetBranch: string;
+  candidateTreeSha: string;
   artifactDigest: string;
   manifest: Manifest;
   report: MigrationReport;
@@ -157,6 +179,7 @@ export function createPreflightId(input: {
     baseBranch: input.baseBranch,
     baseSha: input.baseSha,
     targetBranch: input.targetBranch,
+    candidateTreeSha: input.candidateTreeSha,
     artifactDigest: input.artifactDigest,
     manifest: input.manifest,
     report: {
@@ -201,18 +224,26 @@ export function validatePublicationRequest(request: PublicationRequest | undefin
   if (!/^pf_[a-f0-9]{64}$/.test(request.preflightId ?? "")) {
     throw new Error("Publishing requires a valid preview preflight id");
   }
-  if (request.overrideUnsafe) {
-    const reason = request.overrideReason?.trim();
-    if (!reason || reason.length < 10 || reason.length > 500 || /[\r\n]/.test(reason)) {
-      throw new Error("Unsafe publication override requires a 10–500 character single-line reason");
-    }
-    return {
-      ...request,
-      approvedBy,
-      overrideReason: redactText(reason).slice(0, 500),
-    };
-  } else if (request.overrideReason !== undefined) {
-    throw new Error("overrideReason is only valid with overrideUnsafe");
+  if (!Number.isSafeInteger(request.previewCompletedAt) || request.previewCompletedAt <= 0) {
+    throw new Error("Publishing requires the exact preview completion time");
+  }
+  if (
+    typeof request.ownerAuthorizationEnvelope !== "string" ||
+    request.ownerAuthorizationEnvelope.length === 0 ||
+    Buffer.byteLength(request.ownerAuthorizationEnvelope, "utf8") > 64 * 1024
+  ) {
+    throw new Error("Publishing requires a bounded signed owner authorization envelope");
+  }
+  const keys = Object.keys(request).sort();
+  const expectedKeys = [
+    "approvedBy",
+    "mode",
+    "ownerAuthorizationEnvelope",
+    "preflightId",
+    "previewCompletedAt",
+  ];
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error("Publishing request has unknown or unsupported fields");
   }
   return { ...request, approvedBy };
 }
@@ -247,19 +278,10 @@ export function assertPublicationAllowed(
   request: Extract<PublicationRequest, { mode: "publish" }>,
   currentPreflightId: string,
   blockers: PublicationBlocker[]
-): { overridden: boolean } {
+): { overridden: false } {
   assertCurrentPreflight(request.preflightId, currentPreflightId);
-  const absolute = blockers.filter((blocker) => blocker.code !== "manual_review_required");
-  if (absolute.length > 0) {
-    throw new Error(`Publication blocked: ${absolute.map((blocker) => blocker.message).join("; ")}`);
-  }
   if (blockers.length === 0) return { overridden: false };
-  if (!request.overrideUnsafe) {
-    throw new Error(`Publication blocked: ${blockers.map((blocker) => blocker.message).join("; ")}`);
-  }
-  // validatePublicationRequest already requires an identity and reason. This is
-  // deliberately a separate flag so ordinary publish approvals cannot bypass gates.
-  return { overridden: true };
+  throw new Error(`Publication blocked: ${blockers.map((blocker) => blocker.message).join("; ")}`);
 }
 
 function assertCurrentPreflight(requested: string, current: string): void {
@@ -277,7 +299,7 @@ export function assertRemoteBranchMatchesArtifact(
   remoteSha: string,
   identity: RemoteArtifactIdentity
 ): void {
-  if (!/^[a-f0-9]{40,64}$/.test(remoteSha)) throw new Error("GitHub returned an invalid remote branch commit id");
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(remoteSha)) throw new Error("GitHub returned an invalid remote branch commit id");
   const shas = [
     identity.expectedBaseSha,
     identity.expectedTreeSha,
@@ -285,7 +307,7 @@ export function assertRemoteBranchMatchesArtifact(
     identity.remoteTreeSha,
     ...identity.remoteParentShas,
   ];
-  if (shas.some((sha) => !/^[a-f0-9]{40,64}$/.test(sha))) {
+  if (shas.some((sha) => !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha))) {
     throw new Error("GitHub returned invalid commit recovery metadata");
   }
   if (
