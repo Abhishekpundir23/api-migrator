@@ -61,14 +61,23 @@ blocked. Publication is a later, separate gate.
 The App private key remains outside the workspace in an owner-only regular,
 non-symlink file or an approved secret manager.
 
-The direct CLI and package-root API are preview-only and cannot enter step 4.
-The local operator console is the candidate's only supported operator
-publication route. It accepts one exact repository, consumes a one-use preview
-receipt when it binds the exact owner-envelope bytes, and requires the resulting
-one-use operator token plus typed confirmation. Its write-capable executor is an
-explicitly internal console-integration subpath and must not be exposed or
-invoked as a separate route. This operator control is separate from, and cannot
-replace, the owner signature.
+The direct migration CLI and package-root API are preview-only and cannot enter
+step 4. The local operator console is the candidate's only supported operator
+publication route. Before envelope attachment, its read-only challenge stage
+authenticates but does not consume the one-use preview receipt, reruns the exact
+candidate with App read identity, performs no remote mutation, and caps the
+challenge deadline at the preview-receipt deadline. It returns an opaque HMAC
+challenge receipt that binds the exact challenge digest to that preview. When
+the envelope is attached, the console requires that receipt, serializes another
+exact read-only rerun, and verifies the owner-signed challenge digest,
+canonical signature, revocation state, expiry, and every live binding before
+it consumes the preview receipt. It then binds the challenge digest and exact
+envelope bytes into the one-use operator token and requires typed confirmation.
+Missing, forged, cross-preview, invalid, or stale material leaves the preview
+receipt unconsumed.
+Its write-capable executor is an explicitly internal console-integration
+subpath and must not be exposed or invoked as a separate route. These operator
+controls are separate from, and cannot replace, the owner signature.
 
 ## Publication rulesets and CI evidence
 
@@ -102,9 +111,10 @@ perform organization administration.
 
 All failed, skipped, or unresolved verification and review findings are
 publication blockers; there is no override path. External-source write-token
-minting and publication remain prohibited until owner challenge/signing
-tooling, the disposable egress-filtered runner, current ruleset and required-CI
-evidence, and the supervised sandbox drill are complete. The private App stays
+minting and publication remain prohibited until the disposable egress-filtered
+runner is independently provisioned and attested, current ruleset and
+required-CI evidence are validated, and the supervised sandbox drill is
+complete. The private App stays
 installed only on the disposable sandbox. Dynamo, Toloka, and every designated
 professional or client-work repository remain categorically excluded from App
 access, clone, preview, and publication.

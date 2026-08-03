@@ -4,6 +4,8 @@ import { HttpInputError, normalizeRepoSlugs } from "./request";
 
 const PREVIEW_RECEIPT_PREFIX = "preview-v1";
 const PREVIEW_RECEIPT_DOMAIN = "api-migrator:console-preview-receipt:v1\0";
+const OWNER_CHALLENGE_RECEIPT_PREFIX = "owner-challenge-v1";
+const OWNER_CHALLENGE_RECEIPT_DOMAIN = "api-migrator:console-owner-challenge-receipt:v1\0";
 const OPERATOR_APPROVAL_PREFIX = "operator-v2";
 const OPERATOR_APPROVAL_DOMAIN = "api-migrator:console-operator-approval:v2\0";
 const TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -32,12 +34,30 @@ export interface PreviewReceipt {
   nonce: string;
 }
 
+/**
+ * Server-authenticated bridge between one exact preview receipt and the exact
+ * owner challenge emitted for it. It remains non-authorizing: publication
+ * still requires the separately signed owner envelope and operator approval.
+ */
+export interface OwnerChallengeReceipt {
+  version: 1;
+  kind: "owner_challenge_receipt";
+  campaignId: string;
+  manifestDigest: string;
+  repository: ReviewedPreview;
+  previewReceiptDigest: string;
+  ownerChallengeDigest: string;
+  expiresAt: number;
+  nonce: string;
+}
+
 export interface OperatorApproval {
   version: 2;
   kind: "operator_publication_approval";
   campaignId: string;
   manifestDigest: string;
   repository: ReviewedPreview;
+  ownerChallengeDigest: string;
   ownerAuthorizationDigest: string;
   confirmationPhrase: string;
   expiresAt: number;
@@ -48,6 +68,7 @@ export interface PreparedOperatorApproval {
   operatorApprovalToken: string;
   confirmationPhrase: string;
   expiresAt: number;
+  ownerChallengeDigest: string;
   ownerAuthorizationDigest: string;
   repository: ReviewedPreview;
   manifestDigest: string;
@@ -147,8 +168,137 @@ export function verifyPreviewReceipt(input: {
   ) {
     throw new HttpInputError("preview receipt does not match this campaign");
   }
-  if (payload.expiresAt <= validNow(input.now)) {
+  const now = validNow(input.now);
+  if (payload.expiresAt <= now) {
     throw new HttpInputError("preview receipt expired; run a new preview", 409);
+  }
+  assertOneShotUnused(
+    consumedPreviewReceipts,
+    input.previewReceipt as string,
+    now,
+    "preview receipt"
+  );
+  return payload;
+}
+
+/** Authenticate the exact challenge emitted for one still-unused preview. */
+export function createOwnerChallengeReceipt(input: {
+  previewReceipt: unknown;
+  campaignId: string;
+  manifestJson: string;
+  ownerChallengeDigest: unknown;
+  challengeExpiresAt: unknown;
+  now?: number;
+  secret?: string;
+}): {
+  ownerChallengeReceipt: string;
+  ownerChallengeDigest: string;
+  expiresAt: number;
+  repository: ReviewedPreview;
+  manifestDigest: string;
+} {
+  const now = validNow(input.now);
+  const preview = verifyPreviewReceipt({ ...input, now });
+  const ownerChallengeDigest = validDigest(input.ownerChallengeDigest, "owner challenge digest");
+  const expiresAt = validTimestamp(input.challengeExpiresAt, "owner challenge expiry");
+  if (expiresAt <= now) {
+    throw new HttpInputError("owner challenge expired; generate a new challenge", 409);
+  }
+  if (expiresAt > preview.expiresAt) {
+    throw new HttpInputError("owner challenge outlives its preview receipt", 409);
+  }
+  const payload: OwnerChallengeReceipt = {
+    version: 1,
+    kind: "owner_challenge_receipt",
+    campaignId: preview.campaignId,
+    manifestDigest: preview.manifestDigest,
+    repository: preview.repository,
+    previewReceiptDigest: sha256(input.previewReceipt as string),
+    ownerChallengeDigest,
+    expiresAt,
+    nonce: randomBytes(16).toString("base64url"),
+  };
+  return {
+    ownerChallengeReceipt: encodeToken(
+      OWNER_CHALLENGE_RECEIPT_PREFIX,
+      OWNER_CHALLENGE_RECEIPT_DOMAIN,
+      payload,
+      input.secret
+    ),
+    ownerChallengeDigest,
+    expiresAt,
+    repository: payload.repository,
+    manifestDigest: payload.manifestDigest,
+  };
+}
+
+/**
+ * Verify a challenge receipt and its exact source preview. Once that preview
+ * is consumed, every receipt derived from it becomes unusable automatically.
+ */
+export function verifyOwnerChallengeReceipt(input: {
+  ownerChallengeReceipt: unknown;
+  previewReceipt: unknown;
+  campaignId: string;
+  manifestJson: string;
+  now?: number;
+  secret?: string;
+}): OwnerChallengeReceipt {
+  const now = validNow(input.now);
+  const raw = decodeToken(
+    input.ownerChallengeReceipt,
+    "ownerChallengeReceipt",
+    OWNER_CHALLENGE_RECEIPT_PREFIX,
+    OWNER_CHALLENGE_RECEIPT_DOMAIN,
+    input.secret
+  );
+  assertExactKeys(raw, [
+    "version",
+    "kind",
+    "campaignId",
+    "manifestDigest",
+    "repository",
+    "previewReceiptDigest",
+    "ownerChallengeDigest",
+    "expiresAt",
+    "nonce",
+  ]);
+  if (raw.version !== 1 || raw.kind !== "owner_challenge_receipt") {
+    throw new HttpInputError("invalid owner challenge receipt");
+  }
+  const payload: OwnerChallengeReceipt = {
+    version: 1,
+    kind: "owner_challenge_receipt",
+    campaignId: validCampaignId(raw.campaignId),
+    manifestDigest: validDigest(raw.manifestDigest, "manifest digest"),
+    repository: validateReviewedPreview(raw.repository),
+    previewReceiptDigest: validDigest(raw.previewReceiptDigest, "preview receipt digest"),
+    ownerChallengeDigest: validDigest(raw.ownerChallengeDigest, "owner challenge digest"),
+    expiresAt: validTimestamp(raw.expiresAt, "owner challenge expiry"),
+    nonce: validNonce(raw.nonce),
+  };
+  if (
+    payload.campaignId !== input.campaignId ||
+    payload.manifestDigest !== digestManifest(input.manifestJson)
+  ) {
+    throw new HttpInputError("owner challenge receipt does not match this campaign");
+  }
+  if (payload.expiresAt <= now) {
+    throw new HttpInputError("owner challenge expired; generate a new challenge", 409);
+  }
+  const preview = verifyPreviewReceipt({
+    previewReceipt: input.previewReceipt,
+    campaignId: input.campaignId,
+    manifestJson: input.manifestJson,
+    now,
+    secret: input.secret,
+  });
+  if (
+    payload.previewReceiptDigest !== sha256(input.previewReceipt as string) ||
+    canonicalJson(payload.repository) !== canonicalJson(preview.repository) ||
+    payload.expiresAt > preview.expiresAt
+  ) {
+    throw new HttpInputError("owner challenge receipt does not match this preview", 409);
   }
   return payload;
 }
@@ -159,26 +309,31 @@ export function verifyPreviewReceipt(input: {
  */
 export function prepareOperatorApproval(input: {
   previewReceipt: unknown;
+  ownerChallengeReceipt: unknown;
   ownerAuthorizationEnvelope: unknown;
   campaignId: string;
   manifestJson: string;
   now?: number;
   secret?: string;
 }): PreparedOperatorApproval {
-  const preview = verifyPreviewReceipt(input);
+  const now = validNow(input.now);
+  const challenge = verifyOwnerChallengeReceipt({ ...input, now });
+  // Preserve the preview receipt's full replay horizon even when an owner
+  // authorization makes the bound challenge expire sooner.
+  const preview = verifyPreviewReceipt({ ...input, now });
   const envelope = validateOwnerAuthorizationEnvelope(input.ownerAuthorizationEnvelope);
   const ownerAuthorizationDigest = digestOwnerAuthorizationEnvelope(envelope);
-  const now = validNow(input.now);
-  const confirmationPhrase = `PUBLISH ${preview.repository.slug} ${ownerAuthorizationDigest.slice(7, 19)}`;
+  const confirmationPhrase = `PUBLISH ${challenge.repository.slug} ${ownerAuthorizationDigest.slice(7, 19)}`;
   const payload: OperatorApproval = {
     version: 2,
     kind: "operator_publication_approval",
-    campaignId: preview.campaignId,
-    manifestDigest: preview.manifestDigest,
-    repository: preview.repository,
+    campaignId: challenge.campaignId,
+    manifestDigest: challenge.manifestDigest,
+    repository: challenge.repository,
+    ownerChallengeDigest: challenge.ownerChallengeDigest,
     ownerAuthorizationDigest,
     confirmationPhrase,
-    expiresAt: Math.min(preview.expiresAt, now + TOKEN_TTL_MS),
+    expiresAt: Math.min(challenge.expiresAt, now + TOKEN_TTL_MS),
     nonce: randomBytes(16).toString("base64url"),
   };
   if (payload.expiresAt <= now) {
@@ -190,11 +345,18 @@ export function prepareOperatorApproval(input: {
     payload,
     input.secret
   );
-  consumeOneShot(consumedPreviewReceipts, input.previewReceipt as string, preview.expiresAt, now, "preview receipt");
+  consumeOneShot(
+    consumedPreviewReceipts,
+    input.previewReceipt as string,
+    preview.expiresAt,
+    now,
+    "preview receipt"
+  );
   return {
     operatorApprovalToken,
     confirmationPhrase,
     expiresAt: payload.expiresAt,
+    ownerChallengeDigest: payload.ownerChallengeDigest,
     ownerAuthorizationDigest,
     repository: payload.repository,
     manifestDigest: payload.manifestDigest,
@@ -224,6 +386,7 @@ export function verifyOperatorApprovalToken(input: {
     "campaignId",
     "manifestDigest",
     "repository",
+    "ownerChallengeDigest",
     "ownerAuthorizationDigest",
     "confirmationPhrase",
     "expiresAt",
@@ -233,6 +396,7 @@ export function verifyOperatorApprovalToken(input: {
     throw new HttpInputError("invalid operator approval token");
   }
   const repository = validateReviewedPreview(raw.repository);
+  const ownerChallengeDigest = validDigest(raw.ownerChallengeDigest, "owner challenge digest");
   const ownerAuthorizationDigest = validDigest(raw.ownerAuthorizationDigest, "owner authorization digest");
   const expectedPhrase = `PUBLISH ${repository.slug} ${ownerAuthorizationDigest.slice(7, 19)}`;
   if (raw.confirmationPhrase !== expectedPhrase) {
@@ -244,6 +408,7 @@ export function verifyOperatorApprovalToken(input: {
     campaignId: validCampaignId(raw.campaignId),
     manifestDigest: validDigest(raw.manifestDigest, "manifest digest"),
     repository,
+    ownerChallengeDigest,
     ownerAuthorizationDigest,
     confirmationPhrase: expectedPhrase,
     expiresAt: validTimestamp(raw.expiresAt, "operator approval expiry"),
@@ -341,6 +506,16 @@ function consumeOneShot(
   now: number,
   label: string
 ): void {
+  const key = assertOneShotUnused(store, token, now, label);
+  store.set(key, expiresAt);
+}
+
+function assertOneShotUnused(
+  store: Map<string, number>,
+  token: string,
+  now: number,
+  label: string
+): string {
   for (const [key, expiry] of store) {
     if (expiry <= now) store.delete(key);
   }
@@ -348,7 +523,7 @@ function consumeOneShot(
   if (store.has(key)) {
     throw new HttpInputError(`${label} was already used; run a new preview`, 409);
   }
-  store.set(key, expiresAt);
+  return key;
 }
 
 function canonicalJson(value: unknown): string {

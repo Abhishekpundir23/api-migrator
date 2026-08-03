@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { resolveDatabasePath } from "@api-migrator/db";
 import {
+  createOwnerChallengeReceipt,
   createPreviewReceipt,
   prepareOperatorApproval,
   verifyOperatorApprovalToken,
@@ -72,9 +73,17 @@ test("root env reaches console authentication, approval, and the shared database
         previewCompletedAt: 1_000,
       },
     });
+    const challenge = createOwnerChallengeReceipt({
+      previewReceipt: preview.previewReceipt,
+      campaignId: "campaign-env",
+      manifestJson,
+      ownerChallengeDigest: `sha256:${"d".repeat(64)}`,
+      challengeExpiresAt: Date.now() + 5 * 60 * 1_000,
+    });
     const envelope = '{"signed":"owner"}';
     const approval = prepareOperatorApproval({
       previewReceipt: preview.previewReceipt,
+      ownerChallengeReceipt: challenge.ownerChallengeReceipt,
       ownerAuthorizationEnvelope: envelope,
       campaignId: "campaign-env",
       manifestJson,

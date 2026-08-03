@@ -147,6 +147,7 @@ function fixture(): Fixture {
     keyId: "owner-key-v1",
     approvalEvidenceDigest: digest("approval-evidence"),
     preRunAuthorizationDigest: digest("pre-run-authorization"),
+    challengeDigest: digest("owner-challenge"),
     previewCompletedAt: NOW - 5_000,
     issuedAt: NOW - 4_000,
     notBefore: NOW - 3_000,
@@ -222,6 +223,7 @@ function verifyFixture(value: Fixture, now = NOW): OwnerAuthorizationGrant {
   return verifyOwnerAuthorizationEnvelope(value.envelope, {
     registryPath: value.registryPath,
     expected: value.expected,
+    expectedChallengeDigest: value.payload.challengeDigest,
     now,
   });
 }
@@ -342,12 +344,22 @@ test("binds every runtime-owned payload field exactly", () => {
         () => verifyOwnerAuthorizationEnvelope(value.envelope, {
           registryPath: value.registryPath,
           expected,
+          expectedChallengeDigest: value.payload.challengeDigest,
           now: NOW,
         }),
         /exact runtime bindings/,
         label
       );
     }
+    assert.throws(
+      () => verifyOwnerAuthorizationEnvelope(value.envelope, {
+        registryPath: value.registryPath,
+        expected: value.expected,
+        expectedChallengeDigest: digest("different-owner-challenge"),
+        now: NOW,
+      }),
+      /exact issued owner challenge/
+    );
   } finally {
     value.cleanup();
   }
@@ -386,6 +398,7 @@ test("rejects unknown, missing, duplicate, noncanonical, unsafe, and invalid-Uni
         () => verifyOwnerAuthorizationEnvelope(envelope, {
           registryPath: value.registryPath,
           expected: value.expected,
+          expectedChallengeDigest: value.payload.challengeDigest,
           now: NOW,
         }),
         /Owner authorization rejected/,
@@ -399,6 +412,7 @@ test("rejects unknown, missing, duplicate, noncanonical, unsafe, and invalid-Uni
       () => verifyOwnerAuthorizationEnvelope(envelopeForPayload(badDigest, value.privateKey), {
         registryPath: value.registryPath,
         expected: expectedBindings(badDigest),
+        expectedChallengeDigest: badDigest.challengeDigest,
         now: NOW,
       }),
       /lowercase sha256/
@@ -409,6 +423,7 @@ test("rejects unknown, missing, duplicate, noncanonical, unsafe, and invalid-Uni
       () => verifyOwnerAuthorizationEnvelope(envelopeForPayload(badNonce, value.privateKey), {
         registryPath: value.registryPath,
         expected: expectedBindings(badNonce),
+        expectedChallengeDigest: badNonce.challengeDigest,
         now: NOW,
       }),
       /exactly 32 bytes/
@@ -426,6 +441,7 @@ test("rejects noncanonical outer JSON, duplicate keys, malformed base64url, padd
       () => verifyOwnerAuthorizationEnvelope(JSON.stringify(parsed, null, 2), {
         registryPath: value.registryPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /not canonical JSON/
@@ -438,6 +454,7 @@ test("rejects noncanonical outer JSON, duplicate keys, malformed base64url, padd
       () => verifyOwnerAuthorizationEnvelope(duplicate, {
         registryPath: value.registryPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /not canonical JSON/
@@ -449,6 +466,7 @@ test("rejects noncanonical outer JSON, duplicate keys, malformed base64url, padd
         () => verifyOwnerAuthorizationEnvelope(canonical(padded), {
           registryPath: value.registryPath,
           expected: value.expected,
+          expectedChallengeDigest: value.payload.challengeDigest,
           now: NOW,
         }),
         /unpadded base64url/,
@@ -459,6 +477,7 @@ test("rejects noncanonical outer JSON, duplicate keys, malformed base64url, padd
       () => verifyOwnerAuthorizationEnvelope(canonical({ ...parsed, signature: "AA" }), {
         registryPath: value.registryPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /exactly 64 bytes/
@@ -467,6 +486,7 @@ test("rejects noncanonical outer JSON, duplicate keys, malformed base64url, padd
       () => verifyOwnerAuthorizationEnvelope(canonical({ ...parsed, payload: "A" }), {
         registryPath: value.registryPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /unpadded base64url/
@@ -475,6 +495,7 @@ test("rejects noncanonical outer JSON, duplicate keys, malformed base64url, padd
       () => verifyOwnerAuthorizationEnvelope(canonical({ ...parsed, signature: "x".repeat(70_000) }), {
         registryPath: value.registryPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /exceeds the supported size/
@@ -496,6 +517,7 @@ test("rejects wrong signature keys, domain separation, key ids, algorithms, and 
       () => verifyOwnerAuthorizationEnvelope(wrongDomain, {
         registryPath: value.registryPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /signature verification failed/
@@ -507,6 +529,7 @@ test("rejects wrong signature keys, domain separation, key ids, algorithms, and 
       () => verifyOwnerAuthorizationEnvelope(wrongKeyEnvelope, {
         registryPath: value.registryPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /signature verification failed/
@@ -517,6 +540,7 @@ test("rejects wrong signature keys, domain separation, key ids, algorithms, and 
       () => verifyOwnerAuthorizationEnvelope(canonical({ ...parsed, keyId: "other-key" }), {
         registryPath: value.registryPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /does not match payload/
@@ -602,6 +626,7 @@ test("enforces time ordering, the 30-minute TTL, authorization expiry, and PR st
         () => verifyOwnerAuthorizationEnvelope(envelope, {
           registryPath: value.registryPath,
           expected: expectedBindings(payload),
+          expectedChallengeDigest: payload.challengeDigest,
           now: clock,
         }),
         /Owner authorization rejected/,
@@ -615,6 +640,7 @@ test("enforces time ordering, the 30-minute TTL, authorization expiry, and PR st
     const updateGrant = verifyOwnerAuthorizationEnvelope(envelopeForPayload(update, value.privateKey), {
       registryPath: value.registryPath,
       expected: expectedBindings(update),
+      expectedChallengeDigest: update.challengeDigest,
       now: NOW,
     });
     assert.equal(ownerAuthorizationConsumption(updateGrant, { expected: expectedBindings(update), now: NOW }).preflightId, update.preview.preflightId);
@@ -636,6 +662,7 @@ test("registry is strict, owner-only, non-symlinked, unique, scoped, and time-bo
       () => verifyOwnerAuthorizationEnvelope(value.envelope, {
         registryPath: linkPath,
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /owner-only regular non-symlink/
@@ -645,6 +672,7 @@ test("registry is strict, owner-only, non-symlinked, unique, scoped, and time-bo
       () => verifyOwnerAuthorizationEnvelope(value.envelope, {
         registryPath: "relative-owner-keys.json",
         expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest,
         now: NOW,
       }),
       /path must be absolute/
@@ -772,6 +800,7 @@ test("markGrantConsumed uses fresh wall time after durable reservation", () => {
     const grant = verifyOwnerAuthorizationEnvelope(envelopeForPayload(payload, value.privateKey), {
       registryPath: value.registryPath,
       expected: expectedBindings(payload),
+      expectedChallengeDigest: payload.challengeDigest,
       now: NOW,
     });
     const consumption = ownerAuthorizationConsumption(grant, {

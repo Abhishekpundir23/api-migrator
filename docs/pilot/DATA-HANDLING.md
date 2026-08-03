@@ -16,7 +16,8 @@ claim multi-tenant or public-service readiness.
 | Repository slug, branch, SHAs, preflight ID, artifact digest, PR URL | Local SQLite and GitHub PR audit text | Persistent until authorized deletion; GitHub follows owner policy | Required for provenance and review |
 | Operator identity and publication-attempt decision | Local SQLite / PR audit text | Persistent until authorized deletion | Named, bounded, and sanitized; there is no blocker override |
 | Completed owner authorization and feedback | Restricted pilot record store outside Git | Per authorization record | Never commit to this repository |
-| Raw owner envelope | Local console UI/process memory for one attempt | Transient | Exact bytes are bounded and digested; never log, persist, or echo payload/signature material |
+| Opaque owner-challenge receipt | Local console UI/process memory for one attempt | Transient | HMAC-binds the exact challenge digest to the campaign, manifest, repository, and one-use preview receipt; never display or log the token |
+| Raw owner envelope | Local console UI/process memory for one attempt | Transient | Exact bytes are bounded, verified against a fresh read-only rerun before preview-receipt consumption, and digested; never log, persist, or echo payload/signature material |
 | Owner public-key registry and revocation state | Owner-only regular file outside the workspace | Security-policy lifetime | Exact canonical Ed25519 public keys only; re-read at verification and token boundaries |
 | Owner-authorization consumption ledger and external anchor | Persistent SQLite replay store plus a separate owner-only anchor | Security-state lifetime | Initialized explicitly; unique authorization/envelope/nonce bindings survive ordinary reset and are backed up as one security unit |
 | GitHub App private key | Owner-only path or secret manager outside workspace | Until rotation/revocation | Never expose to repository processes or reports |
@@ -118,9 +119,12 @@ authorization, selected-repository, disposable-runner, or stop conditions in
 the runbook.
 
 The sidecar result validator is a post-run audit aid and is not part of the
-authorization boundary. The unreleased candidate validates an exact canonical
-Ed25519 owner envelope and durably consumes it before the sole write-token
-broker can issue capability. External-source publication nevertheless remains
-blocked until owner challenge/signing tooling, the disposable egress-filtered
-runner, current ruleset and required-CI evidence, and a supervised sandbox
-publication drill are complete.
+authorization boundary. The unreleased candidate generates a canonical
+read-only owner challenge whose lifetime cannot exceed its authenticated
+preview receipt, validates the resulting exact Ed25519 envelope against a
+fresh read-only rerun without consuming it, and later durably consumes it
+before the sole write-token broker can issue capability.
+External-source publication nevertheless remains blocked until the disposable
+egress-filtered runner is independently provisioned and attested, current
+ruleset and required-CI evidence are validated, and a supervised sandbox
+publication drill is complete.

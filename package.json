@@ -18,13 +18,15 @@
     "typecheck:workspaces": "npm run typecheck --workspaces --if-present",
     "console": "npm run dev --workspace @api-migrator/console",
     "migrate": "npm run migrate --workspace @api-migrator/app --",
+    "owner:sign": "npm run owner:sign --workspace @api-migrator/app --",
     "db:migrate": "npm run migrate --workspace @api-migrator/db --",
     "db:init-owner-store": "npm run init:owner-store --workspace @api-migrator/db --",
     "test": "npm run build:packages && npm run test:workspaces",
     "test:workspaces": "npm run test --workspaces --if-present",
     "test:pilot": "node --test scripts/validate-pilot-result.test.mjs",
+    "test:ops": "bash -n ops/publication-runner/run-credential-free-preview.sh",
     "pilot:validate": "node scripts/validate-pilot-result.mjs",
-    "ci": "npm run build:packages && npm run typecheck:workspaces && npm run test:workspaces && npm run test:pilot && npm run pilot:validate -- docs/pilot/pilot-result.example.json && npm run build:console"
+    "ci": "npm run build:packages && npm run typecheck:workspaces && npm run test:workspaces && npm run test:pilot && npm run test:ops && npm run pilot:validate -- docs/pilot/pilot-result.example.json && npm run build:console"
   },
   "devDependencies": {
     "ajv": "8.20.0",
