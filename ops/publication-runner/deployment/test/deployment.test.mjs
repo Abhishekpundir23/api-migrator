@@ -82,7 +82,9 @@ function wrapperTreeDigest(path) {
 }
 
 function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "api-migrator-deployment-test.")));
+  const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "api-migrator-deployment-test.")));
+  const root = join(scratchRoot, "jobs", JOB_ID);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
   const outputPath = join(root, "output");
   mkdirSync(outputPath, { mode: 0o700 });
   mkdirSync(join(outputPath, "src"), { mode: 0o700 });
@@ -286,7 +288,7 @@ function fixture() {
     eventsText,
     l7IntegrationStatus,
     snapshot,
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () => rmSync(scratchRoot, { recursive: true, force: true }),
   };
 }
 
@@ -427,6 +429,10 @@ test("deadline rendering rejects stale, short, and descriptor-divergent plans", 
       jobDescriptorPath: join(fx.root, "job.json"),
     }), /exact unit render time and deadline/);
     assert.throws(() => validateJobDescriptor({ ...fx.job, outputPath: "/tmp/bad path" }), /absolute path/);
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, planPath: "/tmp/job/plan.json" }),
+      /deployment job root is too broad/
+    );
     assert.throws(() => validateJobDescriptor({ ...fx.job, outputPath: "/var/tmp/escaped-output" }), /escapes the exact job root/);
   } finally {
     fx.cleanup();
