@@ -274,6 +274,17 @@ test("the non-durable job queue rejects publishing before starting the batch", a
     () => runCampaignJobs([challengeJob]),
     /DB-backed console workflow/
   );
+
+  const attestationJob = {
+    id: "unsafe-runner-attestation",
+    slug: "owner/repo",
+    manifest,
+    runnerAttestation: { payloadDigest: `sha256:${"d".repeat(64)}` },
+  } as unknown as MigrationJob;
+  await assert.rejects(
+    () => runCampaignJobs([attestationJob]),
+    /runner-attestation capabilities require the DB-backed console workflow/
+  );
 });
 
 test("malformed operator approvals and unsupported fields fail closed", () => {

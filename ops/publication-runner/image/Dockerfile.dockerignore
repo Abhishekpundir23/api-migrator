@@ -1,0 +1,28 @@
+# Deny the entire checkout by default. The runner image build needs only root
+# npm metadata, workspace manifests/configs, four package source trees, and its
+# two runtime-root inputs. In particular, never upload targets/, data/, .env,
+# .git, .next, test fixtures, logs, or other ignored local state to a builder.
+**
+
+!package.json
+!package-lock.json
+
+!packages/
+!packages/*/
+!packages/*/package.json
+!packages/*/tsconfig.json
+!packages/engine/src/
+!packages/engine/src/**
+!packages/db/src/
+!packages/db/src/**
+!packages/app/src/
+!packages/app/src/**
+!packages/runner/src/
+!packages/runner/src/**
+
+!ops/
+!ops/publication-runner/
+!ops/publication-runner/image/
+!ops/publication-runner/image/Dockerfile
+!ops/publication-runner/image/prepare-runtime-root.mjs
+!ops/publication-runner/image/api-migrator-runner

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "kind": "api_migrator_l7_gateway_integration_status",
+  "jobId": "previewjob_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "gatewayProfile": "static-envoy-sni-passthrough-v1",
+  "targetOrigin": "registry.npmjs.org",
+  "integrationStatus": "not_wired",
+  "receiptValidation": "not_performed",
+  "liveActivation": "blocked",
+  "linuxLifecycleDrillRequired": true,
+  "blockReason": "forced_gateway_lifecycle_not_integrated"
+}

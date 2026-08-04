@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "profile": "api-migrator-runner-host-v1",
+  "hostId": "runner-host-sandbox-001",
+  "dedicatedHost": true,
+  "platform": {
+    "osId": "debian",
+    "osVersion": "12",
+    "architecture": "x86_64",
+    "kernelRelease": "6.1.0-sandbox-amd64",
+    "cgroupVersion": 2
+  },
+  "systemd": {
+    "version": 252,
+    "serializedRunnerUnit": "api-migrator-runner.service",
+    "observerUnit": "api-migrator-runner-observer.service",
+    "killMode": "control-group",
+    "oomPolicy": "kill",
+    "delegate": true
+  },
+  "runner": {
+    "user": "api-migrator-job",
+    "uid": 12001,
+    "group": "api-migrator-job",
+    "gid": 12001,
+    "storageRoot": "/var/lib/api-migrator-runner/storage",
+    "storageDriver": "vfs",
+    "subuid": { "start": 131072, "count": 65536 },
+    "subgid": { "start": 131072, "count": 65536 }
+  },
+  "executables": {
+    "node": { "path": "/usr/bin/node", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
+    "podman": { "path": "/usr/bin/podman", "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
+    "nft": { "path": "/usr/sbin/nft", "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333" },
+    "jq": { "path": "/usr/bin/jq", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444" },
+    "python3": { "path": "/usr/bin/python3", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555" },
+    "systemctl": { "path": "/usr/bin/systemctl", "digest": "sha256:5656565656565656565656565656565656565656565656565656565656565656" },
+    "ociRuntime": { "path": "/usr/bin/crun", "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666" },
+    "conmon": { "path": "/usr/bin/conmon", "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777" }
+  },
+  "artifacts": {
+    "wrapperPath": "/usr/local/libexec/api-migrator/run-credential-free-preview.sh",
+    "wrapperDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "cleanupPath": "/usr/local/libexec/api-migrator/deployment/cleanup-runner.sh",
+    "cleanupDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "observerPath": "/usr/local/libexec/api-migrator/deployment/observe-runner.mjs",
+    "observerDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "imageReference": "registry.example.invalid/api-migrator-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "imageDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "deploymentEvidence": {
+    "observedAt": 2000000000000,
+    "reference": "evidence/runner-host-sandbox-001/provisioning.json",
+    "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  }
+}

@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.invalid/schemas/gateway-receipt-v1.json",
+  "title": "API Migrator static SNI gateway receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "profile",
+    "jobId",
+    "planDigest",
+    "contractDigest",
+    "envoyConfigDigest",
+    "nftablesPolicyDigest",
+    "gatewayRuntimeDigest",
+    "nftablesTable",
+    "runnerUid",
+    "gatewayUid",
+    "listener",
+    "origin",
+    "execution",
+    "evidence",
+    "teardown",
+    "observedAt",
+    "status"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "api_migrator_l7_gateway_receipt" },
+    "profile": { "const": "static-envoy-sni-passthrough-v1" },
+    "jobId": { "type": "string", "pattern": "^previewjob_[a-f0-9]{64}$" },
+    "planDigest": { "$ref": "#/$defs/digest" },
+    "contractDigest": { "$ref": "#/$defs/digest" },
+    "envoyConfigDigest": { "$ref": "#/$defs/digest" },
+    "nftablesPolicyDigest": { "$ref": "#/$defs/digest" },
+    "gatewayRuntimeDigest": { "$ref": "#/$defs/digest" },
+    "nftablesTable": {
+      "type": "string",
+      "pattern": "^api_migrator_gw_[a-f0-9]{16}$"
+    },
+    "runnerUid": { "$ref": "#/$defs/uid" },
+    "gatewayUid": { "$ref": "#/$defs/uid" },
+    "listener": { "$ref": "#/$defs/listener" },
+    "origin": { "$ref": "#/$defs/origin" },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "systemdInvocationId",
+        "gatewayInstanceDigest",
+        "startedAt",
+        "gatewayReadyAt",
+        "installStartedAt",
+        "installFinishedAt",
+        "offlineEnforcedAt",
+        "gatewayStoppedAt"
+      ],
+      "properties": {
+        "systemdInvocationId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "gatewayInstanceDigest": { "$ref": "#/$defs/digest" },
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "gatewayReadyAt": { "$ref": "#/$defs/timestamp" },
+        "installStartedAt": { "$ref": "#/$defs/timestamp" },
+        "installFinishedAt": { "$ref": "#/$defs/timestamp" },
+        "offlineEnforcedAt": { "$ref": "#/$defs/timestamp" },
+        "gatewayStoppedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deploymentDrill",
+        "envoyConfigValidation",
+        "gatewayAccessLog",
+        "nftablesInstalled",
+        "offlineNetworkClosure",
+        "teardown",
+        "tlsClientPolicy",
+        "transportCounters"
+      ],
+      "properties": {
+        "deploymentDrill": { "$ref": "#/$defs/evidence" },
+        "envoyConfigValidation": { "$ref": "#/$defs/evidence" },
+        "gatewayAccessLog": { "$ref": "#/$defs/evidence" },
+        "nftablesInstalled": { "$ref": "#/$defs/evidence" },
+        "offlineNetworkClosure": { "$ref": "#/$defs/evidence" },
+        "teardown": { "$ref": "#/$defs/evidence" },
+        "tlsClientPolicy": { "$ref": "#/$defs/evidence" },
+        "transportCounters": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "teardown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runnerUidIdleAt",
+        "gatewayUidIdleAt",
+        "nftablesPolicyRemovedAt",
+        "complete"
+      ],
+      "properties": {
+        "runnerUidIdleAt": { "$ref": "#/$defs/timestamp" },
+        "gatewayUidIdleAt": { "$ref": "#/$defs/timestamp" },
+        "nftablesPolicyRemovedAt": { "$ref": "#/$defs/timestamp" },
+        "complete": { "const": true }
+      }
+    },
+    "observedAt": { "$ref": "#/$defs/timestamp" },
+    "status": { "const": "passed" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "uid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967294
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8640000000000000
+    },
+    "listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["addresses", "port"],
+      "properties": {
+        "addresses": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "const": "127.0.0.1" },
+            { "const": "::1" }
+          ],
+          "items": false
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65535
+        }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port",
+        "addresses",
+        "resolutionEvidenceDigest",
+        "resolutionObservedAt",
+        "resolutionExpiresAt"
+      ],
+      "properties": {
+        "host": { "const": "registry.npmjs.org" },
+        "port": { "const": 443 },
+        "addresses": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f.:]+$"
+          }
+        },
+        "resolutionEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "resolutionObservedAt": { "$ref": "#/$defs/timestamp" },
+        "resolutionExpiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reference", "digest"],
+      "properties": {
+        "status": { "const": "passed" },
+        "reference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/#@+\\-]{0,499}$"
+        },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

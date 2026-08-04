@@ -19,7 +19,6 @@ const env = {
   API_MIGRATOR_ENGINE_TAG: "v0.1.0-pilot",
   API_MIGRATOR_ENGINE_COMMIT: "a".repeat(40),
   API_MIGRATOR_COMMAND_SCOPE_DIGEST: hash("commands"),
-  API_MIGRATOR_RUNNER_ATTESTATION_DIGEST: hash("runner"),
   API_MIGRATOR_RULESET_DIGEST: hash("ruleset"),
   API_MIGRATOR_REQUIRED_CI_DIGEST: hash("ci"),
 };
@@ -31,6 +30,7 @@ const report = {
 test("owner publication policy requires every independently pinned safety artifact", () => {
   const policy = readOwnerPublicationPolicy(env, NOW);
   assert.equal(policy.engineCommit, "a".repeat(40));
+  assert.equal("runnerAttestationDigest" in policy, false);
   for (const name of Object.keys(env)) {
     const missing = { ...env } as Record<string, string | undefined>;
     delete missing[name];
@@ -39,6 +39,13 @@ test("owner publication policy requires every independently pinned safety artifa
   assert.throws(
     () => readOwnerPublicationPolicy({ ...env, API_MIGRATOR_PRE_RUN_AUTHORIZATION_EXPIRES_AT: String(NOW) }, NOW),
     /expired/
+  );
+  assert.throws(
+    () => readOwnerPublicationPolicy({
+      ...env,
+      API_MIGRATOR_RUNNER_ATTESTATION_DIGEST: hash("unverified-runner"),
+    }, NOW),
+    /rejects raw API_MIGRATOR_RUNNER_ATTESTATION_DIGEST/
   );
 });
 
@@ -65,35 +72,32 @@ test("remote actions are exact and state-specific", () => {
   );
 });
 
-test("runtime bindings cover exact manifest bytes, identities, tree, evidence, and action", () => {
+test("runtime bindings refuse an unverified runner digest or structural placeholder", () => {
   const manifestJson = '{"name":"exact"}\n';
-  const expected = buildExpectedOwnerAuthorizationBindings({
-    policy: readOwnerPublicationPolicy(env, NOW),
-    previewCompletedAt: NOW - 1_000,
-    repositorySlug: "Owner/Repo",
-    github: {
-      appId: 123,
-      appSlug: "api-migrator",
-      installationId: 456,
-      repositoryId: 789,
-      repositoryOwnerId: 987,
+  assert.throws(
+    () => buildExpectedOwnerAuthorizationBindings({
+      policy: readOwnerPublicationPolicy(env, NOW),
+      runnerAttestation: undefined,
+      previewCompletedAt: NOW - 1_000,
       repositorySlug: "Owner/Repo",
-    },
-    baseBranch: "main",
-    baseSha: "c".repeat(40),
-    manifestJson,
-    preflightId: `pf_${"d".repeat(64)}`,
-    artifactDigest: "e".repeat(64),
-    candidateBranch: "codex/api-migrator/exact",
-    candidateTreeSha: "f".repeat(40),
-    report,
-    remote: { sha: null, pullRequest: null, pushRequired: true },
-  });
-  assert.equal(expected.repository.slug, "owner/repo");
-  assert.equal(expected.manifest.byteLength, Buffer.byteLength(manifestJson));
-  assert.equal(expected.manifest.digest, hash(manifestJson));
-  assert.equal(expected.preview.artifactDigest, `sha256:${"e".repeat(64)}`);
-  assert.equal(expected.preview.candidateTreeSha, "f".repeat(40));
-  assert.deepEqual(expected.allowedActions, ["create_branch", "create_pull_request"]);
-  assert.equal(expected.pullRequestNumber, null);
+      github: {
+        appId: 123,
+        appSlug: "api-migrator",
+        installationId: 456,
+        repositoryId: 789,
+        repositoryOwnerId: 987,
+        repositorySlug: "Owner/Repo",
+      },
+      baseBranch: "main",
+      baseSha: "c".repeat(40),
+      manifestJson,
+      preflightId: `pf_${"d".repeat(64)}`,
+      artifactDigest: "e".repeat(64),
+      candidateBranch: "codex/api-migrator/exact",
+      candidateTreeSha: "f".repeat(40),
+      report,
+      remote: { sha: null, pullRequest: null, pushRequired: true },
+    }),
+    /genuinely verified runner attestation/
+  );
 });

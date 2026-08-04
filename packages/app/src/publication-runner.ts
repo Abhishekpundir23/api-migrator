@@ -14,6 +14,22 @@ export const PUBLICATION_RUNNER_PLAN_MIN_TTL_MS = 60 * 1_000;
 export const PUBLICATION_RUNNER_PLAN_MAX_TTL_MS = 15 * 60 * 1_000;
 export const PUBLICATION_RUNNER_ATTESTATION_DOMAIN =
   "api-migrator:publication-runner-attestation:v1\0" as const;
+export const PUBLICATION_RUNNER_COMMAND_SCOPE = Object.freeze({
+  schemaVersion: 1,
+  entrypoint: "/usr/local/bin/api-migrator-runner",
+  transformSets: Object.freeze(["inngest-v3-to-v4"]),
+  packageManagers: Object.freeze(["npm"]),
+  phases: Object.freeze([
+    Object.freeze({ name: "prepare", network: "none", repositoryScripts: false }),
+    Object.freeze({ name: "install", network: "forced_static_sni_gateway", repositoryScripts: false }),
+    Object.freeze({ name: "migrate", network: "none", repositoryScripts: false }),
+    Object.freeze({ name: "verify", network: "none", repositoryScripts: true }),
+  ]),
+  requiredChecks: Object.freeze(["install", "typecheck", "test", "lint", "runtime"]),
+} as const);
+export const PUBLICATION_RUNNER_COMMAND_SCOPE_DIGEST = `sha256:${createHash("sha256")
+  .update(canonicalJson(PUBLICATION_RUNNER_COMMAND_SCOPE), "utf8")
+  .digest("hex")}` as const;
 
 const RESOLUTION_MAX_AGE_MS = 5 * 60 * 1_000;
 const RESOLUTION_MAX_TTL_MS = 30 * 60 * 1_000;
@@ -29,6 +45,10 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/;
 const JOB_ID = /^previewjob_[a-f0-9]{64}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const MIGRATION_HOSTS = ["registry.npmjs.org"] as const;
+const verifiedPublicationRunnerAttestations = new WeakMap<object, Readonly<{
+  verifiedAt: number;
+  expiresAt: number;
+}>>();
 
 export interface RunnerEgressDestination {
   host: string;
@@ -55,7 +75,6 @@ export interface CreatePublicationRunnerPlanInput {
   };
   sourceArchiveDigest: string;
   manifestDigest: string;
-  commandScopeDigest: string;
   imageDigest: string;
   migrationInstallEgress: RunnerEgressDestination[];
   expiresAt: number;
@@ -116,7 +135,7 @@ export interface PublicationRunnerPlan {
     proxyEnvironment: "absent";
     dependencyLifecycleScripts: "disabled";
     onlinePhase: "dependency_install_only";
-    phaseOrder: ["dependency_install", "migration", "verification"];
+    phaseOrder: ["offline_preparation", "dependency_install", "migration", "verification"];
     installEgressPolicyDigest: string;
     checksNetwork: "none";
     requiredChecks: ["install", "typecheck", "test", "lint", "runtime"];
@@ -225,7 +244,11 @@ export interface RunnerAttestationTrust {
   revokedAt: number | null;
 }
 
+declare const verifiedPublicationRunnerAttestationBrand: unique symbol;
+
 export interface VerifiedPublicationRunnerAttestation {
+  /** Runtime authenticity and expiry are held by this module's private capability map. */
+  readonly [verifiedPublicationRunnerAttestationBrand]: true;
   attestation: Readonly<PublicationRunnerAttestation>;
   canonicalJson: string;
   /** Owner challenge binds this digest of the exact signed payload bytes. */
@@ -260,7 +283,7 @@ export function createPublicationRunnerPlan(
   const inputs = validateInputs({
     sourceArchiveDigest: input.sourceArchiveDigest,
     manifestDigest: input.manifestDigest,
-    commandScopeDigest: input.commandScopeDigest,
+    commandScopeDigest: PUBLICATION_RUNNER_COMMAND_SCOPE_DIGEST,
   });
   const imageDigest = digest(input.imageDigest, "migration image digest");
   const destinations = normalizeAndValidateDestinations(
@@ -276,6 +299,7 @@ export function createPublicationRunnerPlan(
     subject,
     inputs,
     imageDigest,
+    destinations,
   });
   return recordForPlan(buildPlan({
     jobId,
@@ -335,8 +359,11 @@ export function validatePublicationRunnerPlan(value: unknown): PublicationRunner
     subject,
     inputs,
     imageDigest,
+    destinations,
   });
-  if (jobId !== expectedJobId) throw new Error("Publication runner job identity does not bind its inputs");
+  if (jobId !== expectedJobId) {
+    throw new Error("Publication runner job identity does not bind its inputs and installation egress policy");
+  }
   const expected = buildPlan({
     jobId,
     nonceDigest,
@@ -375,9 +402,11 @@ export function verifyPublicationRunnerAttestation(
   envelopeJson: string,
   expectedPlan: PublicationRunnerPlanRecord,
   expectedReviewedOutput: PublicationRunnerOutput,
-  trust: RunnerAttestationTrust
+  trust: RunnerAttestationTrust,
+  now = Date.now()
 ): VerifiedPublicationRunnerAttestation {
-  const planRecord = validatePlanRecord(expectedPlan);
+  const verifiedAt = timestamp(now, "runner attestation verification clock");
+  const planRecord = assertPublicationRunnerPlanCurrent(expectedPlan, verifiedAt);
   const reviewedOutput = validateRunnerOutput(expectedReviewedOutput);
   const envelopeRoot = parseCanonicalJson(
     envelopeJson,
@@ -433,13 +462,50 @@ export function verifyPublicationRunnerAttestation(
   if (attestation.observedAt < trusted.validFrom || attestation.observedAt >= trusted.validUntil) {
     throw new Error("Runner attestation was observed outside the signing-key validity window");
   }
-  return deepFreeze({
+  if (attestation.observedAt > verifiedAt) {
+    throw new Error("Runner attestation cannot be verified before its observation time");
+  }
+  if (verifiedAt < trusted.validFrom || verifiedAt >= trusted.validUntil) {
+    throw new Error("Runner attestation key is not currently valid");
+  }
+  const verified = deepFreeze({
     attestation,
     canonicalJson: payloadJson,
     payloadDigest: sha256(payloadBytes),
     envelopeDigest: sha256(Buffer.from(envelopeJson, "utf8")),
     signer: { keyId: trusted.keyId, fingerprint: trusted.fingerprint },
+  }) as VerifiedPublicationRunnerAttestation;
+  verifiedPublicationRunnerAttestations.set(verified, {
+    verifiedAt,
+    expiresAt: Math.min(planRecord.plan.job.expiresAt, trusted.validUntil),
   });
+  return verified;
+}
+
+/**
+ * Accept only the exact in-process capability returned by the verifier. A
+ * structural cast, clone, deserialized object, or container self-report cannot
+ * cross the owner-publication boundary.
+ */
+export function assertVerifiedPublicationRunnerAttestation(
+  value: unknown,
+  now = Date.now()
+): VerifiedPublicationRunnerAttestation {
+  const state = value !== null && typeof value === "object"
+    ? verifiedPublicationRunnerAttestations.get(value)
+    : undefined;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    state === undefined
+  ) {
+    throw new Error("Owner publication requires a genuinely verified runner attestation");
+  }
+  const observedAt = timestamp(now, "runner attestation capability clock");
+  if (observedAt < state.verifiedAt || observedAt >= state.expiresAt) {
+    throw new Error("Verified runner attestation capability is expired or not current");
+  }
+  return value as VerifiedPublicationRunnerAttestation;
 }
 
 function buildPlan(input: {
@@ -489,7 +555,7 @@ function buildPlan(input: {
       proxyEnvironment: "absent",
       dependencyLifecycleScripts: "disabled",
       onlinePhase: "dependency_install_only",
-      phaseOrder: ["dependency_install", "migration", "verification"],
+      phaseOrder: ["offline_preparation", "dependency_install", "migration", "verification"],
       installEgressPolicyDigest: policyDigest,
       checksNetwork: "none",
       requiredChecks: ["install", "typecheck", "test", "lint", "runtime"],
@@ -737,10 +803,14 @@ function validateInputs(value: unknown): PublicationRunnerPlan["inputs"] {
     ["sourceArchiveDigest", "manifestDigest", "commandScopeDigest"],
     "runner immutable inputs"
   );
+  const commandScopeDigest = digest(root.commandScopeDigest, "command scope digest");
+  if (commandScopeDigest !== PUBLICATION_RUNNER_COMMAND_SCOPE_DIGEST) {
+    throw new Error("Publication runner command scope is not the code-owned v1 scope");
+  }
   return {
     sourceArchiveDigest: digest(root.sourceArchiveDigest, "source archive digest"),
     manifestDigest: digest(root.manifestDigest, "manifest digest"),
-    commandScopeDigest: digest(root.commandScopeDigest, "command scope digest"),
+    commandScopeDigest,
   };
 }
 
@@ -906,14 +976,18 @@ function isGlobalUnicastLiteral(value: string): boolean {
 }
 
 function egressPolicyDigest(destinations: RunnerEgressDestination[]): string {
-  return sha256(Buffer.from(canonicalJson({
+  return sha256(Buffer.from(canonicalJson(canonicalInstallEgressPolicy(destinations)), "utf8"));
+}
+
+function canonicalInstallEgressPolicy(destinations: RunnerEgressDestination[]) {
+  return {
     schemaVersion: 1,
     phase: "dependency_install",
     enforcement: "host_nftables_output_exact_ip_tcp443",
     dnsInsideJob: "disabled",
     applicationLayerEnforcement: "external_l7_gateway_required",
     destinations,
-  }), "utf8"));
+  };
 }
 
 function deriveJobId(input: {
@@ -923,8 +997,13 @@ function deriveJobId(input: {
   subject: PublicationRunnerPlan["subject"];
   inputs: PublicationRunnerPlan["inputs"];
   imageDigest: string;
+  destinations: RunnerEgressDestination[];
 }): string {
-  return `previewjob_${createHash("sha256").update(canonicalJson(input), "utf8").digest("hex")}`;
+  const { destinations, ...identity } = input;
+  return `previewjob_${createHash("sha256").update(canonicalJson({
+    ...identity,
+    installEgressPolicy: canonicalInstallEgressPolicy(destinations),
+  }), "utf8").digest("hex")}`;
 }
 
 function assertPlanLifetime(createdAt: number, expiresAt: number): void {

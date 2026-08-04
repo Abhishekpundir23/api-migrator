@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "kind": "api_migrator_runner_observation",
+  "unsigned": true,
+  "linuxDrillRequired": true,
+  "observationMode": "contract_fixture",
+  "jobId": "previewjob_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "systemdInvocation": "0123456789abcdef0123456789abcdef",
+  "observedAt": 2000000100000,
+  "host": {
+    "hostId": "runner-host-sandbox-001",
+    "profileDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "deploymentEvidenceReference": "evidence/runner-host-sandbox-001/provisioning.json",
+    "deploymentEvidenceDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "systemd": {
+    "unitName": "api-migrator-runner.service",
+    "invocationId": "0123456789abcdef0123456789abcdef",
+    "serviceType": "oneshot",
+    "remainAfterExit": true,
+    "activeState": "active",
+    "subState": "exited",
+    "result": "success",
+    "execMainCode": 1,
+    "execMainStatus": 0,
+    "killMode": "control-group",
+    "oomPolicy": "kill",
+    "delegate": true,
+    "timeoutStartUSec": 600000000,
+    "timeoutStartFailureMode": "kill",
+    "timeoutStopUSec": 20000000,
+    "timeoutStopFailureMode": "kill",
+    "controlGroup": "/system.slice/api-migrator-runner.service",
+    "cgroupEmpty": true
+  },
+  "execution": {
+    "startedAt": 2000000002000,
+    "finishedAt": 2000000090000,
+    "imageDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "containerSet": [
+      {
+        "phase": "offline_preparation",
+        "name": "previewjob_ddddddddddddddddddddddddddddddddddddddddddd-prepare"
+      },
+      {
+        "phase": "dependency_install",
+        "name": "previewjob_ddddddddddddddddddddddddddddddddddddddddddd-install"
+      },
+      {
+        "phase": "migration",
+        "name": "previewjob_ddddddddddddddddddddddddddddddddddddddddddd-migrate"
+      },
+      {
+        "phase": "verification",
+        "name": "previewjob_ddddddddddddddddddddddddddddddddddddddddddd-verify"
+      }
+    ],
+    "containerSetDigest": "sha256:c2c86a45543e40802fe1ba6335067e0a08f983c55c5c41c63fa3501c69805c4f",
+    "installEgressPolicyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "nftablesRulesetDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "preparationLogDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "installLogDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "migrationLogDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "aggregateChecksLogDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "wrapperEventsDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "runnerResultDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "l7Gateway": {
+      "profile": "static-envoy-sni-passthrough-v1",
+      "targetOrigin": "registry.npmjs.org",
+      "integrationStatus": "not_wired",
+      "receiptValidation": "not_performed",
+      "liveActivation": "blocked",
+      "linuxLifecycleDrillRequired": true,
+      "blockReason": "forced_gateway_lifecycle_not_integrated"
+    }
+  },
+  "output": {
+    "preflightId": "pf_9999999999999999999999999999999999999999999999999999999999999999",
+    "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "candidateTreeSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "normalizedTreeDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "teardown": {
+    "runnerUidIdle": true,
+    "containersAbsent": true,
+    "networkNamespacesAbsent": true,
+    "nftablesTableAbsent": true,
+    "workspaceAbsent": true,
+    "observedAt": 2000000099000
+  }
+}

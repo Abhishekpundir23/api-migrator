@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.invalid/schemas/l7-gateway-integration-status-v1.json",
+  "title": "Blocked L7 gateway integration status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "jobId", "planDigest", "gatewayProfile", "targetOrigin", "integrationStatus", "receiptValidation", "liveActivation", "linuxLifecycleDrillRequired", "blockReason"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "api_migrator_l7_gateway_integration_status" },
+    "jobId": { "type": "string", "pattern": "^previewjob_[a-f0-9]{64}$" },
+    "planDigest": { "$ref": "#/$defs/digest" },
+    "gatewayProfile": { "const": "static-envoy-sni-passthrough-v1" },
+    "targetOrigin": { "const": "registry.npmjs.org" },
+    "integrationStatus": { "const": "not_wired" },
+    "receiptValidation": { "const": "not_performed" },
+    "liveActivation": { "const": "blocked" },
+    "linuxLifecycleDrillRequired": { "const": true },
+    "blockReason": { "const": "forced_gateway_lifecycle_not_integrated" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

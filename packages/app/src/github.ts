@@ -62,6 +62,7 @@ import {
   validateOwnerChallengePreparationRequest,
   type OwnerChallengePreparationRequest,
 } from "./owner-challenge-preparation.js";
+import type { VerifiedPublicationRunnerAttestation } from "./publication-runner.js";
 import {
   createAskPassScript,
   gitAuthenticationEnv,
@@ -86,6 +87,12 @@ export interface MigrateRepoInput {
    * into a read-only owner challenge. It is mutually exclusive with publish.
    */
   ownerChallenge?: OwnerChallengePreparationRequest;
+  /**
+   * Internal in-process capability returned by verifyPublicationRunnerAttestation.
+   * The console does not currently provide one, so owner challenge and publish
+   * remain fail-closed until the trusted control plane is wired.
+   */
+  runnerAttestation?: VerifiedPublicationRunnerAttestation;
 }
 
 export interface MigrateRepoResult {
@@ -331,6 +338,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       const ownerPolicy = readOwnerPublicationPolicy();
       const expectedOwnerBindings = buildExpectedOwnerAuthorizationBindings({
         policy: ownerPolicy,
+        runnerAttestation: input.runnerAttestation,
         previewCompletedAt: ownerChallenge.previewCompletedAt,
         repositorySlug: repository.slug,
         github: auth.githubApp,
@@ -415,6 +423,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     const ownerPolicy = readOwnerPublicationPolicy();
     const expectedOwnerBindings = buildExpectedOwnerAuthorizationBindings({
       policy: ownerPolicy,
+      runnerAttestation: input.runnerAttestation,
       previewCompletedAt: publication.previewCompletedAt,
       repositorySlug: repository.slug,
       github: auth.githubApp,

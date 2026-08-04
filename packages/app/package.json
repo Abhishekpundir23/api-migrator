@@ -13,6 +13,10 @@
     "./console-internal": {
       "types": "./dist/console-internal.d.ts",
       "default": "./dist/console-internal.js"
+    },
+    "./runner-internal": {
+      "types": "./dist/runner-internal.d.ts",
+      "default": "./dist/runner-internal.js"
     }
   },
   "scripts": {
