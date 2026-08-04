@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.invalid/schemas/runner-observation-v1.json",
+  "title": "API Migrator independent runner observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "unsigned", "linuxDrillRequired", "observationMode", "jobId", "planDigest", "systemdInvocation", "observedAt", "host", "systemd", "execution", "output", "teardown"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "api_migrator_runner_observation" },
+    "unsigned": { "const": true },
+    "linuxDrillRequired": { "const": true },
+    "observationMode": { "const": "contract_fixture" },
+    "jobId": { "$ref": "#/$defs/jobId" },
+    "planDigest": { "$ref": "#/$defs/digest" },
+    "systemdInvocation": { "type": "string", "pattern": "^[a-f0-9]{32}$" },
+    "observedAt": { "$ref": "#/$defs/timestamp" },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId", "profileDigest", "deploymentEvidenceReference", "deploymentEvidenceDigest"],
+      "properties": {
+        "hostId": { "$ref": "#/$defs/id" },
+        "profileDigest": { "$ref": "#/$defs/digest" },
+        "deploymentEvidenceReference": { "$ref": "#/$defs/reference" },
+        "deploymentEvidenceDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "systemd": { "$ref": "#/$defs/systemd" },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startedAt", "finishedAt", "imageDigest", "containerSet", "containerSetDigest", "installEgressPolicyDigest", "nftablesRulesetDigest", "preparationLogDigest", "installLogDigest", "migrationLogDigest", "aggregateChecksLogDigest", "wrapperEventsDigest", "runnerResultDigest", "l7Gateway"],
+      "properties": {
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "finishedAt": { "$ref": "#/$defs/timestamp" },
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "containerSet": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["phase", "name"],
+              "properties": {
+                "phase": { "const": "offline_preparation" },
+                "name": { "type": "string", "pattern": "^previewjob_[a-f0-9]{43}-prepare$" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["phase", "name"],
+              "properties": {
+                "phase": { "const": "dependency_install" },
+                "name": { "type": "string", "pattern": "^previewjob_[a-f0-9]{43}-install$" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["phase", "name"],
+              "properties": {
+                "phase": { "const": "migration" },
+                "name": { "type": "string", "pattern": "^previewjob_[a-f0-9]{43}-migrate$" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["phase", "name"],
+              "properties": {
+                "phase": { "const": "verification" },
+                "name": { "type": "string", "pattern": "^previewjob_[a-f0-9]{43}-verify$" }
+              }
+            }
+          ],
+          "items": false
+        },
+        "containerSetDigest": { "$ref": "#/$defs/digest" },
+        "installEgressPolicyDigest": { "$ref": "#/$defs/digest" },
+        "nftablesRulesetDigest": { "$ref": "#/$defs/digest" },
+        "preparationLogDigest": { "$ref": "#/$defs/digest" },
+        "installLogDigest": { "$ref": "#/$defs/digest" },
+        "migrationLogDigest": { "$ref": "#/$defs/digest" },
+        "aggregateChecksLogDigest": { "$ref": "#/$defs/digest" },
+        "wrapperEventsDigest": { "$ref": "#/$defs/digest" },
+        "runnerResultDigest": { "$ref": "#/$defs/digest" },
+        "l7Gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "targetOrigin", "integrationStatus", "receiptValidation", "liveActivation", "linuxLifecycleDrillRequired", "blockReason"],
+          "properties": {
+            "profile": { "const": "static-envoy-sni-passthrough-v1" },
+            "targetOrigin": { "const": "registry.npmjs.org" },
+            "integrationStatus": { "const": "not_wired" },
+            "receiptValidation": { "const": "not_performed" },
+            "liveActivation": { "const": "blocked" },
+            "linuxLifecycleDrillRequired": { "const": true },
+            "blockReason": { "const": "forced_gateway_lifecycle_not_integrated" }
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preflightId", "artifactDigest", "candidateTreeSha", "normalizedTreeDigest"],
+      "properties": {
+        "preflightId": { "type": "string", "pattern": "^pf_[a-f0-9]{64}$" },
+        "artifactDigest": { "$ref": "#/$defs/digest" },
+        "candidateTreeSha": { "type": "string", "pattern": "^([a-f0-9]{40}|[a-f0-9]{64})$" },
+        "normalizedTreeDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "teardown": { "$ref": "#/$defs/teardown" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "jobId": { "type": "string", "pattern": "^previewjob_[a-f0-9]{64}$" },
+    "timestamp": { "type": "integer", "minimum": 1, "maximum": 8640000000000000 },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+-]{5,127}$" },
+    "reference": { "type": "string", "minLength": 6, "maxLength": 500, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+    "systemd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unitName", "invocationId", "serviceType", "remainAfterExit", "activeState", "subState", "result", "execMainCode", "execMainStatus", "killMode", "oomPolicy", "delegate", "timeoutStartUSec", "timeoutStartFailureMode", "timeoutStopUSec", "timeoutStopFailureMode", "controlGroup", "cgroupEmpty"],
+      "properties": {
+        "unitName": { "const": "api-migrator-runner.service" },
+        "invocationId": { "type": "string", "pattern": "^[a-f0-9]{32}$" },
+        "serviceType": { "const": "oneshot" },
+        "remainAfterExit": { "const": true },
+        "activeState": { "const": "active" },
+        "subState": { "const": "exited" },
+        "result": { "const": "success" },
+        "execMainCode": { "const": 1 },
+        "execMainStatus": { "const": 0 },
+        "killMode": { "const": "control-group" },
+        "oomPolicy": { "const": "kill" },
+        "delegate": { "const": true },
+        "timeoutStartUSec": { "type": "integer", "minimum": 30000000, "maximum": 900000000 },
+        "timeoutStartFailureMode": { "const": "kill" },
+        "timeoutStopUSec": { "const": 20000000 },
+        "timeoutStopFailureMode": { "const": "kill" },
+        "controlGroup": { "type": "string", "pattern": "^/[^\\u0000-\\u001f\\u007f]{1,500}$" },
+        "cgroupEmpty": { "const": true }
+      }
+    },
+    "teardown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runnerUidIdle", "containersAbsent", "networkNamespacesAbsent", "nftablesTableAbsent", "workspaceAbsent", "observedAt"],
+      "properties": {
+        "runnerUidIdle": { "const": true },
+        "containersAbsent": { "const": true },
+        "networkNamespacesAbsent": { "const": true },
+        "nftablesTableAbsent": { "const": true },
+        "workspaceAbsent": { "const": true },
+        "observedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  }
+}

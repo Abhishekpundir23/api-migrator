@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.invalid/schemas/runner-unsigned-signing-request-v1.json",
+  "title": "API Migrator unsigned runner attestation signing request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "unsigned", "externalSignerVerificationRequired", "eligibleForExternalSigning", "authorizationStatus", "requestedAttestationProfile", "signingDomain", "jobId", "planDigest", "observationDigest", "observation"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "api_migrator_runner_attestation_signing_request" },
+    "unsigned": { "const": true },
+    "externalSignerVerificationRequired": { "const": true },
+    "eligibleForExternalSigning": { "const": false },
+    "authorizationStatus": { "const": "blocked_pending_linux_gateway_lifecycle_drill" },
+    "requestedAttestationProfile": { "const": "disposable-egress-filtered-pilot-v1" },
+    "signingDomain": { "const": "api-migrator:publication-runner-attestation:v1\u0000" },
+    "jobId": { "type": "string", "pattern": "^previewjob_[a-f0-9]{64}$" },
+    "planDigest": { "$ref": "#/$defs/digest" },
+    "observationDigest": { "$ref": "#/$defs/digest" },
+    "observation": { "$ref": "runner-observation-v1.json" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

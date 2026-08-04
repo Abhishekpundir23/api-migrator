@@ -2,13 +2,13 @@
 
 API Migrator is an operator-reviewed pilot for upgrading application code when an API provider ships a breaking TypeScript SDK release.
 
-**Current status:** sandbox-validated internal pilot. This checkout now generates a canonical, read-only owner challenge, signs it with a separately operated offline Ed25519 tool, and enforces the resulting exact-preview authorization before the only GitHub App write-token broker can mint a token. It also durably consumes that authorization in an externally anchored replay ledger. External-source execution and publication nevertheless remain disabled until the disposable egress-filtered runner is independently provisioned and attested, repository ruleset and required-CI evidence are validated, and a supervised sandbox drill passes. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
+**Current status:** sandbox-validated internal pilot. The owner-challenge, offline-signing, exact-authorization, and durable replay primitives exist, but the console cannot currently generate an owner challenge or publish: both paths require an opaque verified-runner capability, and no trusted control-plane provider is wired yet. A minimal Node 22 runner image now exercises offline preparation, lifecycle-disabled dependency installation, offline migration, and offline verification, while the host and L7 gateway directories define non-authorizing deployment contracts. Live host activation, external-source execution, owner-challenge generation, and publication remain disabled until the gateway lifecycle is integrated and drilled on a disposable Linux host, a control plane independently verifies and supplies the runner capability, repository ruleset and required-CI evidence are validated, and a supervised sandbox drill passes. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
 
 The first product goal is deliberately narrow: create a complete, verified migration preview for one repository, let a human review it, and publish a PR only after explicit approval. It never auto-merges.
 
 ## Safety model
 
-The publication flow below is a security boundary under active pilot validation. Do not use it for external source until every remaining gate above has evidence.
+The publication flow below is a security boundary under active pilot validation. Steps 4–7 describe the intended ceremony after a trusted control plane can verify runner evidence and supply the resulting opaque capability. The current console fails closed before creating a challenge. Do not use this flow for external source until every remaining gate above has evidence.
 
 Publishing is a separate action from analysis:
 
@@ -33,14 +33,15 @@ HTTP Basic authentication is only appropriate on loopback or behind TLS. Do not 
 
 ## What is implemented
 
-The repository is a TypeScript workspace with four packages:
+The repository is a TypeScript workspace with five packages:
 
 ```text
 packages/
 ├── engine/    # manifest, scanner, deterministic transforms, verifier, report
 ├── app/       # safe preview/publish orchestration and GitHub integration
 ├── db/        # SQLite campaign, repository, and run records
-└── console/   # local Next.js operator console
+├── console/   # local Next.js operator console
+└── runner/    # fixed four-phase, credential-free OCI runner entrypoints
 ```
 
 The engine includes experimental Inngest TypeScript SDK v3→v4 and Knock Node SDK v0→v1 transform sets. These demonstrate the workflow; they are not a claim that arbitrary SDK migrations are supported. Each transform must prove that a matched call belongs to the target SDK, and every provider migration needs its own fixtures and change inventory.
@@ -51,10 +52,10 @@ SQLite is for local pilot state. Foreign keys are enabled, migrations are idempo
 
 The package root also exposes a fail-closed pre-publication runner plan and
 signed-attestation verifier. The accompanying
-[Linux operator primitive](ops/publication-runner/README.md) is a reviewable
-contract and wrapper, not a runner deployment or proof that an attestation was
-independently observed and signed. External-source publication remains disabled
-until that runner (including its required L7 egress gateway) is provisioned and
+[runner image and Linux contracts](ops/publication-runner/README.md) are
+reviewable implementation artifacts, not proof of a live hardened deployment
+or independently observed and signed execution. External-source publication
+remains disabled until the L7 gateway lifecycle is provisioned, drilled, and
 attested and every remaining pilot gate is completed.
 
 ## Local setup
@@ -113,13 +114,15 @@ Preview the built-in Inngest campaign from the CLI without publishing anything:
 npm run migrate -- owner/repo
 ```
 
-The command prints the preflight ID, exact base commit, blockers, artifact fingerprint, and candidate tree. The direct CLI and package-root API are preview-only. The local console is the only supported operator publication route and uses distinct preview, read-only challenge, offline owner-envelope, and operator-confirmation stages. Its write-capable campaign executor is isolated behind an explicitly internal package subpath for console integration and must not be exposed as an API or invoked outside that ceremony. External publication remains disabled until the runner, ruleset/CI-evidence, and supervised-drill gates are completed.
+The command prints the preflight ID, exact base commit, blockers, artifact fingerprint, and candidate tree. The direct CLI and package-root API are preview-only. The local console contains distinct preview, read-only challenge, offline owner-envelope, and operator-confirmation stages, but only preview is currently usable: challenge and publish fail closed because the trusted runner-capability provider is not wired. Its write-capable campaign executor is isolated behind an explicitly internal package subpath for console integration and must not be exposed as an API or invoked outside the completed ceremony. External publication remains disabled until the runner-capability, ruleset/CI-evidence, and supervised-drill gates are completed.
 
 ### Owner challenge and offline signing
 
-The console's **Generate owner challenge** action is read-only but authenticated: it reruns the exact preview, requires the selected-repository GitHub App identity, rechecks current remote state, and downloads canonical challenge JSON. Store that file, the Ed25519 private key, the public-key registry, and signer output in a restrictive owner-controlled directory outside this workspace. On Unix-like systems, set files and the directory to owner-only permissions before signing.
+The console's **Generate owner challenge** action is currently unavailable. It reruns the exact preview but then requires an opaque capability returned by `verifyPublicationRunnerAttestation`; because no trusted control-plane provider supplies that capability, the action fails closed and downloads no challenge. Once that provider is integrated and drilled, the action is designed to require the selected-repository GitHub App identity, recheck current remote state, and download canonical challenge JSON.
 
-After independently reviewing the exact challenge summary and digest, run:
+Only after that gate is operational should an operator store the downloaded challenge, Ed25519 private key, public-key registry, and signer output in a restrictive owner-controlled directory outside this workspace. On Unix-like systems, set files and the directory to owner-only permissions before signing.
+
+After independently reviewing a challenge produced by that future trusted flow, run:
 
 ```bash
 npm run owner:sign -- \
@@ -135,21 +138,24 @@ npm run owner:sign -- \
 
 The signer accepts only canonical, blocker-free challenges less than ten minutes old, binds the exact reviewed challenge digest into the signed payload, limits the challenge and envelope window to 30 minutes and the underlying authorization expiry, verifies exact Ed25519 registry/key/repository correspondence, refuses symlinks, hard links, weak permissions, workspace-contained inputs, and existing output paths, then round-trips the new envelope through the runtime verifier. It fsyncs a new `0600` output file and its restrictive parent directory. Standard output contains only a safe receipt; it never contains private-key, payload, signature, or envelope bytes. Attach the resulting file through the console file selector before the opaque challenge receipt expires.
 
-The current challenge receipt never extends the original ten-minute preview receipt. This deliberately fail-closed pilot is therefore limited to small repositories whose challenge rerun, human signing step, and prepare-publication rerun all fit inside the displayed deadline. Expiry requires a completely new preview; do not lengthen or bypass the receipt locally.
+When challenge generation is enabled, its receipt will never extend the original ten-minute preview receipt. The ceremony will therefore be limited to small repositories whose challenge rerun, human signing step, and prepare-publication rerun all fit inside the displayed deadline. Expiry requires a completely new preview; do not lengthen or bypass the receipt locally.
 
 ## Commands and automated checks
 
 | Command | What it proves |
 |---|---|
-| `npm run build` | Builds engine, DB, and app before the Next.js console |
+| `npm run build` | Builds engine, DB, app, and runner before the Next.js console |
 | `npm run typecheck` | Builds package declarations, then type-checks every workspace |
 | `npm test` | Runs the workspace unit and migration-fixture tests that exist in this checkout |
 | `npm run ci` | Runs ordered package builds, type-checks, workspace, pilot-evidence, and runner-script checks, example sidecar validation, and the console production build |
-| `npm run test:ops` | Syntax-checks the credential-free Linux runner primitive |
+| `npm run test:ops` | Checks the shell, gateway, host-deployment, and runner-image contracts without claiming a live Linux security drill |
+| `npm run runner:image:build` | Builds the minimal local Node 22 runner image |
+| `npm run runner:image:verify` | Verifies the image configuration and fixed entrypoint surface |
+| `npm run runner:image:integration` | Exercises prepare/install/migrate/verify in real containers; this is functional evidence, not a host egress drill |
 | `npm run db:migrate` | Creates/updates the local SQLite bootstrap schema and indexes |
 | `npm run db:init-owner-store -- --activate` | One-time creation of the externally anchored owner-authorization replay store |
 | `npm run migrate -- owner/repo` | Generates a non-publishing Inngest migration preview for one approved repository |
-| `npm run owner:sign -- ...` | Reviews and signs one exact canonical challenge into a new owner-only envelope file without GitHub access |
+| `npm run owner:sign -- ...` | Signs an exact canonical challenge without GitHub access; the console does not currently issue such a challenge |
 
 GitHub Actions runs `npm run ci` on pushes and pull requests. CI uses only its read-only checkout token, does not persist that credential, does not configure application GitHub credentials, push branches, open real PRs, or prove customer-repository compatibility. A real pilot still requires operator review and evidence from approved repositories.
 

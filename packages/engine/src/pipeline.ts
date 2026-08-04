@@ -55,6 +55,8 @@ export interface RunMigrationOptions {
 
 export interface RunMigrationResult {
   report: MigrationReport;
+  /** Provider-owned and changed source files that trusted TypeScript verification must select. */
+  requiredVerificationFiles: string[];
 }
 
 export async function runMigration(
@@ -197,7 +199,10 @@ export async function runMigration(
       verification
     );
     if (writeChanges) applyCandidateFiles(repoPath, expectedPath, workPath, changedFiles);
-    return { report };
+    return {
+      report,
+      requiredVerificationFiles: [...new Set([...providerSourceFiles, ...sourceChanges])].sort(),
+    };
   } finally {
     for (const root of temporaryRoots.reverse()) rmSync(root, { recursive: true, force: true });
   }

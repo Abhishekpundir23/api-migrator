@@ -1,0 +1,52 @@
+[Unit]
+Description=API Migrator blocked runner deployment candidate (gateway lifecycle drill required)
+Documentation=file:///usr/local/libexec/api-migrator/deployment/README.md
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=no
+WorkingDirectory=/
+UMask=0077
+TimeoutStartSec=@RUNTIME_MAX_MS@ms
+TimeoutStartFailureMode=kill
+TimeoutStopSec=20s
+TimeoutStopFailureMode=kill
+KillMode=control-group
+SendSIGKILL=yes
+FinalKillSignal=SIGKILL
+OOMPolicy=kill
+Delegate=yes
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+Environment=API_MIGRATOR_RUNNER_IMAGE=@RUNNER_IMAGE@
+Environment=API_MIGRATOR_RUNNER_UID=@RUNNER_UID@
+Environment=API_MIGRATOR_RUNNER_GID=@RUNNER_GID@
+Environment=API_MIGRATOR_RUNNER_STORAGE_ROOT=@RUNNER_STORAGE_ROOT@
+Environment=API_MIGRATOR_RUNNER_STORAGE_DRIVER=@RUNNER_STORAGE_DRIVER@
+Environment=API_MIGRATOR_OCI_RUNTIME_PATH=@OCI_RUNTIME_PATH@
+Environment=API_MIGRATOR_CONMON_PATH=@CONMON_PATH@
+Environment=API_MIGRATOR_CONTROL_PLANE_JOB_ID=@JOB_ID@
+UnsetEnvironment=GH_TOKEN GITHUB_TOKEN GH_APP_ID GH_APP_PRIVATE_KEY GH_APP_PRIVATE_KEY_PATH GH_APP_INSTALLATION_ID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CLIENT_ID AZURE_CLIENT_SECRET DATABASE_URL HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY NPM_CONFIG_USERCONFIG NODE_OPTIONS NODE_PATH DOCKER_HOST CONTAINER_HOST BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME SSH_AUTH_SOCK KUBECONFIG
+ExecStart=@WRAPPER_PATH@ @PLAN_PATH@ @PLAN_DIGEST@ @SOURCE_ARCHIVE_PATH@ @OUTPUT_PATH@ @RAW_EVENTS_PATH@
+ExecStopPost=@CLEANUP_PATH@ @JOB_DESCRIPTOR_PATH@
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+PrivateDevices=yes
+PrivateIPC=yes
+PrivateNetwork=no
+PrivateUsers=no
+NoNewPrivileges=no
+RestrictSUIDSGID=no
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_KILL CAP_NET_ADMIN CAP_SETGID CAP_SETUID CAP_SYS_ADMIN
+ReadWritePaths=/var/tmp @RUNNER_STORAGE_ROOT@ @OUTPUT_PARENT@ @EVIDENCE_PARENT@
+StandardInput=null
+StandardOutput=journal
+StandardError=journal

@@ -6,14 +6,21 @@ import {
   type KeyObject,
 } from "node:crypto";
 import test from "node:test";
+import type { MigrationReport } from "@api-migrator/engine";
 import { canonicalJson } from "../src/canonical-json.js";
 import {
+  buildExpectedOwnerAuthorizationBindings,
+  type OwnerPublicationPolicy,
+} from "../src/owner-publication-policy.js";
+import {
   PUBLICATION_RUNNER_ATTESTATION_DOMAIN,
+  PUBLICATION_RUNNER_COMMAND_SCOPE_DIGEST,
   PUBLICATION_RUNNER_PROFILE,
+  assertVerifiedPublicationRunnerAttestation,
   assertPublicationRunnerPlanCurrent,
   createPublicationRunnerPlan,
   validatePublicationRunnerPlan,
-  verifyPublicationRunnerAttestation,
+  verifyPublicationRunnerAttestation as verifyPublicationRunnerAttestationAtClock,
   type CreatePublicationRunnerPlanInput,
   type PublicationRunnerAttestation,
   type PublicationRunnerOutput,
@@ -23,6 +30,7 @@ import {
 
 const NOW = 2_000_000_000_000;
 const EXPIRES_AT = NOW + 10 * 60 * 1_000;
+const VERIFIED_AT = NOW + 105_000;
 
 function digest(label: string): string {
   return `sha256:${createHash("sha256").update(label).digest("hex")}`;
@@ -39,7 +47,6 @@ function planInput(): CreatePublicationRunnerPlanInput {
     base: { branch: "main", sha: "1".repeat(40) },
     sourceArchiveDigest: digest("source"),
     manifestDigest: digest("manifest"),
-    commandScopeDigest: digest("command"),
     imageDigest: digest("migration-image"),
     migrationInstallEgress: [{
       host: "registry.npmjs.org",
@@ -163,6 +170,21 @@ function signedEnvelope(
   });
 }
 
+function verifyPublicationRunnerAttestation(
+  envelopeJson: string,
+  expectedPlan: PublicationRunnerPlanRecord,
+  expectedReviewedOutput: PublicationRunnerOutput,
+  trust: RunnerAttestationTrust
+) {
+  return verifyPublicationRunnerAttestationAtClock(
+    envelopeJson,
+    expectedPlan,
+    expectedReviewedOutput,
+    trust,
+    VERIFIED_AT
+  );
+}
+
 test("creates an immutable credential-free pre-publication plan without circular evidence", () => {
   const record = plan();
   assert.match(record.plan.job.id, /^previewjob_[a-f0-9]{64}$/);
@@ -170,6 +192,7 @@ test("creates an immutable credential-free pre-publication plan without circular
   assert.equal(record.plan.execution.credentials, "none");
   assert.equal(record.plan.execution.checksNetwork, "none");
   assert.equal(record.plan.execution.proxyEnvironment, "absent");
+  assert.equal(record.plan.inputs.commandScopeDigest, PUBLICATION_RUNNER_COMMAND_SCOPE_DIGEST);
   assert.equal("expectedOutput" in record.plan, false);
   assert.equal(record.plan.egress.enforcement, "host_nftables_output_exact_ip_tcp443");
   assert.equal(
@@ -177,6 +200,12 @@ test("creates an immutable credential-free pre-publication plan without circular
     "external_l7_gateway_required"
   );
   assert.equal(record.plan.execution.onlinePhase, "dependency_install_only");
+  assert.deepEqual(record.plan.execution.phaseOrder, [
+    "offline_preparation",
+    "dependency_install",
+    "migration",
+    "verification",
+  ]);
   assert.equal(record.plan.execution.storage.enforcement, "bounded_tmpfs");
   assert.deepEqual(record.plan.execution.requiredChecks, [
     "install",
@@ -259,6 +288,7 @@ test("rejects ordinary bridge claims, proxy inheritance, credentials, and plan s
     ["online checks", (value) => { value.execution.checksNetwork = "bridge"; }],
     ["mutable job", (value) => { value.job.disposable = false; }],
     ["job substitution", (value) => { value.job.id = `previewjob_${"f".repeat(64)}`; }],
+    ["command-scope substitution", (value) => { value.inputs.commandScopeDigest = digest("other-scope"); }],
     ["free-form shell", (value) => { value.execution.shell = "bash"; }],
   ];
   for (const [name, mutate] of cases) {
@@ -269,6 +299,21 @@ test("rejects ordinary bridge claims, proxy inheritance, credentials, and plan s
   assert.throws(
     () => assertPublicationRunnerPlanCurrent({ ...original, digest: digest("substitute") }, NOW),
     /digest or canonical bytes/
+  );
+});
+
+test("binds the job identity to the canonical installation egress policy", () => {
+  const original = plan();
+  const changedInput = planInput();
+  changedInput.migrationInstallEgress[0]!.resolutionEvidenceDigest = digest("other-resolution");
+  const changedPolicy = createPublicationRunnerPlan(changedInput);
+  const substituted = structuredClone(changedPolicy.plan);
+  substituted.job = structuredClone(original.plan.job);
+  substituted.execution.identity = `${original.plan.job.id}:migration`;
+
+  assert.throws(
+    () => validatePublicationRunnerPlan(substituted),
+    /job identity does not bind its inputs/
   );
 });
 
@@ -283,6 +328,115 @@ test("verifies a domain-separated pinned control-plane attestation for owner bin
   assert.equal(verified.envelopeDigest, digestBytes(Buffer.from(envelope, "utf8")));
   assert.equal(verified.signer.fingerprint, trust.fingerprint);
   assert(Object.isFrozen(verified.attestation));
+  assert.equal(assertVerifiedPublicationRunnerAttestation(verified, VERIFIED_AT), verified);
+  assert.throws(
+    () => assertVerifiedPublicationRunnerAttestation(structuredClone(verified), VERIFIED_AT),
+    /genuinely verified runner attestation/
+  );
+  assert.throws(
+    () => assertVerifiedPublicationRunnerAttestation(verified, EXPIRES_AT),
+    /expired or not current/
+  );
+  const shortTrust = { ...trust, validUntil: VERIFIED_AT + 1_000 };
+  const shortLived = verifyPublicationRunnerAttestationAtClock(
+    envelope,
+    record,
+    reviewedOutput(),
+    shortTrust,
+    VERIFIED_AT
+  );
+  assert.equal(
+    assertVerifiedPublicationRunnerAttestation(shortLived, shortTrust.validUntil - 1),
+    shortLived
+  );
+  assert.throws(
+    () => assertVerifiedPublicationRunnerAttestation(shortLived, shortTrust.validUntil),
+    /expired or not current/
+  );
+  assert.throws(
+    () => verifyPublicationRunnerAttestationAtClock(
+      envelope,
+      record,
+      reviewedOutput(),
+      trust,
+      EXPIRES_AT
+    ),
+    /plan is not currently valid/
+  );
+  assert.throws(
+    () => verifyPublicationRunnerAttestationAtClock(
+      envelope,
+      record,
+      reviewedOutput(),
+      trust,
+      payload.observedAt - 1
+    ),
+    /before its observation time/
+  );
+
+  const policy: OwnerPublicationPolicy = {
+    registryPath: "/outside/owner-registry.json",
+    pilotId: record.plan.subject.pilotId,
+    approvalEvidenceDigest: digest("approval"),
+    preRunAuthorizationDigest: digest("pre-run"),
+    authorizationExpiresAt: EXPIRES_AT,
+    engineTag: "v0.1.0-pilot",
+    engineCommit: "4".repeat(40),
+    commandScopeDigest: record.plan.inputs.commandScopeDigest,
+    rulesetDigest: digest("ruleset"),
+    requiredCiDigest: digest("required-ci"),
+  };
+  const ownerInput = () => ({
+    policy: { ...policy },
+    runnerAttestation: verified,
+    now: VERIFIED_AT,
+    previewCompletedAt: NOW + 105_000,
+    repositorySlug: record.plan.subject.repository.slug,
+    github: {
+      appId: 123,
+      appSlug: "api-migrator",
+      installationId: 456,
+      repositoryId: record.plan.subject.repository.id,
+      repositoryOwnerId: record.plan.subject.repository.ownerId,
+      repositorySlug: record.plan.subject.repository.slug,
+    },
+    baseBranch: record.plan.subject.base.branch,
+    baseSha: record.plan.subject.base.sha,
+    manifestJson: "manifest",
+    preflightId: reviewedOutput().preflightId,
+    artifactDigest: reviewedOutput().artifactDigest,
+    candidateBranch: "codex/api-migrator/attested",
+    candidateTreeSha: reviewedOutput().candidateTreeSha,
+    report: { entries: [] } as unknown as MigrationReport,
+    remote: { sha: null, pullRequest: null, pushRequired: true },
+  });
+  const bindings = buildExpectedOwnerAuthorizationBindings(ownerInput());
+  assert.equal(bindings.preview.runnerAttestationDigest, verified.payloadDigest);
+  assert.notEqual(bindings.preview.runnerAttestationDigest, verified.envelopeDigest);
+  assert.equal(bindings.preview.commandScopeDigest, PUBLICATION_RUNNER_COMMAND_SCOPE_DIGEST);
+
+  const mismatches: Array<[string, (value: ReturnType<typeof ownerInput>) => void]> = [
+    ["pilot", (value) => { value.policy.pilotId = "pilot_other_001"; }],
+    ["repository slug", (value) => { value.repositorySlug = "other-org/example-repo"; }],
+    ["repository id", (value) => { value.github.repositoryId += 1; }],
+    ["repository owner", (value) => { value.github.repositoryOwnerId += 1; }],
+    ["base branch", (value) => { value.baseBranch = "develop"; }],
+    ["base commit", (value) => { value.baseSha = "5".repeat(40); }],
+    ["manifest", (value) => { value.manifestJson = "different-manifest"; }],
+    ["command scope", (value) => { value.policy.commandScopeDigest = digest("other-scope"); }],
+    ["preflight", (value) => { value.preflightId = `pf_${"6".repeat(64)}`; }],
+    ["artifact", (value) => { value.artifactDigest = digest("other-artifact"); }],
+    ["tree", (value) => { value.candidateTreeSha = "7".repeat(40); }],
+  ];
+  for (const [name, mutate] of mismatches) {
+    const value = ownerInput();
+    mutate(value);
+    assert.throws(
+      () => buildExpectedOwnerAuthorizationBindings(value),
+      /does not match current owner-publication bindings/,
+      name
+    );
+  }
   assert.throws(
     () => verifyPublicationRunnerAttestation(
       envelope,

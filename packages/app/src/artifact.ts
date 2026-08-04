@@ -17,6 +17,7 @@ import type { Stats } from "node:fs";
 
 interface TreeEntry {
   type: "file" | "symlink";
+  /** Canonical Git index mode; host owner/group permission bits are not identity. */
   mode: number;
   digest: string;
 }
@@ -160,13 +161,13 @@ function collectTree(root: string): Map<string, TreeEntry> {
       else if (entry.isSymbolicLink()) {
         out.set(path, {
           type: "symlink",
-          mode: stat.mode & 0o777,
+          mode: 0o120000,
           digest: createHash("sha256").update(readlinkSync(absolute)).digest("hex"),
         });
       } else if (entry.isFile()) {
         out.set(path, {
           type: "file",
-          mode: stat.mode & 0o777,
+          mode: canonicalGitFileMode(stat.mode),
           digest: createHash("sha256").update(readFileSync(absolute)).digest("hex"),
         });
       }
@@ -213,10 +214,14 @@ function treeEntry(root: string, path: string): TreeEntry | undefined {
   const stat = lstatIfExists(absolute);
   if (!stat) return undefined;
   if (stat.isSymbolicLink()) {
-    return { type: "symlink", mode: stat.mode & 0o777, digest: createHash("sha256").update(readlinkSync(absolute)).digest("hex") };
+    return { type: "symlink", mode: 0o120000, digest: createHash("sha256").update(readlinkSync(absolute)).digest("hex") };
   }
   if (!stat.isFile()) throw new Error(`Artifact path is not a regular file: ${path}`);
-  return { type: "file", mode: stat.mode & 0o777, digest: createHash("sha256").update(readFileSync(absolute)).digest("hex") };
+  return { type: "file", mode: canonicalGitFileMode(stat.mode), digest: createHash("sha256").update(readFileSync(absolute)).digest("hex") };
+}
+
+function canonicalGitFileMode(mode: number): number {
+  return (mode & 0o111) === 0 ? 0o100644 : 0o100755;
 }
 
 function lstatIfExists(path: string): Stats | undefined {

@@ -9,7 +9,10 @@
 import { migrateRepo, type MigrateRepoInput, type MigrateRepoResult } from "./github.js";
 import { safeErrorMessage } from "./security.js";
 
-export interface MigrationJob extends Omit<MigrateRepoInput, "publication" | "ownerChallenge"> {
+export interface MigrationJob extends Omit<
+  MigrateRepoInput,
+  "publication" | "ownerChallenge" | "runnerAttestation"
+> {
   id: string;
   /** This non-durable queue is preview-only; publishing must use runCampaign. */
   publication?: { mode: "preview" };
@@ -44,10 +47,12 @@ export async function runCampaignJobs(
   // can bypass the TypeScript shape, so keep the runtime check fail-closed too.
   if (jobs.some((job) => {
     const untrusted = job as MigrateRepoInput;
-    return untrusted.publication?.mode === "publish" || untrusted.ownerChallenge !== undefined;
+    return untrusted.publication?.mode === "publish" ||
+      untrusted.ownerChallenge !== undefined ||
+      untrusted.runnerAttestation !== undefined;
   })) {
     throw new Error(
-      "Publishing and owner-challenge preparation require the DB-backed console workflow; runCampaignJobs is preview-only"
+      "Publishing, owner-challenge preparation, and runner-attestation capabilities require the DB-backed console workflow; runCampaignJobs is preview-only"
     );
   }
   const concurrency = Math.max(1, opts.concurrency ?? 2);

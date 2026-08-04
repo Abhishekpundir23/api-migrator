@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.invalid/schemas/runner-deployment-job-v1.json",
+  "title": "API Migrator runner deployment job v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "jobId",
+    "unitRenderedAt",
+    "runtimeMaxMs",
+    "planPath",
+    "planDigest",
+    "sourceArchivePath",
+    "outputPath",
+    "rawEventsPath",
+    "runnerResultPath",
+    "hostProfilePath",
+    "l7IntegrationStatusPath",
+    "observationPath",
+    "signingRequestPath"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "jobId": { "type": "string", "pattern": "^previewjob_[a-f0-9]{64}$" },
+    "unitRenderedAt": { "type": "integer", "minimum": 1, "maximum": 8640000000000000 },
+    "runtimeMaxMs": { "type": "integer", "minimum": 30000, "maximum": 900000 },
+    "planPath": { "$ref": "#/$defs/path" },
+    "planDigest": { "$ref": "#/$defs/digest" },
+    "sourceArchivePath": { "$ref": "#/$defs/path" },
+    "outputPath": { "$ref": "#/$defs/path" },
+    "rawEventsPath": { "$ref": "#/$defs/path" },
+    "runnerResultPath": { "$ref": "#/$defs/path" },
+    "hostProfilePath": { "$ref": "#/$defs/path" },
+    "l7IntegrationStatusPath": { "$ref": "#/$defs/path" },
+    "observationPath": { "$ref": "#/$defs/path" },
+    "signingRequestPath": { "$ref": "#/$defs/path" }
+  },
+  "$defs": {
+    "path": { "type": "string", "pattern": "^/[A-Za-z0-9._/-]+$", "maxLength": 1024 },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

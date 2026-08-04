@@ -133,6 +133,23 @@ class InspectingRunner implements VerificationRunner {
   }
 }
 
+class PostInstallLockRedirectRunner extends InspectingRunner {
+  override run(repoPath: string, command: RunnerCommand): RunnerResult {
+    const result = super.run(repoPath, command);
+    if (command.network === "default" && command.args.includes("install")) {
+      const lockPath = join(repoPath, "package-lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      lock.packages["node_modules/post-install-redirect"] = {
+        version: "1.0.0",
+        resolved: "https://packages.example.invalid/post-install-redirect.tgz",
+        integrity: "sha512-YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=",
+      };
+      writeFileSync(lockPath, JSON.stringify(lock));
+    }
+    return result;
+  }
+}
+
 class ForgedTypecheckRunner extends InspectingRunner {
   override run(repoPath: string, command: RunnerCommand): RunnerResult {
     const result = super.run(repoPath, command);
@@ -499,6 +516,79 @@ test("solution-style and empty TypeScript roots fail closed", async () => {
   }
 });
 
+test("trusted TypeScript verification rejects compilerOptions.noCheck", async () => {
+  await withRepo(async (repo) => {
+    const runner = new CompilerConfigRunner({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        compilerOptions: { noCheck: true },
+        files: ["./src/functions.ts"],
+      }),
+      stderr: "",
+      timedOut: false,
+    });
+    const result = await runTsc(repo, { runner, install: false });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, true);
+    assert.match(result.skipReason ?? "", /forbids compilerOptions\.noCheck/);
+    assert.equal(runner.commands.some((command) => command.args.includes("--noEmit")), false);
+  });
+});
+
+test("trusted TypeScript verification requires checkJs for migrated JavaScript", async () => {
+  await withRepo(async (repo) => {
+    writeFileSync(join(repo, "src", "functions.js"), "export const value = unknownName;\n");
+    const runner = new CompilerConfigRunner({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        compilerOptions: { allowJs: true, checkJs: false },
+        files: ["./src/functions.js"],
+      }),
+      stderr: "",
+      timedOut: false,
+    });
+    const result = await runTsc(repo, {
+      runner,
+      install: false,
+      requiredFiles: ["src/functions.js"],
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, true);
+    assert.match(result.skipReason ?? "", /does not type-check required JavaScript source/);
+    assert.equal(runner.commands.some((command) => command.args.includes("--noEmit")), false);
+  });
+});
+
+test("required migration sources cannot disable compiler checking", async () => {
+  await withRepo(async (repo) => {
+    writeFileSync(
+      join(repo, "src", "functions.ts"),
+      "\uFEFF// @ts-nocheck\nexport const value: number = 'unchecked';\n"
+    );
+    const runner = new CompilerConfigRunner({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ["./src/functions.ts"],
+      }),
+      stderr: "",
+      timedOut: false,
+    });
+    const result = await runTsc(repo, {
+      runner,
+      install: false,
+      requiredFiles: ["src/functions.ts"],
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, true);
+    assert.match(result.skipReason ?? "", /disables TypeScript checking/);
+    assert.equal(runner.commands.some((command) => command.args.includes("--noEmit")), false);
+  });
+});
+
 test("trusted compiler must select every required migration source", async () => {
   await withRepo(async (repo) => {
     const runner = new CompilerConfigRunner({
@@ -763,6 +853,84 @@ test("networked installation rejects repository-controlled package configuration
       assert.equal(runner.commands.length, 0);
     });
   }
+});
+
+test("networked installation rejects local dependency sources even when the existing lockfile is trusted", async () => {
+  for (const spec of [
+    "file:./evil.tgz",
+    "./evil",
+    "../evil",
+    "/tmp/evil",
+    "~/evil",
+    "evil.tgz",
+    "workspace:*",
+    "C:\\evil",
+  ]) {
+    await withRepo(async (repo) => {
+      const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+      pkg.dependencies.evil = spec;
+      writeFileSync(join(repo, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
+      const runner = new InspectingRunner();
+      const result = installDeps(repo, { runner, install: true });
+      assert.equal(result.ok, false, spec);
+      assert.match(result.reason ?? "", /non-registry dependency/, spec);
+      assert.equal(runner.commands.length, 0, spec);
+    });
+  }
+});
+
+test("networked installation rejects non-registry override and resolution leaves", async () => {
+  const redirects = [
+    { overrides: { inngest: "https://evil.invalid/inngest.tgz" } },
+    { resolutions: { "**/inngest": "file:./evil.tgz" } },
+    { pnpm: { overrides: { inngest: "../evil" } } },
+  ];
+  for (const redirect of redirects) {
+    await withRepo(async (repo) => {
+      const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+      Object.assign(pkg, redirect);
+      writeFileSync(join(repo, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
+      const runner = new InspectingRunner();
+      const result = installDeps(repo, { runner, install: true });
+      assert.equal(result.ok, false);
+      assert.match(result.reason ?? "", /non-registry (?:overrides|resolutions|pnpm\.overrides) value/);
+      assert.equal(runner.commands.length, 0);
+    });
+  }
+});
+
+test("networked installation permits official registry semver, tags, and npm aliases", async () => {
+  for (const spec of [
+    "^4.17.0",
+    ">=4 <5",
+    "latest",
+    "npm:lodash@^4.17.0",
+    "npm:@scope/example@next",
+    "npm:lodash",
+  ]) {
+    await withRepo(async (repo) => {
+      const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+      pkg.dependencies.allowed = spec;
+      pkg.overrides = { allowed: spec };
+      writeFileSync(join(repo, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
+      const runner = new InspectingRunner();
+      const result = installDeps(repo, { runner, install: true });
+      assert.equal(result.ok, true, `${spec}: ${result.reason ?? "unexpected failure"}`);
+      assert.equal(runner.commands.length, 1, spec);
+    });
+  }
+});
+
+test("successful installation revalidates rewritten lockfile provenance", async () => {
+  await withRepo(async (repo) => {
+    const runner = new PostInstallLockRedirectRunner();
+    const result = installDeps(repo, { runner, install: true });
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /post-install dependency trust validation failed/);
+    assert.match(result.reason ?? "", /approved npm registry/);
+    assert.equal(result.check.status, "failed");
+    assert.equal(runner.commands.length, 1);
+  });
 });
 
 test("networked installation rejects all custom package-manager arguments", async () => {

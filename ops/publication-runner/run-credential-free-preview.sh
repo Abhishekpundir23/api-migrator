@@ -25,6 +25,15 @@ usage() {
 }
 
 [[ $# -eq 5 ]] || usage
+
+# The image protocol and the host/gateway contracts are independently tested,
+# but the checked-in host wrapper does not yet own the required forced-SNI
+# gateway lifecycle between offline preparation, online install, and offline
+# migration. Running its legacy direct-IP transport path would contradict the
+# plan. Keep live host activation impossible until the Linux orchestrator
+# replaces that path and the complete drill is independently observed.
+die "live host activation is disabled until the forced L7 gateway lifecycle is integrated and drilled"
+
 PLAN_PATH=$1
 EXPECTED_PLAN_DIGEST=$2
 SOURCE_PATH=$3
@@ -36,7 +45,7 @@ RESULT_EVIDENCE_PATH="${EVIDENCE_PATH}.runner.json"
 [[ ${EUID} -eq 0 ]] || die "the disposable control-plane wrapper must run as root"
 [[ ${INVOCATION_ID:-} =~ ^[a-f0-9]{32}$ ]] || die "a systemd disposable-unit INVOCATION_ID is required"
 
-for command in awk basename chmod chown cp date dirname env find getent grep head install jq mkdir mktemp mount nft pgrep podman python3 readlink rm sed setpriv sha256sum sleep sort stat sync timeout umount uname wc; do
+for command in awk basename chmod chown cmp cp date dirname env find getent grep head install jq mkdir mktemp mount nft pgrep podman python3 readlink rm sed setpriv sha256sum sleep sort stat sync timeout umount uname wc; do
   command -v "$command" >/dev/null 2>&1 || die "required command is unavailable: $command"
 done
 
@@ -336,7 +345,7 @@ jq -e '
   .execution.writableOutput == "bounded_tmpfs_then_root_sealed_transfer" and
   .execution.dependencyLifecycleScripts == "disabled" and
   .execution.onlinePhase == "dependency_install_only" and
-  .execution.phaseOrder == ["dependency_install", "migration", "verification"] and
+  .execution.phaseOrder == ["offline_preparation", "dependency_install", "migration", "verification"] and
   .execution.checksNetwork == "none" and
   .execution.requiredChecks == ["install", "typecheck", "test", "lint", "runtime"] and
   .execution.outputBinding == "signed_attestation_reviewed_output" and
@@ -392,8 +401,10 @@ STAGED_PLAN="$WORKSPACE/plan.json"
 STAGED_SOURCE="$WORKSPACE/source.tar"
 JOB_OUTPUT_DIR="$WORKSPACE/output"
 DEPENDENCY_DIR="$WORKSPACE/dependencies"
+INSTALLATION_DIR="$WORKSPACE/installation"
 RESULT_DIR="$WORKSPACE/result"
 POLICY_PATH="$WORKSPACE/egress.nft"
+PREPARE_LOG="$WORKSPACE/prepare.log"
 INSTALL_LOG="$WORKSPACE/install.log"
 MIGRATE_LOG="$WORKSPACE/migrate.log"
 VERIFY_LOG="$WORKSPACE/verify.log"
@@ -413,7 +424,7 @@ SIGNATURE_POLICY_PATH="$JOB_XDG_CONFIG/policy.json"
 install -o root -g "$RUNNER_GID" -m 0440 -- "$PLAN_PATH" "$STAGED_PLAN"
 install -o root -g "$RUNNER_GID" -m 0440 -- "$SOURCE_PATH" "$STAGED_SOURCE"
 install -d -o "$RUNNER_UID" -g "$RUNNER_GID" -m 0700 -- \
-  "$JOB_OUTPUT_DIR" "$DEPENDENCY_DIR" "$RESULT_DIR" "$JOB_HOME" \
+  "$JOB_OUTPUT_DIR" "$DEPENDENCY_DIR" "$INSTALLATION_DIR" "$RESULT_DIR" "$JOB_HOME" \
   "$JOB_XDG_RUNTIME" "$PODMAN_RUNROOT" "$PODMAN_TMP"
 install -d -o root -g "$RUNNER_GID" -m 0550 -- "$JOB_XDG_CONFIG" "$PODMAN_HOOKS_DIR"
 install -o root -g "$RUNNER_GID" -m 0440 /dev/null \
@@ -429,6 +440,7 @@ chmod 0440 -- "$REGISTRIES_CONF_PATH" "$STORAGE_CONF_PATH" "$SIGNATURE_POLICY_PA
 install -o root -g root -m 0600 /dev/null "$EVIDENCE_PATH"
 exec 3>"$EVIDENCE_PATH"
 
+PREPARE_CONTAINER="${JOB_ID:0:54}-prepare"
 INSTALL_CONTAINER="${JOB_ID:0:54}-install"
 MIGRATE_CONTAINER="${JOB_ID:0:54}-migrate"
 VERIFY_CONTAINER="${JOB_ID:0:54}-verify"
@@ -486,7 +498,7 @@ cleanup() {
     wait "$WATCHDOG_PID" >/dev/null 2>&1
     WATCHDOG_PID=
   fi
-  run_as_job rm --force --ignore "$INSTALL_CONTAINER" "$MIGRATE_CONTAINER" "$VERIFY_CONTAINER" >/dev/null 2>&1
+  run_as_job rm --force --ignore "$PREPARE_CONTAINER" "$INSTALL_CONTAINER" "$MIGRATE_CONTAINER" "$VERIFY_CONTAINER" >/dev/null 2>&1
   [[ $? -eq 0 ]] || cleanup_status=1
   event "containers_destroyed" "status=$cleanup_status" || cleanup_status=1
   run_as_job system migrate >/dev/null 2>&1
@@ -589,12 +601,54 @@ COMMON_ARGS=(
   --log-driver=none --image-volume=ignore --read-only-tmpfs=false
   --mounts-file="$MOUNTS_CONF_PATH" --hooks-dir="$PODMAN_HOOKS_DIR"
   --tmpfs=/tmp:rw,noexec,nosuid,nodev,size=536870912
+  --tmpfs="/npm-cache:rw,noexec,nosuid,nodev,size=268435456,mode=0700,uid=$RUNNER_UID,gid=$RUNNER_GID"
   --volume="$STAGED_PLAN:/run/api-migrator/plan.json:ro"
 )
 ADD_HOST_ARGS=()
 for address in "${ALLOWED_ADDRESSES[@]}"; do
   ADD_HOST_ARGS+=(--add-host="registry.npmjs.org:$address")
 done
+
+event "offline_preparation_started" "network-none+read-only-source"
+PREPARE_TIMEOUT=$(phase_timeout_seconds 300)
+set +e
+timeout --signal=TERM --kill-after=5 "$PREPARE_TIMEOUT" \
+  setpriv --reuid="$RUNNER_UID" --regid="$RUNNER_GID" --clear-groups \
+  env -i HOME="$JOB_HOME" USER=api-migrator-job LOGNAME=api-migrator-job \
+    XDG_RUNTIME_DIR="$JOB_XDG_RUNTIME" XDG_CONFIG_HOME="$JOB_XDG_CONFIG" \
+    TMPDIR="$PODMAN_TMP" CONTAINERS_TMPDIR="$PODMAN_TMP" \
+    CONTAINERS_CONF="$CONTAINERS_CONF_PATH" CONTAINERS_STORAGE_CONF="$STORAGE_CONF_PATH" \
+    CONTAINERS_REGISTRIES_CONF="$REGISTRIES_CONF_PATH" \
+    CONTAINERS_MOUNTS_CONF="$MOUNTS_CONF_PATH" CONTAINERS_POLICY="$SIGNATURE_POLICY_PATH" \
+    PATH="$TRUSTED_PATH" \
+  podman "${PODMAN_GLOBAL_ARGS[@]}" "${COMMON_ARGS[@]}" \
+    --name="$PREPARE_CONTAINER" \
+    --network=none \
+    --volume="$STAGED_SOURCE:/run/api-migrator/source.tar:ro" \
+    --volume="$DEPENDENCY_DIR:/run/api-migrator/dependencies:rw" \
+    --volume="$INSTALLATION_DIR:/run/api-migrator/installation:rw" \
+    "$RUNNER_IMAGE" \
+    prepare \
+      --plan /run/api-migrator/plan.json \
+      --source /run/api-migrator/source.tar \
+      --dependencies /run/api-migrator/dependencies \
+      --installation /run/api-migrator/installation \
+  2>&1 | head -c 10485761 >"$PREPARE_LOG"
+PREPARE_STATUS=("${PIPESTATUS[@]}")
+set -e
+[[ ${PREPARE_STATUS[0]} -eq 0 && ${PREPARE_STATUS[1]} -eq 0 ]] \
+  || die "offline preparation container failed, timed out, or exceeded log capture"
+[[ $(stat -Lc '%s' "$PREPARE_LOG") -le 10485760 ]] \
+  || die "preparation log exceeded the evidence bound"
+[[ $(wc -l <"$PREPARE_LOG") -eq 1 ]] \
+  || die "offline preparation did not emit exactly one trusted status line"
+PREPARE_LINE=$(<"$PREPARE_LOG")
+if [[ $PREPARE_LINE =~ ^runner_phase=prepare\ status=passed\ prepared_state_digest=(sha256:[a-f0-9]{64})$ ]]; then
+  PREPARED_STATE_DIGEST=${BASH_REMATCH[1]}
+else
+  die "offline preparation emitted an invalid trusted status line"
+fi
+event "offline_preparation_finished" "sha256:$(sha256sum "$PREPARE_LOG" | awk '{print $1}')"
 
 event "dependency_install_started" "$EGRESS_POLICY_DIGEST"
 INSTALL_TIMEOUT=$(phase_timeout_seconds 300)
@@ -612,19 +666,28 @@ timeout --signal=TERM --kill-after=5 "$INSTALL_TIMEOUT" \
     --name="$INSTALL_CONTAINER" \
     --network=slirp4netns:allow_host_loopback=false \
     "${ADD_HOST_ARGS[@]}" \
-    --volume="$STAGED_SOURCE:/run/api-migrator/source.tar:ro" \
-    --volume="$DEPENDENCY_DIR:/run/api-migrator/dependencies:rw" \
+    --volume="$INSTALLATION_DIR:/run/api-migrator/installation:rw" \
     "$RUNNER_IMAGE" \
     install \
       --plan /run/api-migrator/plan.json \
-      --source /run/api-migrator/source.tar \
-      --dependencies /run/api-migrator/dependencies \
+      --installation /run/api-migrator/installation \
+      --prepared-state-digest "$PREPARED_STATE_DIGEST" \
   2>&1 | head -c 10485761 >"$INSTALL_LOG"
 INSTALL_STATUS=("${PIPESTATUS[@]}")
 set -e
 [[ ${INSTALL_STATUS[0]} -eq 0 && ${INSTALL_STATUS[1]} -eq 0 ]] \
   || die "dependency install container failed, timed out, or exceeded log capture"
 [[ $(stat -Lc '%s' "$INSTALL_LOG") -le 10485760 ]] || die "dependency install log exceeded the evidence bound"
+[[ $(wc -l <"$INSTALL_LOG") -eq 1 ]] \
+  || die "dependency installation did not emit exactly one trusted status line"
+INSTALL_LINE=$(<"$INSTALL_LOG")
+if [[ $INSTALL_LINE =~ ^runner_phase=install\ status=passed\ prepared_state_digest=(sha256:[a-f0-9]{64})\ install_state_digest=(sha256:[a-f0-9]{64})$ ]]; then
+  [[ ${BASH_REMATCH[1]} == "$PREPARED_STATE_DIGEST" ]] \
+    || die "dependency installation did not bind the offline prepared state"
+  INSTALL_STATE_DIGEST=${BASH_REMATCH[2]}
+else
+  die "dependency installation emitted an invalid trusted status line"
+fi
 event "dependency_install_finished" "sha256:$(sha256sum "$INSTALL_LOG" | awk '{print $1}')"
 
 # No migration or repository-controlled check runs until both network controls
@@ -650,13 +713,17 @@ timeout --signal=TERM --kill-after=5 "$MIGRATE_TIMEOUT" \
     --name="$MIGRATE_CONTAINER" \
     --network=none \
     --volume="$STAGED_SOURCE:/run/api-migrator/source.tar:ro" \
-    --volume="$DEPENDENCY_DIR:/run/api-migrator/dependencies:ro" \
+    --volume="$DEPENDENCY_DIR:/run/api-migrator/dependencies:rw" \
+    --volume="$INSTALLATION_DIR:/run/api-migrator/installation:ro" \
     --volume="$JOB_OUTPUT_DIR:/run/api-migrator/output:rw" \
     "$RUNNER_IMAGE" \
     migrate \
       --plan /run/api-migrator/plan.json \
       --source /run/api-migrator/source.tar \
       --dependencies /run/api-migrator/dependencies \
+      --installation /run/api-migrator/installation \
+      --prepared-state-digest "$PREPARED_STATE_DIGEST" \
+      --install-state-digest "$INSTALL_STATE_DIGEST" \
       --output /run/api-migrator/output \
   2>&1 | head -c 10485761 >"$MIGRATE_LOG"
 MIGRATE_STATUS=("${PIPESTATUS[@]}")
@@ -664,6 +731,14 @@ set -e
 [[ ${MIGRATE_STATUS[0]} -eq 0 && ${MIGRATE_STATUS[1]} -eq 0 ]] \
   || die "offline migration container failed, timed out, or exceeded log capture"
 [[ $(stat -Lc '%s' "$MIGRATE_LOG") -le 10485760 ]] || die "migration log exceeded the evidence bound"
+[[ $(wc -l <"$MIGRATE_LOG") -eq 1 ]] \
+  || die "offline migration did not emit exactly one trusted status line"
+MIGRATE_LINE=$(<"$MIGRATE_LOG")
+if [[ $MIGRATE_LINE =~ ^runner_phase=migrate\ status=passed\ dependency_state_digest=(sha256:[a-f0-9]{64})$ ]]; then
+  DEPENDENCY_STATE_DIGEST=${BASH_REMATCH[1]}
+else
+  die "offline migration emitted an invalid trusted status line"
+fi
 event "offline_migration_finished" "sha256:$(sha256sum "$MIGRATE_LOG" | awk '{print $1}')"
 
 event "offline_verification_started" "typecheck,test,lint,runtime"
@@ -689,6 +764,7 @@ timeout --signal=TERM --kill-after=5 "$VERIFY_TIMEOUT" \
       --plan /run/api-migrator/plan.json \
       --input /run/api-migrator/input \
       --dependencies /run/api-migrator/dependencies \
+      --dependency-state-digest "$DEPENDENCY_STATE_DIGEST" \
       --result /run/api-migrator/result \
   2>&1 | head -c 10485761 >"$VERIFY_LOG"
 VERIFY_STATUS=("${PIPESTATUS[@]}")
@@ -696,6 +772,15 @@ set -e
 [[ ${VERIFY_STATUS[0]} -eq 0 && ${VERIFY_STATUS[1]} -eq 0 ]] \
   || die "offline verification container failed, timed out, or exceeded log capture"
 [[ $(stat -Lc '%s' "$VERIFY_LOG") -le 10485760 ]] || die "verification log exceeded the evidence bound"
+[[ $(wc -l <"$VERIFY_LOG") -eq 1 ]] \
+  || die "offline verification did not emit exactly one trusted status line"
+VERIFY_LINE=$(<"$VERIFY_LOG")
+if [[ $VERIFY_LINE =~ ^runner_phase=verify\ status=passed\ evidence_digest=(sha256:[a-f0-9]{64})\ preflight_id=(pf_[a-f0-9]{64})$ ]]; then
+  REPORTED_EVIDENCE_DIGEST=${BASH_REMATCH[1]}
+  REPORTED_PREFLIGHT_ID=${BASH_REMATCH[2]}
+else
+  die "offline verification emitted an invalid trusted status line"
+fi
 event "offline_checks_finished" "sha256:$(sha256sum "$VERIFY_LOG" | awk '{print $1}')"
 
 # Stop the dedicated rootless engine and prove its OS identity is idle before
@@ -716,8 +801,8 @@ if find -P "$JOB_OUTPUT_DIR" -perm /7000 -print -quit | grep -q .; then
 fi
 assert_no_extended_metadata "$JOB_OUTPUT_DIR" "$RESULT_DIR" \
   || die "runner output or evidence contains symlinks, ACLs, capabilities, or xattrs"
-chown -R -h root:root -- "$JOB_OUTPUT_DIR" "$RESULT_DIR" "$DEPENDENCY_DIR"
-chmod -R go-rwx -- "$JOB_OUTPUT_DIR" "$RESULT_DIR" "$DEPENDENCY_DIR"
+chown -R -h root:root -- "$JOB_OUTPUT_DIR" "$RESULT_DIR" "$DEPENDENCY_DIR" "$INSTALLATION_DIR"
+chmod -R go-rwx -- "$JOB_OUTPUT_DIR" "$RESULT_DIR" "$DEPENDENCY_DIR" "$INSTALLATION_DIR"
 find -P "$JOB_OUTPUT_DIR" -type d -exec chmod 0700 -- {} +
 find -P "$JOB_OUTPUT_DIR" -type f -perm /0111 -exec chmod 0700 -- {} +
 find -P "$JOB_OUTPUT_DIR" -type f ! -perm /0111 -exec chmod 0600 -- {} +
@@ -730,19 +815,71 @@ event "output_ownership_revoked" "$SOURCE_TRANSFER_DIGEST"
 
 RAW_RESULT="$RESULT_DIR/runner-evidence.json"
 SAFE_RESULT="$WORKSPACE/runner-evidence.safe.json"
+CANONICAL_RESULT="$WORKSPACE/runner-evidence.canonical.json"
 [[ -f $RAW_RESULT && ! -L $RAW_RESULT ]] || die "runner did not emit bounded raw evidence"
 [[ $(stat -Lc '%s' "$RAW_RESULT") -le 98304 ]] || die "runner raw evidence is too large"
-jq -e '
-  (keys | sort) == ["artifactDigest", "candidateTreeSha", "preflightId"] and
-  (.preflightId | type == "string" and test("^pf_[a-f0-9]{64}$")) and
-  (.artifactDigest | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
-  (.candidateTreeSha | type == "string" and test("^([a-f0-9]{40}|[a-f0-9]{64})$"))
-' "$RAW_RESULT" >/dev/null || die "runner raw evidence does not contain canonical output identities"
-install -o root -g root -m 0600 /dev/null "$SAFE_RESULT"
-jq -cMj '{artifactDigest,candidateTreeSha,preflightId}' "$RAW_RESULT" >"$SAFE_RESULT"
-PREFLIGHT_ID=$(jq -er '.preflightId' "$RAW_RESULT")
-ARTIFACT_DIGEST=$(jq -er '.artifactDigest' "$RAW_RESULT")
-CANDIDATE_TREE=$(jq -er '.candidateTreeSha' "$RAW_RESULT")
+install -o root -g root -m 0600 /dev/null "$CANONICAL_RESULT"
+jq -cMSj '.' "$RAW_RESULT" >"$CANONICAL_RESULT" \
+  || die "runner raw evidence is not valid JSON"
+cmp -s -- "$RAW_RESULT" "$CANONICAL_RESULT" \
+  || die "runner raw evidence is not exact canonical JSON"
+RAW_RESULT_DIGEST="sha256:$(sha256sum "$RAW_RESULT" | awk '{print $1}')"
+[[ $RAW_RESULT_DIGEST == "$REPORTED_EVIDENCE_DIGEST" ]] \
+  || die "runner evidence file does not match the trusted verification status digest"
+REPORT_DIGEST="sha256:$(jq -cMSj '.report' "$RAW_RESULT" | sha256sum | awk '{print $1}')"
+jq -e \
+  --arg planDigest "$EXPECTED_PLAN_DIGEST" \
+  --arg jobId "$JOB_ID" \
+  --arg sourceDigest "$SOURCE_DIGEST" \
+  --arg manifestDigest "$(jq -er '.inputs.manifestDigest' "$PLAN_PATH")" \
+  --arg commandScopeDigest "$(jq -er '.inputs.commandScopeDigest' "$PLAN_PATH")" \
+  --arg dependencyStateDigest "$DEPENDENCY_STATE_DIGEST" \
+  --arg reportDigest "$REPORT_DIGEST" '
+  (keys | sort) == [
+    "blockers", "checks", "commandScopeDigest", "dependencyStateDigest", "jobId", "kind",
+    "manifestDigest", "output", "outputTreeDigest", "planDigest", "profile", "report",
+    "reportDigest", "schemaVersion", "sourceArchiveDigest", "targetBranch"
+  ] and
+  .schemaVersion == 1 and
+  .kind == "api-migrator-runner-evidence-v1" and
+  .profile == "disposable-egress-filtered-pilot-v1" and
+  .planDigest == $planDigest and
+  .jobId == $jobId and
+  .sourceArchiveDigest == $sourceDigest and
+  .manifestDigest == $manifestDigest and
+  .commandScopeDigest == $commandScopeDigest and
+  .reportDigest == $reportDigest and
+  .dependencyStateDigest == $dependencyStateDigest and
+  (.outputTreeDigest | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+  (.targetBranch | type == "string" and length <= 240 and startswith("codex/api-migrator/")) and
+  .blockers == [] and
+  (.output | keys | sort) == ["artifactDigest", "candidateTreeSha", "preflightId"] and
+  (.output.preflightId | type == "string" and test("^pf_[a-f0-9]{64}$")) and
+  (.output.artifactDigest | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+  (.output.candidateTreeSha | type == "string" and test("^([a-f0-9]{40}|[a-f0-9]{64})$")) and
+  (.checks | keys | sort) == ["install", "lint", "runtime", "test", "typecheck"] and
+  all(.checks[];
+    (.status == "passed") and (.exitCode == 0) and
+    (.command | type == "string" and length > 0 and length <= 4096) and
+    ((has("reason") | not) or (.reason | type == "string" and length <= 4096)) and
+    ((keys | sort) == (["command", "exitCode", "status"] + (if has("reason") then ["reason"] else [] end) | sort))
+  ) and
+  (.report | type == "object") and
+  .report.verification.ok == true and
+  .report.verification.skipped == false and
+  all(["install", "typecheck", "test", "lint", "runtime"][] as $name;
+    .report.verification.checks[$name].status == .checks[$name].status and
+    .report.verification.checks[$name].command == .checks[$name].command and
+    .report.verification.checks[$name].exitCode == .checks[$name].exitCode and
+    .report.verification.checks[$name].reason == .checks[$name].reason
+  )
+' "$RAW_RESULT" >/dev/null || die "runner raw evidence is incomplete, blocked, or inconsistent"
+install -o root -g root -m 0600 -- "$CANONICAL_RESULT" "$SAFE_RESULT"
+PREFLIGHT_ID=$(jq -er '.output.preflightId' "$RAW_RESULT")
+[[ $PREFLIGHT_ID == "$REPORTED_PREFLIGHT_ID" ]] \
+  || die "runner evidence preflight does not match the trusted verification status"
+ARTIFACT_DIGEST=$(jq -er '.output.artifactDigest' "$RAW_RESULT")
+CANDIDATE_TREE=$(jq -er '.output.candidateTreeSha' "$RAW_RESULT")
 event "offline_verification_finished" "sha256:$(sha256sum "$SAFE_RESULT" | awk '{print $1}')"
 
 install -o root -g root -m 0600 -- "$SAFE_RESULT" "$RESULT_EVIDENCE_PATH"

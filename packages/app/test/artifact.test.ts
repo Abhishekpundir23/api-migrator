@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -72,6 +73,28 @@ test("destination dangling symlinks are never followed", () => {
     rmSync(join(destination, "src", "safe.ts"));
     symlinkSync("/tmp/does-not-exist-api-migrator", join(destination, "src", "safe.ts"));
     assert.throws(() => applyVerifiedArtifact(destination, proposed, artifact), /symlink|non-regular/);
+  });
+});
+
+test("artifact identity uses Git modes instead of host sealing permissions", () => {
+  withTrees(({ base, proposed, destination }) => {
+    writeFileSync(join(base, "script.js"), "old\n", { mode: 0o644 });
+    copyGitFreeTree(base, proposed);
+    copyGitFreeTree(base, destination);
+    writeFileSync(join(proposed, "script.js"), "new\n");
+    writeFileSync(join(destination, "script.js"), "new\n");
+    chmodSync(join(proposed, "script.js"), 0o644);
+    chmodSync(join(destination, "script.js"), 0o600);
+
+    const ordinary = inspectVerifiedArtifact(base, proposed, ["script.js"]);
+    const sealed = inspectVerifiedArtifact(base, destination, ["script.js"]);
+    assert.equal(sealed.digest, ordinary.digest);
+
+    chmodSync(join(destination, "script.js"), 0o700);
+    assert.notEqual(
+      inspectVerifiedArtifact(base, destination, ["script.js"]).digest,
+      ordinary.digest
+    );
   });
 });
 

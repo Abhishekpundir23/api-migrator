@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "profile": "static-envoy-sni-passthrough-v1",
+  "jobId": "previewjob_1111111111111111111111111111111111111111111111111111111111111111",
+  "plan": {
+    "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "createdAt": 2000000000000,
+    "expiresAt": 2000000600000
+  },
+  "egressPolicyDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "gatewayRuntimeDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "runnerUid": 12001,
+  "gatewayUid": 12002,
+  "listener": {
+    "addresses": ["127.0.0.1", "::1"],
+    "port": 15443
+  },
+  "origin": {
+    "host": "registry.npmjs.org",
+    "port": 443,
+    "addresses": ["104.16.1.35", "2606:4700::6810:123"],
+    "resolutionEvidenceDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "resolutionObservedAt": 1999999940000,
+    "resolutionExpiresAt": 2000001200000
+  }
+}

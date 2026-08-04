@@ -120,6 +120,14 @@ export interface VerifyOptions {
   requiredFiles?: string[];
   /** Explicit environment for repository-controlled commands. Never merged with process.env. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Canonical, trusted root containing the already-installed `node_modules`
+   * used by an outer disposable sandbox. When it differs from `repoPath`, the
+   * repository must expose that exact directory through its top-level
+   * `node_modules` symlink. This never proves installation by itself; callers
+   * must retain independent install evidence.
+   */
+  preinstalledDependenciesRoot?: string;
   installTimeoutMs?: number;
   typecheckTimeoutMs?: number;
   testTimeoutMs?: number;
@@ -415,6 +423,10 @@ function inspectTypeScriptConfig(
     const reason = "compiler configuration inspection returned an invalid configuration";
     return { ok: false, reason, check: { ...check, status: "failed", reason } };
   }
+  if (config.compilerOptions?.noCheck === true) {
+    const reason = "trusted TypeScript verification forbids compilerOptions.noCheck";
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
   if (config.references !== undefined) {
     if (!Array.isArray(config.references)) {
       const reason = "compiler configuration inspection returned invalid project references";
@@ -446,6 +458,22 @@ function inspectTypeScriptConfig(
     }
     if (!selectedFiles.has(normalized)) {
       const reason = `TypeScript configuration excludes required migration source: ${normalized}`;
+      return { ok: false, reason, check: { ...check, status: "failed", reason } };
+    }
+    if (/\.(?:c|m)?jsx?$/i.test(normalized) && config.compilerOptions?.checkJs !== true) {
+      const reason = `TypeScript configuration does not type-check required JavaScript source: ${normalized}`;
+      return { ok: false, reason, check: { ...check, status: "failed", reason } };
+    }
+    if (/\.d\.(?:c|m)?ts$/i.test(normalized) && config.compilerOptions?.skipLibCheck === true) {
+      const reason = `TypeScript configuration skips required declaration source: ${normalized}`;
+      return { ok: false, reason, check: { ...check, status: "failed", reason } };
+    }
+    const requiredSource = readRepositoryText(repoPath, normalized, {
+      label: "required migration source",
+      maxBytes: MAX_COMPILER_ENTRY_BYTES,
+    });
+    if (/^(?:\uFEFF)?[\t ]*\/\/[\t ]*@ts-nocheck\b/im.test(requiredSource)) {
+      const reason = `Required migration source disables TypeScript checking: ${normalized}`;
       return { ok: false, reason, check: { ...check, status: "failed", reason } };
     }
   }
@@ -499,9 +527,19 @@ export function installDeps(repoPath: string, opts: VerifyOptions = {}): Install
     env: childEnvironment(opts.env, opts.lifecycleScripts ?? false),
   });
   const check = commandCheck(command, result);
-  return check.status === "passed"
-    ? { ok: true, check }
-    : { ok: false, reason: check.reason ?? "dependency install failed", check };
+  if (check.status !== "passed") {
+    return { ok: false, reason: check.reason ?? "dependency install failed", check };
+  }
+
+  // The package manager may rewrite the lockfile during a successful install.
+  // Re-establish the same source and lock provenance boundary before allowing
+  // any later verification phase to consume the installed dependency tree.
+  const postInstallTrustFailure = dependencyTrustFailure(repoPath, opts);
+  if (postInstallTrustFailure) {
+    const reason = `post-install dependency trust validation failed: ${postInstallTrustFailure}`;
+    return { ok: false, reason, check: { ...check, status: "failed", reason } };
+  }
+  return { ok: true, check };
 }
 
 /** Capture the repository's existing TypeScript errors before migration. */
@@ -536,7 +574,10 @@ export async function runTsc(repoPath: string, opts: VerifyOptions = {}): Promis
   checks.install = installed.check;
   if (!installed.ok) return failedVerification(runner.kind, checks, installed.reason ?? "install failed");
 
-  const compilerFailure = installedTypeScriptTrustFailure(repoPath);
+  const compilerFailure = installedTypeScriptTrustFailure(
+    repoPath,
+    opts.preinstalledDependenciesRoot
+  );
   if (compilerFailure) {
     checks.typecheck = failedCheck(compilerFailure);
     return failedVerification(runner.kind, checks, compilerFailure);
@@ -809,6 +850,9 @@ function childEnvironment(input: NodeJS.ProcessEnv | undefined, lifecycleScripts
     // package cache.
     npm_config_cache: "/npm-cache",
     npm_config_registry: "https://registry.npmjs.org/",
+    npm_config_strict_ssl: "true",
+    npm_config_userconfig: "/etc/api-migrator/npm-userconfig",
+    npm_config_globalconfig: "/etc/api-migrator/npm-globalconfig",
     YARN_NPM_REGISTRY_SERVER: "https://registry.npmjs.org/",
     COREPACK_NPM_REGISTRY: "https://registry.npmjs.org/",
   };
@@ -851,12 +895,28 @@ function dependencyTrustFailure(repoPath: string, opts: VerifyOptions): string |
       const pkg = readPackageJson(repoPath, path);
       for (const sectionName of DEPENDENCY_SECTIONS) {
         const section = pkg?.[sectionName];
-        if (!section || typeof section !== "object") continue;
+        if (section === undefined) continue;
+        if (!section || typeof section !== "object" || Array.isArray(section)) {
+          return `${sectionName} must be an object in ${path}`;
+        }
         for (const [name, spec] of Object.entries(section as Record<string, unknown>)) {
           if (typeof spec === "string" && isDirectNetworkDependency(spec)) {
             return `direct URL/git dependency is not allowed: ${name}@${spec}`;
           }
+          if (typeof spec !== "string" || !isOfficialRegistryDependencySpec(spec)) {
+            return `non-registry dependency is not allowed: ${name}@${JSON.stringify(spec)} in ${path}`;
+          }
         }
+      }
+
+      for (const [source, overrides] of [
+        ["overrides", pkg?.overrides],
+        ["resolutions", pkg?.resolutions],
+        ["pnpm.overrides", pkg?.pnpm?.overrides],
+      ] as const) {
+        if (overrides === undefined) continue;
+        const overrideFailure = overrideTreeTrustFailure(overrides, source);
+        if (overrideFailure) return `${overrideFailure} in ${path}`;
       }
     }
 
@@ -868,7 +928,73 @@ function dependencyTrustFailure(repoPath: string, opts: VerifyOptions): string |
 
 function isDirectNetworkDependency(spec: string): boolean {
   return /^(?:https?:|git(?:\+|:)|ssh:|github:|gitlab:|bitbucket:)/i.test(spec)
-    || /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#|$)/.test(spec);
+    || /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#|$)/.test(spec);
+}
+
+function isOfficialRegistryDependencySpec(spec: string): boolean {
+  if (!spec || spec !== spec.trim() || /[\u0000-\u001f\u007f]/.test(spec)) return false;
+  if (/\.(?:tgz|tar|tar\.gz)(?:#.*)?$/i.test(spec)) return false;
+  if (/^(?:file:|link:|workspace:|portal:|patch:|catalog:)/i.test(spec)) return false;
+  if (/^(?:\.{1,2}[\\/]|[\\/]|~[\\/]|[A-Za-z]:[\\/])/.test(spec)) return false;
+  if (isDirectNetworkDependency(spec)) return false;
+
+  if (spec.startsWith("npm:")) {
+    const alias = npmAliasParts(spec.slice("npm:".length));
+    return alias !== null && isRegistryVersionOrTag(alias.versionOrTag);
+  }
+  return isRegistryVersionOrTag(spec);
+}
+
+function npmAliasParts(value: string): { name: string; versionOrTag: string } | null {
+  if (!value) return null;
+  let name = value;
+  let versionOrTag = "latest";
+  if (value.startsWith("@")) {
+    const slash = value.indexOf("/");
+    if (slash < 2) return null;
+    const delimiter = value.indexOf("@", slash + 1);
+    if (delimiter >= 0) {
+      name = value.slice(0, delimiter);
+      versionOrTag = value.slice(delimiter + 1);
+    }
+  } else {
+    const delimiter = value.indexOf("@");
+    if (delimiter >= 0) {
+      name = value.slice(0, delimiter);
+      versionOrTag = value.slice(delimiter + 1);
+    }
+  }
+  if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(name)) return null;
+  return { name, versionOrTag };
+}
+
+function isRegistryVersionOrTag(spec: string): boolean {
+  if (!spec || spec !== spec.trim() || /[\\/:@]/.test(spec)) return false;
+  if (/\.(?:tgz|tar|tar\.gz)(?:#.*)?$/i.test(spec)) return false;
+
+  // A dist-tag remains inside the selected package's official npm registry
+  // namespace. All other accepted forms are constrained to semver-range
+  // characters and must contain a version, wildcard, or comparator token.
+  if (/^[A-Za-z][A-Za-z0-9._-]*$/.test(spec)) return true;
+  return /^(?:[vV]?\d|[<>=~^*]|[xX])[ \dA-Za-z*<>=~^|.+-]*$/.test(spec)
+    && /(?:\d|[xX*])/.test(spec);
+}
+
+function overrideTreeTrustFailure(value: unknown, source: string, selector = source): string | null {
+  if (typeof value === "string") {
+    if (isDirectNetworkDependency(value) || !isOfficialRegistryDependencySpec(value)) {
+      return `non-registry ${source} value is not allowed at ${selector}: ${JSON.stringify(value)}`;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return `${source} must contain only registry dependency specifications at ${selector}`;
+  }
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const failure = overrideTreeTrustFailure(nested, source, `${selector}.${key}`);
+    if (failure) return failure;
+  }
+  return null;
 }
 
 function isUntrustedTypeScriptSpec(spec: string): boolean {
@@ -1137,13 +1263,20 @@ function readPackageJson(root: string, path: string): any {
   }
 }
 
-function installedTypeScriptTrustFailure(repoPath: string): string | null {
+function installedTypeScriptTrustFailure(
+  repoPath: string,
+  preinstalledDependenciesRoot?: string
+): string | null {
   const packagePath = "node_modules/typescript/package.json";
   const compilerPath = "node_modules/typescript/bin/tsc";
   try {
     const configurationFailure = typescriptConfigurationTrustFailure(repoPath, true);
     if (configurationFailure) return configurationFailure;
-    const pkg = readPackageJson(repoPath, packagePath);
+    const installedRoot = trustedInstalledPackageRoot(
+      repoPath,
+      preinstalledDependenciesRoot
+    );
+    const pkg = readPackageJson(installedRoot, packagePath);
     if (pkg?.name !== "typescript") {
       return `installed compiler package is not official typescript: ${JSON.stringify(pkg?.name ?? null)}`;
     }
@@ -1158,11 +1291,56 @@ function installedTypeScriptTrustFailure(repoPath: string): string | null {
     if (bin !== "./bin/tsc" && bin !== "bin/tsc") {
       return "installed typescript package does not expose the official compiler entry";
     }
-    validateRepositoryFile(repoPath, compilerPath, COMPILER_ENTRY_POLICY);
+    validateRepositoryFile(installedRoot, compilerPath, COMPILER_ENTRY_POLICY);
     return null;
   } catch (error) {
     return `installed typescript compiler is untrusted: ${(error as Error).message}`;
   }
+}
+
+function trustedInstalledPackageRoot(
+  repoPath: string,
+  preinstalledDependenciesRoot?: string
+): string {
+  if (preinstalledDependenciesRoot === undefined) return repoPath;
+  if (
+    !isAbsolute(preinstalledDependenciesRoot)
+    || preinstalledDependenciesRoot.includes("\0")
+    || resolve(preinstalledDependenciesRoot) !== preinstalledDependenciesRoot
+  ) {
+    throw new Error("preinstalled dependency root must be an absolute canonical path");
+  }
+
+  const rootStat = lstatSync(preinstalledDependenciesRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("preinstalled dependency root must be a real directory");
+  }
+  const realRoot = realpathSync(preinstalledDependenciesRoot);
+  if (realRoot !== preinstalledDependenciesRoot) {
+    throw new Error("preinstalled dependency root must be symlink-free and canonical");
+  }
+
+  const installedModules = join(realRoot, "node_modules");
+  const modulesStat = lstatSync(installedModules);
+  if (!modulesStat.isDirectory() || modulesStat.isSymbolicLink()) {
+    throw new Error("preinstalled dependency node_modules must be a real directory");
+  }
+  const realModules = realpathSync(installedModules);
+  if (realModules !== installedModules) {
+    throw new Error("preinstalled dependency node_modules must be canonical");
+  }
+
+  const repositoryRoot = realpathSync(resolve(repoPath));
+  if (repositoryRoot !== realRoot) {
+    const repositoryModules = join(repositoryRoot, "node_modules");
+    const linkStat = lstatSync(repositoryModules);
+    if (!linkStat.isSymbolicLink() || realpathSync(repositoryModules) !== realModules) {
+      throw new Error(
+        "repository node_modules must link to the exact preinstalled dependency tree"
+      );
+    }
+  }
+  return realRoot;
 }
 
 /** Stable digest used to reject writes from compiler/test/lint processes. */

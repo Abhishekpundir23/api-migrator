@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.invalid/schemas/runner-host-profile-v1.json",
+  "title": "API Migrator runner host profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profile",
+    "hostId",
+    "dedicatedHost",
+    "platform",
+    "systemd",
+    "runner",
+    "executables",
+    "artifacts",
+    "deploymentEvidence"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "profile": { "const": "api-migrator-runner-host-v1" },
+    "hostId": { "$ref": "#/$defs/id" },
+    "dedicatedHost": { "const": true },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["osId", "osVersion", "architecture", "kernelRelease", "cgroupVersion"],
+      "properties": {
+        "osId": { "type": "string", "pattern": "^[a-z0-9._-]{2,32}$" },
+        "osVersion": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,32}$" },
+        "architecture": { "enum": ["x86_64", "aarch64"] },
+        "kernelRelease": { "type": "string", "pattern": "^[A-Za-z0-9._+-]{3,80}$" },
+        "cgroupVersion": { "const": 2 }
+      }
+    },
+    "systemd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "serializedRunnerUnit", "observerUnit", "killMode", "oomPolicy", "delegate"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 252, "maximum": 999 },
+        "serializedRunnerUnit": { "const": "api-migrator-runner.service" },
+        "observerUnit": { "const": "api-migrator-runner-observer.service" },
+        "killMode": { "const": "control-group" },
+        "oomPolicy": { "const": "kill" },
+        "delegate": { "const": true }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user", "uid", "group", "gid", "storageRoot", "storageDriver", "subuid", "subgid"],
+      "properties": {
+        "user": { "$ref": "#/$defs/name" },
+        "uid": { "$ref": "#/$defs/positiveInteger" },
+        "group": { "$ref": "#/$defs/name" },
+        "gid": { "$ref": "#/$defs/positiveInteger" },
+        "storageRoot": { "$ref": "#/$defs/path" },
+        "storageDriver": { "enum": ["vfs", "overlay"] },
+        "subuid": { "$ref": "#/$defs/subid" },
+        "subgid": { "$ref": "#/$defs/subid" }
+      }
+    },
+    "executables": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "podman", "nft", "jq", "python3", "systemctl", "ociRuntime", "conmon"],
+      "properties": {
+        "node": { "$ref": "#/$defs/executable" },
+        "podman": { "$ref": "#/$defs/executable" },
+        "nft": { "$ref": "#/$defs/executable" },
+        "jq": { "$ref": "#/$defs/executable" },
+        "python3": { "$ref": "#/$defs/executable" },
+        "systemctl": { "$ref": "#/$defs/executable" },
+        "ociRuntime": { "$ref": "#/$defs/executable" },
+        "conmon": { "$ref": "#/$defs/executable" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wrapperPath", "wrapperDigest", "cleanupPath", "cleanupDigest", "observerPath", "observerDigest", "imageReference", "imageDigest"],
+      "properties": {
+        "wrapperPath": { "$ref": "#/$defs/path" },
+        "wrapperDigest": { "$ref": "#/$defs/digest" },
+        "cleanupPath": { "$ref": "#/$defs/path" },
+        "cleanupDigest": { "$ref": "#/$defs/digest" },
+        "observerPath": { "$ref": "#/$defs/path" },
+        "observerDigest": { "$ref": "#/$defs/digest" },
+        "imageReference": { "type": "string", "pattern": "^[A-Za-z0-9._/:@+-]+@sha256:[a-f0-9]{64}$", "maxLength": 500 },
+        "imageDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "deploymentEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observedAt", "reference", "digest"],
+      "properties": {
+        "observedAt": { "$ref": "#/$defs/timestamp" },
+        "reference": { "$ref": "#/$defs/reference" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+-]{5,127}$" },
+    "name": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{1,30}$" },
+    "path": { "type": "string", "pattern": "^/[A-Za-z0-9._/-]+$", "maxLength": 1024 },
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+    "timestamp": { "type": "integer", "minimum": 1, "maximum": 8640000000000000 },
+    "reference": { "type": "string", "minLength": 6, "maxLength": 500, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+    "subid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "count"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 65536, "maximum": 2147418111 },
+        "count": { "type": "integer", "minimum": 65536, "maximum": 1048576 }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

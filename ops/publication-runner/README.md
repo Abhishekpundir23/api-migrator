@@ -1,42 +1,54 @@
 # Credential-free disposable preview runner
 
-This directory contains an **operator primitive**, not a deployment, complete
-trusted runner service, or signed-attestation proof. It executes the
-pre-publication migration and verification phase only. It cannot mint a GitHub
-token, publish a branch, create a pull request, or produce an owner
-authorization envelope. External-source publication remains disabled until a
-real control plane deploys this boundary, independently observes and signs its
-evidence, and the remaining pilot gates pass.
+This directory contains a tested runner image protocol and non-authorizing host
+contracts, not a deployment, complete trusted runner service, or
+signed-attestation proof. The checked-in host wrapper deliberately exits before
+reading job inputs or mutating host state because the forced static-SNI gateway
+lifecycle is not integrated. It cannot mint a GitHub token, publish a branch,
+create a pull request, produce an owner authorization envelope, or make an
+observation eligible for signing. External-source publication remains disabled.
 
-The separation is intentional:
+The intended future separation is:
 
 1. A trusted control plane creates and validates a canonical
    `PublicationRunnerPlan`.
-2. `run-credential-free-preview.sh` runs a digest-pinned image as a dedicated
-   non-root OS identity. A trusted, lifecycle-disabled dependency-fetch phase
-   is the only online phase. The numeric-IP transport filter is then emptied;
-   migration and all repository-controlled checks run with `--network=none`
-   and read-only source.
+2. After a later Linux gateway-integration change removes the explicit block,
+   `run-credential-free-preview.sh` runs a digest-pinned image as a dedicated
+   non-root OS identity. Trusted source preparation first runs with
+   `--network=none`; a trusted, lifecycle-disabled dependency-fetch phase is the
+   only online phase. The forced gateway is then stopped and its transport
+   policy removed; migration and all repository-controlled checks run with
+   `--network=none` and read-only source.
 3. The control plane independently observes the container set, nftables
    policy, output digests, and teardown. It signs the canonical attestation
    with a pinned Ed25519 key outside the job.
-4. Only the verified signed payload digest may become
-   `API_MIGRATOR_RUNNER_ATTESTATION_DIGEST` in the later owner challenge.
+4. The publication process calls `verifyPublicationRunnerAttestation` itself
+   and carries its opaque in-process capability into owner-binding construction.
+   Only the verifier's signed `payloadDigest` is bound into the later owner
+   challenge. A digest copied through an environment variable is rejected.
 
 Raw wrapper events are not an attestation. A container cannot authorize itself,
 and a matching sidecar digest proves consistency rather than execution.
 
-## Required host profile
+The console intentionally has no provider for the opaque verifier capability,
+so this contract remains non-authorizing. A future control-plane integration
+must bind the exact `sourceArchiveDigest` and plan identity into the reviewed
+preview, re-read the protected runner-key registry at the challenge and
+write-token boundaries, and reverify rather than reuse a cached capability.
+Those controls are deferred; none may be inferred from this host kit.
 
-The wrapper refuses to run unless all of these are true:
+## Future required host profile
+
+Even after the current unconditional activation refusal is eventually replaced,
+the wrapper must still refuse unless all of these are true:
 
 - Linux with systemd and a transient disposable unit (`INVOCATION_ID` present);
 - the wrapper is installed at one absolute canonical root-owned path and is
   executed directly through its `/bin/bash -p` shebang; invoking it through
   `bash`, `env`, a shell profile, or another interpreter is prohibited;
 - the systemd launcher supplies an allowlisted environment before `execve`, a
-  fixed system path, `WorkingDirectory=/`, `RuntimeMaxSec` no later than the
-  plan deadline, and
+  fixed system path, `WorkingDirectory=/`, a `TimeoutStartSec` bounded to the
+  remaining plan window, and
   explicitly removes `BASH_ENV`, `ENV`, loader/library variables, language
   preload paths, proxy/credential variables, and container-engine overrides;
 - the wrapper is the root control-plane process, while Podman runs as a
@@ -57,7 +69,8 @@ The wrapper refuses to run unless all of these are true:
 
 `INVOCATION_ID` alone is not proof of a hardened transient unit. The deployer
 must attest the unit definition, cgroup membership, subordinate-ID ranges,
-`RuntimeMaxSec`, `KillMode=control-group`, and `ExecStopPost` cleanup. In
+the activation timeout and absolute plan deadline, `KillMode=control-group`,
+and `ExecStopPost` cleanup. In
 particular, hostile `LD_PRELOAD` can execute before any shell statement, so the
 launcher—not this script—must remove startup and loader variables before the
 kernel starts Bash. The wrapper independently changes to `/` before any Python
@@ -74,10 +87,12 @@ therefore fail at the host policy.
 
 That L3/L4 filter does **not** authenticate a hostname, TLS certificate, SNI,
 or redirect target, especially when a registry uses shared CDN addresses. A
-separately provisioned and independently attested L7 egress gateway must enforce
-the exact `registry.npmjs.org` TLS origin and reject redirects. This wrapper
-does not implement that gateway, so it must not be treated as satisfying the
-external-source egress gate by itself.
+separately provisioned and independently attested gateway must force the exact
+`registry.npmjs.org` SNI/transport route. That route can prevent a cross-origin
+redirect from opening a different-SNI upstream connection, but it cannot inspect
+encrypted HTTP paths or same-origin redirects. This wrapper does not implement
+the gateway, so it must not be treated as satisfying the external-source egress
+gate by itself.
 
 Offline checks use both Podman's `--network=none` and an emptied nftables set.
 The source/output mount is read-only for that phase; only runner tmpfs paths are
@@ -88,11 +103,13 @@ entrypoint, command, or volumes, `--image-volume=ignore`,
 `--read-only-tmpfs=false`, and `--log-driver=none`. Attached output is the only
 container log stream and is bounded inside the job tmpfs.
 
-## Invocation
+## Blocked reference invocation
 
-Run this only by direct absolute-path execution from the disposable systemd
-control-plane unit. The following illustrates required values; it is not a
-complete or attested unit definition:
+Do not install or invoke the checked-in host unit. The wrapper currently refuses
+every invocation with
+`live host activation is disabled until the forced L7 gateway lifecycle is
+integrated and drilled`. The following preserves the future argument contract
+only; it is not a working, complete, or attested unit definition:
 
 ```text
 API_MIGRATOR_RUNNER_IMAGE=registry.example/runner@sha256:<64-hex> \
@@ -127,18 +144,27 @@ control-plane inspection.
 The trusted runner image must implement these fixed entrypoints:
 
 ```text
-/usr/local/bin/api-migrator-runner install --plan ... --source ... --dependencies ...
-/usr/local/bin/api-migrator-runner migrate --plan ... --source ... --dependencies ... --output ...
-/usr/local/bin/api-migrator-runner verify --plan ... --input ... --dependencies ... --result ...
+/usr/local/bin/api-migrator-runner prepare --plan ... --source ... --dependencies ... --installation ...
+/usr/local/bin/api-migrator-runner install --plan ... --installation ... --prepared-state-digest ...
+/usr/local/bin/api-migrator-runner migrate --plan ... --source ... --dependencies ... --installation ... --prepared-state-digest ... --install-state-digest ... --output ...
+/usr/local/bin/api-migrator-runner verify --plan ... --input ... --dependencies ... --dependency-state-digest ... --result ...
 ```
 
-`install` must be trusted image code that never invokes lifecycle scripts or
-repository commands. Only it receives transport egress. `migrate` and `verify`
-run offline. `verify` writes `runner-evidence.json` containing the observed
+`prepare` and `install` must be trusted image code that never invokes lifecycle
+scripts or repository commands. `prepare` runs before install with no network
+and emits a separate minimal install projection containing only `package.json`
+and the active lockfile. Only that projection—not extracted customer source—is
+mounted into `install`, and only `install` receives transport egress. The
+offline `migrate` phase verifies the host-carried preparation/install digests
+before importing the resulting lockfile and `node_modules`; `verify` receives
+the resulting dependency-state digest and runs offline. `verify` writes
+`runner-evidence.json` containing the observed
 preflight, artifact, and candidate-tree identities. Those outputs do not exist
-in the pre-run plan: the wrapper syntax-checks and preserves them, the control
-plane independently recomputes them, and the owner reviews them before the
-signed attestation is accepted against the explicit reviewed output.
+in the pre-run plan: the wrapper requires exactly one trusted status line and
+binds its evidence digest/preflight to the final canonical file, the control
+plane independently recomputes the output tree and Git tree identities, and
+the owner reviews them before the signed attestation is accepted against the
+explicit reviewed output.
 
 ## Teardown and failure semantics
 
@@ -148,8 +174,9 @@ wrapper reports only that Podman cleanup was requested and the dedicated UID was
 observed idle; it does **not** claim that the unit cgroup, subordinate-UID
 processes, or network namespaces were destroyed. SIGKILL, a blocked filesystem
 operation, kernel failure, or host loss cannot be bounded or proven by a shell
-trap/watchdog. The systemd unit must enforce `RuntimeMaxSec` and
-`KillMode=control-group`, destroy the complete job boundary in
+trap/watchdog. The systemd unit and wrapper together must enforce the absolute
+plan deadline and activation timeout, use `KillMode=control-group`, and destroy
+the complete job boundary in
 `ExecStopPost`/provider cleanup, and let an independent observer record that
 outcome. It must not sign an attestation unless every teardown time and evidence
 digest is independently present and ordered; raw wrapper events and retained

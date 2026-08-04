@@ -7,6 +7,10 @@ import {
 } from "./owner-authorization.js";
 import type { GitHubAppAuthIdentity } from "./auth.js";
 import type { OpenPullRequestIdentity } from "./publication.js";
+import {
+  assertVerifiedPublicationRunnerAttestation,
+  type VerifiedPublicationRunnerAttestation,
+} from "./publication-runner.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const GIT_SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -21,7 +25,6 @@ export interface OwnerPublicationPolicy {
   engineTag: string;
   engineCommit: string;
   commandScopeDigest: string;
-  runnerAttestationDigest: string;
   rulesetDigest: string;
   requiredCiDigest: string;
 }
@@ -33,14 +36,19 @@ export interface RemotePublicationState {
 }
 
 /**
- * Load every non-repository owner-authorization binding from trusted runtime
- * configuration. Missing runner/ruleset/CI evidence deliberately keeps the
- * publication path disabled while preview remains available.
+ * Load non-runner owner-authorization bindings from trusted runtime
+ * configuration. Runner identity is accepted only as an opaque capability
+ * returned by the signed-attestation verifier; a configured digest is refused.
  */
 export function readOwnerPublicationPolicy(
   env: NodeJS.ProcessEnv = process.env,
   now = Date.now()
 ): OwnerPublicationPolicy {
+  if (Object.prototype.hasOwnProperty.call(env, "API_MIGRATOR_RUNNER_ATTESTATION_DIGEST")) {
+    throw new Error(
+      "Owner publication rejects raw API_MIGRATOR_RUNNER_ATTESTATION_DIGEST configuration"
+    );
+  }
   const authorizationExpiresAt = timestamp(
     required(env, "API_MIGRATOR_PRE_RUN_AUTHORIZATION_EXPIRES_AT"),
     "API_MIGRATOR_PRE_RUN_AUTHORIZATION_EXPIRES_AT"
@@ -65,10 +73,6 @@ export function readOwnerPublicationPolicy(
     commandScopeDigest: digest(
       required(env, "API_MIGRATOR_COMMAND_SCOPE_DIGEST"),
       "API_MIGRATOR_COMMAND_SCOPE_DIGEST"
-    ),
-    runnerAttestationDigest: digest(
-      required(env, "API_MIGRATOR_RUNNER_ATTESTATION_DIGEST"),
-      "API_MIGRATOR_RUNNER_ATTESTATION_DIGEST"
     ),
     rulesetDigest: digest(
       required(env, "API_MIGRATOR_RULESET_DIGEST"),
@@ -110,6 +114,10 @@ export function ownerAuthorizedRemoteAction(
 
 export function buildExpectedOwnerAuthorizationBindings(input: {
   policy: OwnerPublicationPolicy;
+  /** Must be the exact in-process capability returned by the runner verifier. */
+  runnerAttestation: VerifiedPublicationRunnerAttestation | undefined;
+  /** Testable trusted clock. Production callers should omit it. */
+  now?: number;
   previewCompletedAt: number;
   repositorySlug: string;
   github: GitHubAppAuthIdentity;
@@ -124,6 +132,7 @@ export function buildExpectedOwnerAuthorizationBindings(input: {
   remote: RemotePublicationState;
 }): ExpectedOwnerAuthorizationBindings {
   const action = ownerAuthorizedRemoteAction(input.remote);
+  const runnerAttestationDigest = verifiedRunnerAttestationDigest(input);
   const findings = input.report.entries
     .filter((entry) => entry.kind === "review")
     .map((entry) => ({
@@ -172,13 +181,48 @@ export function buildExpectedOwnerAuthorizationBindings(input: {
       findingsDigest: canonicalSha256(findings),
       resolutionsDigest: canonicalSha256([]),
       commandScopeDigest: input.policy.commandScopeDigest,
-      runnerAttestationDigest: input.policy.runnerAttestationDigest,
+      runnerAttestationDigest,
       rulesetDigest: input.policy.rulesetDigest,
       requiredCiDigest: input.policy.requiredCiDigest,
     },
     allowedActions: action.allowedActions,
     pullRequestNumber: action.pullRequestNumber,
   };
+}
+
+function verifiedRunnerAttestationDigest(input: {
+  policy: OwnerPublicationPolicy;
+  runnerAttestation: VerifiedPublicationRunnerAttestation | undefined;
+  now?: number;
+  repositorySlug: string;
+  github: GitHubAppAuthIdentity;
+  baseBranch: string;
+  baseSha: string;
+  manifestJson: string;
+  preflightId: string;
+  artifactDigest: string;
+  candidateTreeSha: string;
+}): string {
+  const verified = assertVerifiedPublicationRunnerAttestation(input.runnerAttestation, input.now);
+  const attested = verified.attestation;
+  const repositorySlug = input.repositorySlug.toLowerCase();
+  const artifactDigest = normalizeDigest(input.artifactDigest, "artifact digest");
+  if (
+    attested.subject.pilotId !== input.policy.pilotId ||
+    attested.subject.repository.slug !== repositorySlug ||
+    attested.subject.repository.id !== input.github.repositoryId ||
+    attested.subject.repository.ownerId !== input.github.repositoryOwnerId ||
+    attested.subject.base.branch !== input.baseBranch ||
+    attested.subject.base.sha !== input.baseSha ||
+    attested.inputs.manifestDigest !== sha256Utf8(input.manifestJson) ||
+    attested.inputs.commandScopeDigest !== input.policy.commandScopeDigest ||
+    attested.output.preflightId !== input.preflightId ||
+    attested.output.artifactDigest !== artifactDigest ||
+    attested.output.candidateTreeSha !== input.candidateTreeSha
+  ) {
+    throw new Error("Verified runner attestation does not match current owner-publication bindings");
+  }
+  return verified.payloadDigest;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {

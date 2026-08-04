@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "kind": "api_migrator_l7_gateway_receipt",
+  "profile": "static-envoy-sni-passthrough-v1",
+  "jobId": "previewjob_1111111111111111111111111111111111111111111111111111111111111111",
+  "planDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "contractDigest": "sha256:ae6f0aaa60a8957bc57cd88452fdb46e98baa9d23b5e80cd5d2a096f34f647d6",
+  "envoyConfigDigest": "sha256:4cd47002616f147dbfe764b061f020ff1017ac8e92783656dbd689d4506c9bc1",
+  "nftablesPolicyDigest": "sha256:3767322c5dfd90c763e3afedc2cd5b9e2c2b6dc8c502a73776739e59328079ab",
+  "gatewayRuntimeDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "nftablesTable": "api_migrator_gw_1111111111111111",
+  "runnerUid": 12001,
+  "gatewayUid": 12002,
+  "listener": {
+    "addresses": ["127.0.0.1", "::1"],
+    "port": 15443
+  },
+  "origin": {
+    "host": "registry.npmjs.org",
+    "port": 443,
+    "addresses": ["104.16.1.35", "2606:4700::6810:123"],
+    "resolutionEvidenceDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "resolutionObservedAt": 1999999940000,
+    "resolutionExpiresAt": 2000001200000
+  },
+  "execution": {
+    "systemdInvocationId": "66666666666666666666666666666666",
+    "gatewayInstanceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "startedAt": 2000000001000,
+    "gatewayReadyAt": 2000000002000,
+    "installStartedAt": 2000000003000,
+    "installFinishedAt": 2000000100000,
+    "offlineEnforcedAt": 2000000101000,
+    "gatewayStoppedAt": 2000000102000
+  },
+  "evidence": {
+    "deploymentDrill": {
+      "status": "passed",
+      "reference": "evidence/gateway-drill-v1",
+      "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    "envoyConfigValidation": {
+      "status": "passed",
+      "reference": "evidence/run-001#envoy-validate",
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "gatewayAccessLog": {
+      "status": "passed",
+      "reference": "evidence/run-001#gateway-log",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "nftablesInstalled": {
+      "status": "passed",
+      "reference": "evidence/run-001#nft-installed",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "offlineNetworkClosure": {
+      "status": "passed",
+      "reference": "evidence/run-001#offline",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "teardown": {
+      "status": "passed",
+      "reference": "evidence/run-001#teardown",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "tlsClientPolicy": {
+      "status": "passed",
+      "reference": "evidence/run-001#tls-client",
+      "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "transportCounters": {
+      "status": "passed",
+      "reference": "evidence/run-001#transport-counters",
+      "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  },
+  "teardown": {
+    "runnerUidIdleAt": 2000000103000,
+    "gatewayUidIdleAt": 2000000104000,
+    "nftablesPolicyRemovedAt": 2000000105000,
+    "complete": true
+  },
+  "observedAt": 2000000106000,
+  "status": "passed"
+}

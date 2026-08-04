@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "jobId": "previewjob_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "unitRenderedAt": 2000000000000,
+  "runtimeMaxMs": 600000,
+  "planPath": "/var/lib/api-migrator-runner/jobs/job-001/plan.json",
+  "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "sourceArchivePath": "/var/lib/api-migrator-runner/jobs/job-001/source.tar",
+  "outputPath": "/var/lib/api-migrator-runner/jobs/job-001/output",
+  "rawEventsPath": "/var/lib/api-migrator-runner/jobs/job-001/events.ndjson",
+  "runnerResultPath": "/var/lib/api-migrator-runner/jobs/job-001/events.ndjson.runner.json",
+  "hostProfilePath": "/etc/api-migrator-runner/host-profile.json",
+  "l7IntegrationStatusPath": "/var/lib/api-migrator-runner/jobs/job-001/l7-integration-status.json",
+  "observationPath": "/var/lib/api-migrator-runner/jobs/job-001/observation.json",
+  "signingRequestPath": "/var/lib/api-migrator-runner/jobs/job-001/signing-request.json"
+}
