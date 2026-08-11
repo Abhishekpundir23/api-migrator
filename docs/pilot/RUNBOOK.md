@@ -267,9 +267,12 @@ validates runtime authorization nor grants permission for a later action.
    the canonical digest of an empty array. Failed or skipped checks are equally
    non-overrideable.
 4. Show the sanitized preview and patch to the owner representative.
-5. In the local console, use **Generate owner challenge** to rerun and bind the
-   exact preview. Preserve the canonical challenge outside Git with owner-only
-   permissions and compare its displayed digest with the downloaded bytes.
+5. Stop after preview in the current build. **Generate owner challenge** is
+   disabled until the verified runner-capability provider is deployed, so no
+   challenge can currently be downloaded. After that separate gate is reviewed
+   and enabled, use it to rerun and bind the exact preview, preserve the
+   canonical challenge outside Git with owner-only permissions, and compare its
+   displayed digest with the downloaded bytes.
 6. For the candidate sandbox drill, use `npm run owner:sign -- ...` with
    `--approve-challenge-digest` equal to the independently reviewed digest to
    create the separately signed envelope described in Gate 4B. Do not
@@ -289,7 +292,11 @@ until every external release gate passes. Its write-capable executor is an
 explicitly internal console-integration subpath, not an alternate ceremony; do
 not expose or invoke it directly.
 
-For the supervised sandbox drill only:
+The following supervised sandbox drill is a future procedure and is not
+currently executable: the console fails closed before challenge generation
+because the verified runner-capability provider is absent.
+
+After that gate is implemented and separately reviewed:
 
 1. Run console preview for exactly one repository and review the candidate
    tree, report, and zero-blocker result.

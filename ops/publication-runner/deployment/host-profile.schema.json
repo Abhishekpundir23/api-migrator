@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://api-migrator.invalid/schemas/runner-host-profile-v1.json",
-  "title": "API Migrator runner host profile v1",
+  "$id": "https://api-migrator.invalid/schemas/runner-host-profile-v2.json",
+  "title": "API Migrator runner host profile v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,13 +12,14 @@
     "platform",
     "systemd",
     "runner",
+    "gateway",
     "executables",
     "artifacts",
     "deploymentEvidence"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "profile": { "const": "api-migrator-runner-host-v1" },
+    "schemaVersion": { "const": 2 },
+    "profile": { "const": "api-migrator-runner-host-v2" },
     "hostId": { "$ref": "#/$defs/id" },
     "dedicatedHost": { "const": true },
     "platform": {
@@ -61,10 +62,22 @@
         "subgid": { "$ref": "#/$defs/subid" }
       }
     },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user", "uid", "group", "gid", "listenerPort"],
+      "properties": {
+        "user": { "$ref": "#/$defs/name" },
+        "uid": { "$ref": "#/$defs/positiveInteger" },
+        "group": { "$ref": "#/$defs/name" },
+        "gid": { "$ref": "#/$defs/positiveInteger" },
+        "listenerPort": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+      }
+    },
     "executables": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["node", "podman", "nft", "jq", "python3", "systemctl", "ociRuntime", "conmon"],
+      "required": ["node", "podman", "nft", "jq", "python3", "systemctl", "ociRuntime", "conmon", "envoy", "ss"],
       "properties": {
         "node": { "$ref": "#/$defs/executable" },
         "podman": { "$ref": "#/$defs/executable" },
@@ -73,13 +86,30 @@
         "python3": { "$ref": "#/$defs/executable" },
         "systemctl": { "$ref": "#/$defs/executable" },
         "ociRuntime": { "$ref": "#/$defs/executable" },
-        "conmon": { "$ref": "#/$defs/executable" }
+        "conmon": { "$ref": "#/$defs/executable" },
+        "envoy": { "$ref": "#/$defs/executable" },
+        "ss": { "$ref": "#/$defs/executable" }
       }
     },
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["wrapperPath", "wrapperDigest", "cleanupPath", "cleanupDigest", "observerPath", "observerDigest", "imageReference", "imageDigest"],
+      "required": [
+        "wrapperPath",
+        "wrapperDigest",
+        "cleanupPath",
+        "cleanupDigest",
+        "observerPath",
+        "observerDigest",
+        "gatewayProbePath",
+        "gatewayProbeDigest",
+        "lifecycleOrchestratorPath",
+        "lifecycleOrchestratorDigest",
+        "lifecycleObserverPath",
+        "lifecycleObserverDigest",
+        "imageReference",
+        "imageDigest"
+      ],
       "properties": {
         "wrapperPath": { "$ref": "#/$defs/path" },
         "wrapperDigest": { "$ref": "#/$defs/digest" },
@@ -87,6 +117,12 @@
         "cleanupDigest": { "$ref": "#/$defs/digest" },
         "observerPath": { "$ref": "#/$defs/path" },
         "observerDigest": { "$ref": "#/$defs/digest" },
+        "gatewayProbePath": { "$ref": "#/$defs/path" },
+        "gatewayProbeDigest": { "$ref": "#/$defs/digest" },
+        "lifecycleOrchestratorPath": { "$ref": "#/$defs/path" },
+        "lifecycleOrchestratorDigest": { "$ref": "#/$defs/digest" },
+        "lifecycleObserverPath": { "$ref": "#/$defs/path" },
+        "lifecycleObserverDigest": { "$ref": "#/$defs/digest" },
         "imageReference": { "type": "string", "pattern": "^[A-Za-z0-9._/:@+-]+@sha256:[a-f0-9]{64}$", "maxLength": 500 },
         "imageDigest": { "$ref": "#/$defs/digest" }
       }

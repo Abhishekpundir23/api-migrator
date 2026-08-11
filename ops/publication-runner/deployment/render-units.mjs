@@ -17,6 +17,10 @@ const DEPLOYMENT_DIR = dirname(fileURLToPath(import.meta.url));
 
 export function renderUnits(input) {
   const job = validateJobDescriptor(input.job);
+  const hostProfilePath = supportedAbsolutePath(input.hostProfilePath, "host profile path");
+  if (hostProfilePath !== job.hostProfilePath) {
+    throw new Error("rendered host profile path does not match the job descriptor");
+  }
   const profile = validateHostProfile(input.profile);
   const plan = parseCanonicalPlan(input.planText, job.planDigest, job.jobId);
   const nowMs = input.nowMs ?? Date.now();
@@ -130,10 +134,15 @@ async function main() {
   const { jobPath, profilePath, now } = cliArguments(process.argv.slice(2));
   const absoluteJobPath = resolve(jobPath);
   const job = validateJobDescriptor(parseJson(readFileSync(absoluteJobPath, "utf8"), "job descriptor", 32 * 1024));
-  const profile = validateHostProfile(parseJson(readFileSync(resolve(profilePath), "utf8"), "host profile", 128 * 1024));
+  const absoluteProfilePath = resolve(profilePath);
+  if (absoluteProfilePath !== job.hostProfilePath) {
+    throw new Error("--host-profile does not match the exact path bound by the job descriptor");
+  }
+  const profile = validateHostProfile(parseJson(readFileSync(absoluteProfilePath, "utf8"), "host profile", 128 * 1024));
   const rendered = renderUnits({
     job,
     profile,
+    hostProfilePath: absoluteProfilePath,
     planText: readFileSync(job.planPath, "utf8"),
     nowMs: now,
     jobDescriptorPath: absoluteJobPath,
