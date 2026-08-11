@@ -258,10 +258,10 @@ export function validateJobDescriptor(value) {
   const job = record(value, "deployment job descriptor");
   exactKeys(job, [
     "schemaVersion", "jobId", "unitRenderedAt", "runtimeMaxMs", "planPath", "planDigest", "sourceArchivePath", "outputPath",
-    "rawEventsPath", "runnerResultPath", "hostProfilePath", "l7IntegrationStatusPath", "observationPath",
-    "signingRequestPath",
+    "rawEventsPath", "runnerResultPath", "hostProfilePath", "l7IntegrationStatusPath", "gatewayContractPath",
+    "gatewayReceiptPath", "lifecycleEventsPath", "lifecycleReportPath", "observationPath", "signingRequestPath",
   ], "deployment job descriptor");
-  if (job.schemaVersion !== 1 || !JOB_ID.test(job.jobId)) {
+  if (job.schemaVersion !== 2 || !JOB_ID.test(job.jobId)) {
     throw new Error("deployment job descriptor identity is invalid");
   }
   timestamp(job.unitRenderedAt, "deployment unit render time");
@@ -270,14 +270,34 @@ export function validateJobDescriptor(value) {
   }
   for (const name of [
     "planPath", "sourceArchivePath", "outputPath", "rawEventsPath", "runnerResultPath",
-    "hostProfilePath", "l7IntegrationStatusPath", "observationPath", "signingRequestPath",
+    "hostProfilePath", "l7IntegrationStatusPath", "gatewayContractPath", "gatewayReceiptPath",
+    "lifecycleEventsPath", "lifecycleReportPath", "observationPath", "signingRequestPath",
   ]) {
     absolutePath(job[name], name);
   }
   digest(job.planDigest, "deployment plan digest");
-  const distinctOutputs = [job.outputPath, job.rawEventsPath, job.runnerResultPath, job.observationPath, job.signingRequestPath];
-  if (new Set(distinctOutputs).size !== distinctOutputs.length) {
-    throw new Error("deployment job output and evidence paths must be distinct");
+  const isolatedPaths = [
+    job.planPath,
+    job.sourceArchivePath,
+    job.outputPath,
+    job.rawEventsPath,
+    job.runnerResultPath,
+    job.l7IntegrationStatusPath,
+    job.gatewayContractPath,
+    job.gatewayReceiptPath,
+    job.lifecycleEventsPath,
+    job.lifecycleReportPath,
+    job.observationPath,
+    job.signingRequestPath,
+  ];
+  for (let left = 0; left < isolatedPaths.length; left += 1) {
+    for (let right = left + 1; right < isolatedPaths.length; right += 1) {
+      const first = isolatedPaths[left];
+      const second = isolatedPaths[right];
+      if (first === second || first.startsWith(`${second}/`) || second.startsWith(`${first}/`)) {
+        throw new Error("deployment job input, output, and evidence paths must not overlap");
+      }
+    }
   }
   if (job.runnerResultPath !== `${job.rawEventsPath}.runner.json`) {
     throw new Error("runner result path must use the wrapper's exact sidecar identity");
@@ -286,8 +306,12 @@ export function validateJobDescriptor(value) {
   if (jobRoot === "/" || jobRoot.split("/").filter(Boolean).length < 3) {
     throw new Error("deployment job root is too broad");
   }
+  if (job.hostProfilePath === jobRoot || job.hostProfilePath.startsWith(`${jobRoot}/`)) {
+    throw new Error("deployment host profile path must remain external to the exact job root");
+  }
   for (const name of [
     "sourceArchivePath", "outputPath", "rawEventsPath", "runnerResultPath", "l7IntegrationStatusPath",
+    "gatewayContractPath", "gatewayReceiptPath", "lifecycleEventsPath", "lifecycleReportPath",
     "observationPath", "signingRequestPath",
   ]) {
     if (job[name] !== jobRoot && !job[name].startsWith(`${jobRoot}/`)) {
@@ -301,9 +325,9 @@ export function validateHostProfile(value) {
   const root = record(value, "runner host profile");
   exactKeys(root, [
     "schemaVersion", "profile", "hostId", "dedicatedHost", "platform", "systemd", "runner",
-    "executables", "artifacts", "deploymentEvidence",
+    "gateway", "executables", "artifacts", "deploymentEvidence",
   ], "runner host profile");
-  if (root.schemaVersion !== 1 || root.profile !== "api-migrator-runner-host-v1" || root.dedicatedHost !== true) {
+  if (root.schemaVersion !== 2 || root.profile !== "api-migrator-runner-host-v2" || root.dedicatedHost !== true) {
     throw new Error("runner host profile is unsupported or not dedicated");
   }
   identifier(root.hostId, "runner host id");
@@ -336,18 +360,46 @@ export function validateHostProfile(value) {
   }
   validateSubid(runner.subuid, "runner subuid");
   validateSubid(runner.subgid, "runner subgid");
+  if (identityFallsInRange(runner.uid, runner.subuid) || identityFallsInRange(runner.gid, runner.subgid)) {
+    throw new Error("runner identity must remain outside its subordinate ID ranges");
+  }
+
+  const gateway = record(root.gateway, "gateway identity profile");
+  exactKeys(gateway, ["user", "uid", "group", "gid", "listenerPort"], "gateway identity profile");
+  accountName(gateway.user, "gateway user");
+  accountName(gateway.group, "gateway group");
+  positiveInteger(gateway.uid, "gateway uid");
+  positiveInteger(gateway.gid, "gateway gid");
+  if (gateway.uid === runner.uid || gateway.gid === runner.gid) {
+    throw new Error("runner and gateway UID and GID identities must be distinct");
+  }
+  if (identityFallsInRange(gateway.uid, runner.subuid) || identityFallsInRange(gateway.gid, runner.subgid)) {
+    throw new Error("gateway identity must remain outside the runner subordinate ID ranges");
+  }
+  if (!Number.isSafeInteger(gateway.listenerPort) || gateway.listenerPort < 1_024 || gateway.listenerPort > 65_535) {
+    throw new Error("gateway listener port is invalid");
+  }
 
   const executables = record(root.executables, "runner executable profile");
-  exactKeys(executables, ["node", "podman", "nft", "jq", "python3", "systemctl", "ociRuntime", "conmon"], "runner executable profile");
+  exactKeys(executables, [
+    "node", "podman", "nft", "jq", "python3", "systemctl", "ociRuntime", "conmon", "envoy", "ss",
+  ], "runner executable profile");
   for (const name of Object.keys(executables)) validateFileBinding(executables[name], `runner executable ${name}`);
 
   const artifacts = record(root.artifacts, "runner artifact profile");
   exactKeys(artifacts, [
     "wrapperPath", "wrapperDigest", "cleanupPath", "cleanupDigest", "observerPath", "observerDigest",
-    "imageReference", "imageDigest",
+    "gatewayProbePath", "gatewayProbeDigest", "lifecycleOrchestratorPath", "lifecycleOrchestratorDigest",
+    "lifecycleObserverPath", "lifecycleObserverDigest", "imageReference", "imageDigest",
   ], "runner artifact profile");
-  for (const name of ["wrapperPath", "cleanupPath", "observerPath"]) absolutePath(artifacts[name], name);
-  for (const name of ["wrapperDigest", "cleanupDigest", "observerDigest", "imageDigest"]) digest(artifacts[name], name);
+  for (const name of [
+    "wrapperPath", "cleanupPath", "observerPath", "gatewayProbePath", "lifecycleOrchestratorPath",
+    "lifecycleObserverPath",
+  ]) absolutePath(artifacts[name], name);
+  for (const name of [
+    "wrapperDigest", "cleanupDigest", "observerDigest", "gatewayProbeDigest", "lifecycleOrchestratorDigest",
+    "lifecycleObserverDigest", "imageDigest",
+  ]) digest(artifacts[name], name);
   if (typeof artifacts.imageReference !== "string" ||
       !/^[A-Za-z0-9._/:@+-]+@sha256:[a-f0-9]{64}$/.test(artifacts.imageReference) ||
       !artifacts.imageReference.endsWith(`@${artifacts.imageDigest}`)) {
@@ -1270,6 +1322,10 @@ function validateSubid(value, label) {
       root.start + root.count - 1 > 2_147_483_647) {
     throw new Error(`${label} range is invalid`);
   }
+}
+
+function identityFallsInRange(identity, range) {
+  return identity >= range.start && identity < range.start + range.count;
 }
 
 function exactKeys(root, expected, label) {

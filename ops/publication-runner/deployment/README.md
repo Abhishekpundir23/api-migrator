@@ -1,14 +1,15 @@
-# Runner Deployment v1 host contract — activation blocked
+# Runner Deployment v2 host contract — activation blocked
 
 This directory is a non-authorizing **deployment contract candidate**. It is not
 a deployed runner, a working gateway integration, Linux enforcement evidence,
 or a source of signed attestations. Live host activation and external signing
 eligibility are deliberately blocked.
 
-The checked-in image protocol, host-unit renderer, gateway renderer, and strict
-data validators can be tested independently. They do not yet form one safe live
-lifecycle. In particular, the current host wrapper does not own the required
-sequence:
+The checked-in image protocol, v2 host/job descriptors, host-unit renderer,
+gateway renderer and probe, structural lifecycle-drill contract, and strict
+data validators can be tested independently. They do not yet form one safe
+live lifecycle. In particular, the current host wrapper does not own the
+required sequence:
 
 1. install the forced two-identity nftables policy;
 2. start the pinned static-SNI Envoy gateway and prove its listeners;
@@ -32,6 +33,21 @@ Until that sequence exists and passes a disposable-Linux drill:
 - every unsigned request has `eligibleForExternalSigning: false` and
   `authorizationStatus: blocked_pending_linux_gateway_lifecycle_drill`.
 
+`lifecycle-drill.mjs` cross-binds one reference v2 job, host profile, canonical
+plan, and rendered gateway. Its scenario matrix defines 17 **independent**
+disposable-host jobs; it does not claim those jobs ran. Its aggregate validator
+accepts only the fixed observer-first event order, distinct per-scenario
+job/plan/evidence identities, complete teardown timestamps, and an explicitly
+non-authorizing result. Synthetic reports can exercise this data boundary, but
+they are not Linux evidence and cannot remove any block.
+
+The gateway probe is also a drill component, not authorization. It refuses the
+wrong OS identity, uses numeric destinations only, tests the fixed listener and
+forced origin path separately, and requires later correlation with independent
+Envoy and nftables counters. The v2 profile's orchestrator and observer paths
+are provisioning bindings for future executables; their example digests are
+placeholders, not a statement that a live orchestrator is checked in.
+
 Do not sign the generated request, populate a runner-attestation digest from it,
 or install/start the rendered units. The request exists only to make the future
 schema and non-authorizing boundary testable.
@@ -42,6 +58,7 @@ These commands do not provision or activate a host:
 
 ```sh
 node --test ops/publication-runner/deployment/test/*.test.mjs
+node --test ops/publication-runner/gateway/test/*.test.mjs
 node ops/publication-runner/deployment/render-units.mjs \
   --job /absolute/job-descriptor.json \
   --host-profile /absolute/host-profile.json \
@@ -60,7 +77,8 @@ containers ran on Linux.
 
 ## Required next Linux milestone
 
-Use a disposable dedicated Linux host to implement one orchestrator that owns
+Use a disposable dedicated Linux host to implement the pinned orchestrator and
+independent observer that own
 the entire gateway/runner phase boundary. Bind every deployed executable,
 script, library, unit, Envoy configuration, and nftables artifact by digest.
 Exercise success, timeout, SIGKILL, OOM, reboot, wrong/no-SNI, direct-bypass,

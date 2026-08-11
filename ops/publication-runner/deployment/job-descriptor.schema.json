@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://api-migrator.invalid/schemas/runner-deployment-job-v1.json",
-  "title": "API Migrator runner deployment job v1",
+  "$id": "https://api-migrator.invalid/schemas/runner-deployment-job-v2.json",
+  "title": "API Migrator runner deployment job v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,11 +17,15 @@
     "runnerResultPath",
     "hostProfilePath",
     "l7IntegrationStatusPath",
+    "gatewayContractPath",
+    "gatewayReceiptPath",
+    "lifecycleEventsPath",
+    "lifecycleReportPath",
     "observationPath",
     "signingRequestPath"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "jobId": { "type": "string", "pattern": "^previewjob_[a-f0-9]{64}$" },
     "unitRenderedAt": { "type": "integer", "minimum": 1, "maximum": 8640000000000000 },
     "runtimeMaxMs": { "type": "integer", "minimum": 30000, "maximum": 900000 },
@@ -33,6 +37,10 @@
     "runnerResultPath": { "$ref": "#/$defs/path" },
     "hostProfilePath": { "$ref": "#/$defs/path" },
     "l7IntegrationStatusPath": { "$ref": "#/$defs/path" },
+    "gatewayContractPath": { "$ref": "#/$defs/path" },
+    "gatewayReceiptPath": { "$ref": "#/$defs/path" },
+    "lifecycleEventsPath": { "$ref": "#/$defs/path" },
+    "lifecycleReportPath": { "$ref": "#/$defs/path" },
     "observationPath": { "$ref": "#/$defs/path" },
     "signingRequestPath": { "$ref": "#/$defs/path" }
   },

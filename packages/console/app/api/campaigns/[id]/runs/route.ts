@@ -29,6 +29,10 @@ import {
   withRunLock,
 } from "../../../../../lib/run-lock";
 import { buildPublishHttpDecision } from "../../../../../lib/publication-response";
+import {
+  isRunnerCapabilityActionBlocked,
+  RUNNER_CAPABILITY_UNAVAILABLE_MESSAGE,
+} from "../../../../../lib/runner-capability";
 
 export const dynamic = "force-dynamic";
 // PRs involve real git work; allow a long request.
@@ -92,6 +96,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           previewReceiptExpiresAt: receipt?.expiresAt ?? null,
         },
         { status: 200 }
+      );
+    }
+
+    if (isRunnerCapabilityActionBlocked(action)) {
+      return NextResponse.json(
+        { error: RUNNER_CAPABILITY_UNAVAILABLE_MESSAGE },
+        { status: 503 }
       );
     }
 

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { buildPreviewEvidence, type PreviewResultInput } from "../../../lib/preview";
+import { RUNNER_CAPABILITY_PROVIDER_AVAILABLE } from "../../../lib/runner-capability";
 
 type ResultItem = PreviewResultInput;
 
@@ -134,7 +135,7 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
   }
 
   async function prepareOwnerChallenge() {
-    if (!previewReceipt || publishableCount !== 1 || operatorApprovalToken !== null) return;
+    if (!RUNNER_CAPABILITY_PROVIDER_AVAILABLE || !previewReceipt || publishableCount !== 1 || operatorApprovalToken !== null) return;
     setBusy("prepare_owner_challenge");
     setError(null);
     clearOwnerChallenge();
@@ -188,6 +189,7 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
 
   async function preparePublish() {
     if (
+      !RUNNER_CAPABILITY_PROVIDER_AVAILABLE ||
       !previewReceipt ||
       !challengeDigest ||
       !ownerChallengeReceipt ||
@@ -242,7 +244,7 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
   }
 
   async function publish() {
-    if (!operatorApprovalToken || !confirmationPhrase || publishableCount !== 1) return;
+    if (!RUNNER_CAPABILITY_PROVIDER_AVAILABLE || !operatorApprovalToken || !confirmationPhrase || publishableCount !== 1) return;
     const dispatchedToken = operatorApprovalToken;
     const dispatchedEnvelope = ownerAuthorizationEnvelope;
     const dispatchedConfirmation = confirmation;
@@ -332,6 +334,13 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
       {previewReceipt && publishableCount === 1 && (
         <div className="approval card">
           <h3>Create repository-owner challenge</h3>
+          {!RUNNER_CAPABILITY_PROVIDER_AVAILABLE ? (
+            <p className="muted">
+              Unavailable in this build: the independently verified runner-capability provider has not
+              been deployed. Preview remains available and creates no remote changes.
+            </p>
+          ) : (
+            <>
           <p>
             Re-run this exact preview with read-only GitHub App identity and current remote-state checks,
             then download the canonical challenge for offline owner review and signing.
@@ -505,6 +514,8 @@ export default function RunForm({ campaignId }: { campaignId: string }) {
               </button>
             </div>
           )}
+            </>
+          )}
         </div>
       )}
     </form>
@@ -630,7 +641,7 @@ function summaryText(summary: NonNullable<ResultItem["report"]>["summary"]): str
 
 function friendlyStatus(status: string): string {
   switch (status) {
-    case "preview_ready": return "Ready to publish";
+    case "preview_ready": return "Preview ready";
     case "pr_opened": return "PR opened";
     case "no_changes": return "No changes";
     case "blocked": return "Blocked";

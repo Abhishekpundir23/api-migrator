@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "jobId": "previewjob_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "unitRenderedAt": 2000000000000,
   "runtimeMaxMs": 600000,
@@ -11,6 +11,10 @@
   "runnerResultPath": "/var/lib/api-migrator-runner/jobs/job-001/events.ndjson.runner.json",
   "hostProfilePath": "/etc/api-migrator-runner/host-profile.json",
   "l7IntegrationStatusPath": "/var/lib/api-migrator-runner/jobs/job-001/l7-integration-status.json",
+  "gatewayContractPath": "/var/lib/api-migrator-runner/jobs/job-001/gateway-contract.json",
+  "gatewayReceiptPath": "/var/lib/api-migrator-runner/jobs/job-001/gateway-receipt.json",
+  "lifecycleEventsPath": "/var/lib/api-migrator-runner/jobs/job-001/lifecycle-events.ndjson",
+  "lifecycleReportPath": "/var/lib/api-migrator-runner/jobs/job-001/lifecycle-report.json",
   "observationPath": "/var/lib/api-migrator-runner/jobs/job-001/observation.json",
   "signingRequestPath": "/var/lib/api-migrator-runner/jobs/job-001/signing-request.json"
 }

@@ -130,7 +130,7 @@ function fixture() {
   const planDigest = sha256(Buffer.from(planText, "utf8"));
   const rawEventsPath = join(root, "events.ndjson");
   const job = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     jobId: JOB_ID,
     unitRenderedAt: NOW,
     runtimeMaxMs: EXPIRES - NOW,
@@ -140,8 +140,12 @@ function fixture() {
     outputPath,
     rawEventsPath,
     runnerResultPath: `${rawEventsPath}.runner.json`,
-    hostProfilePath: join(root, "host-profile.json"),
+    hostProfilePath: join(scratchRoot, "host-profile.json"),
     l7IntegrationStatusPath: join(root, "l7-integration-status.json"),
+    gatewayContractPath: join(root, "gateway-contract.json"),
+    gatewayReceiptPath: join(root, "gateway-receipt.json"),
+    lifecycleEventsPath: join(root, "lifecycle-events.ndjson"),
+    lifecycleReportPath: join(root, "lifecycle-report.json"),
     observationPath: join(root, "observation.json"),
     signingRequestPath: join(root, "signing-request.json"),
   };
@@ -318,8 +322,8 @@ test("validates all checked-in schemas, examples, and shell syntax", () => {
   for (const file of files) assert.doesNotThrow(() => JSON.parse(readFileSync(join(DEPLOYMENT_DIR, file), "utf8")), file);
   const validator = deploymentSchemaValidator();
   for (const [schemaId, exampleFile] of [
-    ["https://api-migrator.invalid/schemas/runner-host-profile-v1.json", "host-profile.example.json"],
-    ["https://api-migrator.invalid/schemas/runner-deployment-job-v1.json", "job-descriptor.example.json"],
+    ["https://api-migrator.invalid/schemas/runner-host-profile-v2.json", "host-profile.example.json"],
+    ["https://api-migrator.invalid/schemas/runner-deployment-job-v2.json", "job-descriptor.example.json"],
     ["https://api-migrator.invalid/schemas/l7-gateway-integration-status-v1.json", "l7-integration-status.example.json"],
     ["https://api-migrator.invalid/schemas/runner-observation-v1.json", "runner-observation.example.json"],
   ]) {
@@ -334,6 +338,84 @@ test("validates all checked-in schemas, examples, and shell syntax", () => {
     encoding: "utf8",
   });
   assert.equal(wrapperShell.status, 0, wrapperShell.stderr);
+});
+
+test("v2 host identities and exact job-root paths remain fail closed", () => {
+  const fx = fixture();
+  try {
+    assert.equal(validateHostProfile(fx.profile).profile, "api-migrator-runner-host-v2");
+    assert.equal(validateJobDescriptor(fx.job).schemaVersion, 2);
+
+    const sameUid = structuredClone(fx.profile);
+    sameUid.gateway.uid = sameUid.runner.uid;
+    assert.throws(() => validateHostProfile(sameUid), /identities must be distinct/);
+    const sameGid = structuredClone(fx.profile);
+    sameGid.gateway.gid = sameGid.runner.gid;
+    assert.throws(() => validateHostProfile(sameGid), /identities must be distinct/);
+    const gatewayInSubuid = structuredClone(fx.profile);
+    gatewayInSubuid.gateway.uid = gatewayInSubuid.runner.subuid.start;
+    assert.throws(() => validateHostProfile(gatewayInSubuid), /outside the runner subordinate ID ranges/);
+    const runnerInSubgid = structuredClone(fx.profile);
+    runnerInSubgid.runner.gid = runnerInSubgid.runner.subgid.start;
+    assert.throws(() => validateHostProfile(runnerInSubgid), /outside its subordinate ID ranges/);
+    const privilegedListener = structuredClone(fx.profile);
+    privilegedListener.gateway.listenerPort = 443;
+    assert.throws(() => validateHostProfile(privilegedListener), /listener port is invalid/);
+    const missingEnvoy = structuredClone(fx.profile);
+    delete missingEnvoy.executables.envoy;
+    assert.throws(() => validateHostProfile(missingEnvoy), /missing or unexpected fields/);
+    const invalidProbeBinding = structuredClone(fx.profile);
+    invalidProbeBinding.artifacts.gatewayProbePath = "/tmp/bad path";
+    assert.throws(() => validateHostProfile(invalidProbeBinding), /supported absolute path/);
+
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, schemaVersion: 1 }),
+      /descriptor identity is invalid/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, hostProfilePath: join(fx.root, "host-profile.json") }),
+      /must remain external/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, lifecycleReportPath: "/var/tmp/escaped-lifecycle-report.json" }),
+      /escapes the exact job root/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, gatewayReceiptPath: fx.job.lifecycleReportPath }),
+      /paths must not overlap/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, gatewayReceiptPath: `${fx.job.outputPath}/gateway.json` }),
+      /paths must not overlap/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, gatewayContractPath: fx.job.sourceArchivePath }),
+      /paths must not overlap/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, planPath: "/tmp/job/plan.json" }),
+      /deployment job root is too broad/
+    );
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("cleanup covers both job identities, subordinate UIDs, and exact policy tables", () => {
+  const cleanup = readFileSync(join(DEPLOYMENT_DIR, "cleanup-runner.sh"), "utf8");
+  assert.match(cleanup, /schema_version == 2/);
+  assert.match(cleanup, /api_migrator_gw_/);
+  assert.match(cleanup, /api_migrator_\$\{/);
+  assert.match(cleanup, /pgrep -u "\$gateway_uid"/);
+  assert.match(cleanup, /ps -e -o uid=/);
+  assert.match(cleanup, /runner subordinate UID range still owns a process/);
+  const policyLoop = cleanup.indexOf('for table in "$legacy_table" "$gateway_table"');
+  const preRemovalCheck = cleanup.lastIndexOf("\nassert_job_boundary_idle\n", policyLoop);
+  const policyRemoval = cleanup.indexOf('nft delete table inet "$table"');
+  const postRemovalCheck = cleanup.indexOf("\nassert_job_boundary_idle\n", policyLoop);
+  assert(policyLoop !== -1 && preRemovalCheck !== -1 && preRemovalCheck < policyLoop);
+  assert(policyRemoval > policyLoop);
+  assert(postRemovalCheck > policyRemoval);
 });
 
 test("reference wrapper keeps source out of the online mount and binds every phase digest", () => {
@@ -387,6 +469,7 @@ test("renders a fixed serialized runner and separate no-network observer at the 
     const rendered = renderUnits({
       job: fx.job,
       profile: fx.profile,
+      hostProfilePath: fx.job.hostProfilePath,
       planText: fx.planText,
       nowMs: NOW,
       jobDescriptorPath: join(fx.root, "job.json"),
@@ -424,10 +507,29 @@ test("deadline rendering rejects stale, short, and descriptor-divergent plans", 
     assert.throws(() => renderUnits({
       job: { ...fx.job, runtimeMaxMs: 599_999 },
       profile: fx.profile,
+      hostProfilePath: fx.job.hostProfilePath,
       planText: fx.planText,
       nowMs: NOW,
       jobDescriptorPath: join(fx.root, "job.json"),
     }), /exact unit render time and deadline/);
+    assert.throws(() => renderUnits({
+      job: fx.job,
+      profile: fx.profile,
+      hostProfilePath: "/etc/api-migrator-runner/substituted-profile.json",
+      planText: fx.planText,
+      nowMs: NOW,
+      jobDescriptorPath: join(fx.root, "job.json"),
+    }), /host profile path does not match/);
+    const jobPath = join(fx.root, "job.json");
+    writeFileSync(jobPath, JSON.stringify(fx.job));
+    const mismatchedCli = spawnSync(process.execPath, [
+      join(DEPLOYMENT_DIR, "render-units.mjs"),
+      "--job", jobPath,
+      "--host-profile", "/etc/api-migrator-runner/substituted-profile.json",
+      "--now-ms", String(NOW),
+    ], { encoding: "utf8" });
+    assert.equal(mismatchedCli.status, 1);
+    assert.match(mismatchedCli.stderr, /--host-profile does not match the exact path/);
     assert.throws(() => validateJobDescriptor({ ...fx.job, outputPath: "/tmp/bad path" }), /absolute path/);
     assert.throws(
       () => validateJobDescriptor({ ...fx.job, planPath: "/tmp/job/plan.json" }),

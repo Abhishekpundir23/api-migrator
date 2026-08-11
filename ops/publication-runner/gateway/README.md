@@ -58,6 +58,16 @@ remain separate required controls.
 - `gateway-contract.mjs` strictly validates one canonical deployment contract,
   renders exact Envoy and nftables bytes, validates observer receipts, and
   exposes a small stdout-only CLI.
+- `gateway-probe.mjs` derives trusted numeric-address probes only from that
+  exact contract. It covers correct SNI, direct numeric-IP routing, wrong or
+  absent SNI, plaintext, non-443, non-npm, and offline-network cases without
+  performing DNS resolution. It refuses to run unless the process has the
+  scenario's exact dedicated UID: runner probes use the runner UID, while the
+  direct non-npm egress probe uses the gateway UID. The correct-SNI probe hits
+  the fixed loopback listener; the direct-origin probe must succeed only after
+  independent counters prove nftables forced it through that listener. A
+  passing probe is raw drill evidence only; it cannot prove nftables hook
+  ownership or authorize activation by itself.
 - `templates/forced-gateway-egress.nft.in` contains the forced two-identity
   host policy. After output DNAT, the runner UID may reach only the loopback
   listener. The gateway UID may open new connections only to the exact npm IP
@@ -135,9 +145,11 @@ A real control plane must, at minimum:
    bounded stdout/stderr, a fixed environment, and no writable config path.
 7. Independently confirm both loopback listeners belong to that exact gateway
    process and invocation.
-8. Run trusted negative probes for plaintext, absent SNI, wrong SNI, direct
-   non-443 output, direct registry-IP bypass, and non-npm destinations. No
-   repository code participates in these probes.
+8. Run the trusted probe executable for correct SNI plus plaintext, absent SNI,
+   wrong SNI, direct non-443 output, direct registry-IP routing, non-npm
+   destinations, and offline-network denial. Independently correlate its
+   results with Envoy and nftables counters. No repository code participates in
+   these probes.
 9. Run only the trusted lifecycle-disabled dependency-fetch phase online.
 10. Stop the gateway, make both identities idle, and close the parent network
     before migration or repository-controlled verification begins.
@@ -184,7 +196,7 @@ domain-separated runner envelope. No signing key belongs in this directory.
 Run without installing dependencies:
 
 ```bash
-node --test ops/publication-runner/gateway/test/gateway-contract.test.mjs
+node --test ops/publication-runner/gateway/test/*.test.mjs
 ```
 
 Passing tests establish deterministic contract behavior only. Required

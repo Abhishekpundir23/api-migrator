@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "profile": "api-migrator-runner-host-v1",
+  "schemaVersion": 2,
+  "profile": "api-migrator-runner-host-v2",
   "hostId": "runner-host-sandbox-001",
   "dedicatedHost": true,
   "platform": {
@@ -28,6 +28,13 @@
     "subuid": { "start": 131072, "count": 65536 },
     "subgid": { "start": 131072, "count": 65536 }
   },
+  "gateway": {
+    "user": "api-migrator-gateway",
+    "uid": 12002,
+    "group": "api-migrator-gateway",
+    "gid": 12002,
+    "listenerPort": 15443
+  },
   "executables": {
     "node": { "path": "/usr/bin/node", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
     "podman": { "path": "/usr/bin/podman", "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
@@ -36,7 +43,9 @@
     "python3": { "path": "/usr/bin/python3", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555" },
     "systemctl": { "path": "/usr/bin/systemctl", "digest": "sha256:5656565656565656565656565656565656565656565656565656565656565656" },
     "ociRuntime": { "path": "/usr/bin/crun", "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666" },
-    "conmon": { "path": "/usr/bin/conmon", "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777" }
+    "conmon": { "path": "/usr/bin/conmon", "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777" },
+    "envoy": { "path": "/usr/bin/envoy", "digest": "sha256:7878787878787878787878787878787878787878787878787878787878787878" },
+    "ss": { "path": "/usr/bin/ss", "digest": "sha256:7979797979797979797979797979797979797979797979797979797979797979" }
   },
   "artifacts": {
     "wrapperPath": "/usr/local/libexec/api-migrator/run-credential-free-preview.sh",
@@ -45,6 +54,12 @@
     "cleanupDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
     "observerPath": "/usr/local/libexec/api-migrator/deployment/observe-runner.mjs",
     "observerDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "gatewayProbePath": "/usr/local/libexec/api-migrator/gateway/gateway-probe.mjs",
+    "gatewayProbeDigest": "sha256:abababababababababababababababababababababababababababababababab",
+    "lifecycleOrchestratorPath": "/usr/local/libexec/api-migrator/deployment/run-gateway-lifecycle.mjs",
+    "lifecycleOrchestratorDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "lifecycleObserverPath": "/usr/local/libexec/api-migrator/deployment/observe-gateway-lifecycle.mjs",
+    "lifecycleObserverDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "imageReference": "registry.example.invalid/api-migrator-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "imageDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },

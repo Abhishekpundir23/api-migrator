@@ -44,7 +44,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
         ))}
       </div>
 
-      <h2>Preview and approve</h2>
+      <h2>Preview</h2>
       <RunForm campaignId={id} />
 
       <h2>Run history ({runs.length})</h2>
