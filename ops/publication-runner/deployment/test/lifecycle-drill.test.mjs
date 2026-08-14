@@ -187,6 +187,12 @@ test("cross-binds the v2 host, job, canonical plan, and rendered gateway without
     deployment.contract.toolBindings.lifecycleObserver.digest,
     input.profile.artifacts.lifecycleObserverDigest
   );
+  assert.deepEqual(deployment.contract.toolBindings.runtimeManifest, {
+    path: input.profile.artifacts.lifecycleRuntimeManifestPath,
+    digest: input.profile.artifacts.lifecycleRuntimeManifestDigest,
+  });
+  assert.equal(deployment.contract.paths.runtimeRootPath, input.job.runtimeRootPath);
+  assert.equal(deployment.contract.paths.lifecyclePreflightPath, input.job.lifecyclePreflightPath);
   assert.equal(deployment.contract.toolBindings.ss.digest, input.profile.executables.ss.digest);
   assert.deepEqual(deployment.contract.eventOrder, LIFECYCLE_EVENT_ORDER);
   assert.deepEqual(deployment.contract.scenarioMatrix, LIFECYCLE_SCENARIO_MATRIX);
@@ -225,6 +231,7 @@ test("rejects substituted plan, policy, identity, listener, and Envoy bindings",
     (record) => { record.hostProfile.artifacts.gatewayProbeDigest = digest("changed-probe"); },
     (record) => { record.hostProfile.artifacts.lifecycleOrchestratorPath = "/opt/substituted-orchestrator"; },
     (record) => { record.hostProfile.artifacts.lifecycleObserverDigest = digest("changed-observer"); },
+    (record) => { record.hostProfile.artifacts.lifecycleRuntimeManifestDigest = digest("changed-runtime-manifest"); },
     (record) => { record.hostProfile.executables.ss.digest = digest("changed-ss"); },
   ]) {
     const changed = structuredClone(deployment);

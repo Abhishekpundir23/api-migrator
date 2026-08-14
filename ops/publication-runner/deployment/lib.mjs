@@ -258,7 +258,8 @@ export function validateJobDescriptor(value) {
   const job = record(value, "deployment job descriptor");
   exactKeys(job, [
     "schemaVersion", "jobId", "unitRenderedAt", "runtimeMaxMs", "planPath", "planDigest", "sourceArchivePath", "outputPath",
-    "rawEventsPath", "runnerResultPath", "hostProfilePath", "l7IntegrationStatusPath", "gatewayContractPath",
+    "rawEventsPath", "runnerResultPath", "hostProfilePath", "runtimeRootPath", "lifecyclePreflightPath",
+    "l7IntegrationStatusPath", "gatewayContractPath",
     "gatewayReceiptPath", "lifecycleEventsPath", "lifecycleReportPath", "observationPath", "signingRequestPath",
   ], "deployment job descriptor");
   if (job.schemaVersion !== 2 || !JOB_ID.test(job.jobId)) {
@@ -270,7 +271,8 @@ export function validateJobDescriptor(value) {
   }
   for (const name of [
     "planPath", "sourceArchivePath", "outputPath", "rawEventsPath", "runnerResultPath",
-    "hostProfilePath", "l7IntegrationStatusPath", "gatewayContractPath", "gatewayReceiptPath",
+    "hostProfilePath", "runtimeRootPath", "lifecyclePreflightPath", "l7IntegrationStatusPath",
+    "gatewayContractPath", "gatewayReceiptPath",
     "lifecycleEventsPath", "lifecycleReportPath", "observationPath", "signingRequestPath",
   ]) {
     absolutePath(job[name], name);
@@ -282,6 +284,8 @@ export function validateJobDescriptor(value) {
     job.outputPath,
     job.rawEventsPath,
     job.runnerResultPath,
+    job.runtimeRootPath,
+    job.lifecyclePreflightPath,
     job.l7IntegrationStatusPath,
     job.gatewayContractPath,
     job.gatewayReceiptPath,
@@ -310,12 +314,39 @@ export function validateJobDescriptor(value) {
     throw new Error("deployment host profile path must remain external to the exact job root");
   }
   for (const name of [
-    "sourceArchivePath", "outputPath", "rawEventsPath", "runnerResultPath", "l7IntegrationStatusPath",
+    "sourceArchivePath", "outputPath", "rawEventsPath", "runnerResultPath", "runtimeRootPath",
+    "lifecyclePreflightPath", "l7IntegrationStatusPath",
     "gatewayContractPath", "gatewayReceiptPath", "lifecycleEventsPath", "lifecycleReportPath",
     "observationPath", "signingRequestPath",
   ]) {
     if (job[name] !== jobRoot && !job[name].startsWith(`${jobRoot}/`)) {
       throw new Error(`deployment ${name} escapes the exact job root`);
+    }
+  }
+  const orchestratorRoot = join(jobRoot, "orchestrator");
+  const observerRoot = join(jobRoot, "observer");
+  if (
+    job.runtimeRootPath !== join(orchestratorRoot, "runtime") ||
+    job.lifecyclePreflightPath !== join(orchestratorRoot, "lifecycle-preflight.json")
+  ) {
+    throw new Error("deployment orchestrator paths must use the exact isolated orchestrator root");
+  }
+  if (
+    job.lifecycleEventsPath !== join(observerRoot, "lifecycle-events.ndjson") ||
+    job.lifecycleReportPath !== join(observerRoot, "lifecycle-report.json")
+  ) {
+    throw new Error("deployment observer paths must use the exact isolated observer root");
+  }
+  for (const name of [
+    "planPath", "sourceArchivePath", "outputPath", "rawEventsPath", "runnerResultPath",
+    "l7IntegrationStatusPath", "gatewayContractPath", "gatewayReceiptPath", "observationPath",
+    "signingRequestPath",
+  ]) {
+    if (
+      job[name] === orchestratorRoot || job[name].startsWith(`${orchestratorRoot}/`) ||
+      job[name] === observerRoot || job[name].startsWith(`${observerRoot}/`)
+    ) {
+      throw new Error(`deployment ${name} enters a lifecycle service write boundary`);
     }
   }
   return structuredClone(job);
@@ -390,15 +421,16 @@ export function validateHostProfile(value) {
   exactKeys(artifacts, [
     "wrapperPath", "wrapperDigest", "cleanupPath", "cleanupDigest", "observerPath", "observerDigest",
     "gatewayProbePath", "gatewayProbeDigest", "lifecycleOrchestratorPath", "lifecycleOrchestratorDigest",
-    "lifecycleObserverPath", "lifecycleObserverDigest", "imageReference", "imageDigest",
+    "lifecycleObserverPath", "lifecycleObserverDigest", "lifecycleRuntimeManifestPath",
+    "lifecycleRuntimeManifestDigest", "imageReference", "imageDigest",
   ], "runner artifact profile");
   for (const name of [
     "wrapperPath", "cleanupPath", "observerPath", "gatewayProbePath", "lifecycleOrchestratorPath",
-    "lifecycleObserverPath",
+    "lifecycleObserverPath", "lifecycleRuntimeManifestPath",
   ]) absolutePath(artifacts[name], name);
   for (const name of [
     "wrapperDigest", "cleanupDigest", "observerDigest", "gatewayProbeDigest", "lifecycleOrchestratorDigest",
-    "lifecycleObserverDigest", "imageDigest",
+    "lifecycleObserverDigest", "lifecycleRuntimeManifestDigest", "imageDigest",
   ]) digest(artifacts[name], name);
   if (typeof artifacts.imageReference !== "string" ||
       !/^[A-Za-z0-9._/:@+-]+@sha256:[a-f0-9]{64}$/.test(artifacts.imageReference) ||

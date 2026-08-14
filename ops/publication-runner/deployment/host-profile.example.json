@@ -60,6 +60,8 @@
     "lifecycleOrchestratorDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "lifecycleObserverPath": "/usr/local/libexec/api-migrator/deployment/observe-gateway-lifecycle.mjs",
     "lifecycleObserverDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "lifecycleRuntimeManifestPath": "/usr/local/libexec/api-migrator/deployment/runtime-manifest.json",
+    "lifecycleRuntimeManifestDigest": "sha256:bdc59f82d857450b8f87461c82af0a719945860c1b53b2ed08198e3a4896256a",
     "imageReference": "registry.example.invalid/api-migrator-runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "imageDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },

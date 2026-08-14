@@ -99,6 +99,8 @@ export function renderLifecycleDrillContract(input) {
   }
 
   const paths = {
+    runtimeRootPath: absolutePath(job.runtimeRootPath, "lifecycle runtime root path"),
+    lifecyclePreflightPath: absolutePath(job.lifecyclePreflightPath, "lifecycle preflight path"),
     gatewayContractPath: absolutePath(job.gatewayContractPath, "gateway contract path"),
     gatewayReceiptPath: absolutePath(job.gatewayReceiptPath, "gateway receipt path"),
     lifecycleEventsPath: absolutePath(job.lifecycleEventsPath, "lifecycle events path"),
@@ -301,9 +303,12 @@ function normalizeContract(value, gateway, profile) {
     throw new Error("lifecycle drill contract substitutes the tool-binding digest");
   }
   const pathsRoot = record(root.paths, "lifecycle drill paths");
-  exactKeys(pathsRoot, ["gatewayContractPath", "gatewayReceiptPath", "lifecycleEventsPath", "lifecycleReportPath"], "lifecycle drill paths");
+  exactKeys(pathsRoot, [
+    "runtimeRootPath", "lifecyclePreflightPath", "gatewayContractPath", "gatewayReceiptPath",
+    "lifecycleEventsPath", "lifecycleReportPath",
+  ], "lifecycle drill paths");
   const paths = Object.fromEntries(Object.entries(pathsRoot).map(([name, path]) => [name, absolutePath(path, name)]));
-  if (new Set(Object.values(paths)).size !== 4) throw new Error("lifecycle drill paths must be distinct");
+  if (new Set(Object.values(paths)).size !== 6) throw new Error("lifecycle drill paths must be distinct");
   if (canonicalJson(root.eventOrder) !== canonicalJson(LIFECYCLE_EVENT_ORDER)) throw new Error("lifecycle drill event order is substituted");
   if (canonicalJson(root.scenarioMatrix) !== canonicalJson(LIFECYCLE_SCENARIO_MATRIX)) throw new Error("lifecycle drill scenario matrix is substituted");
   return deepFreeze({
@@ -406,6 +411,10 @@ function lifecycleToolBindings(profile) {
     lifecycleObserver: {
       path: profile.artifacts.lifecycleObserverPath,
       digest: profile.artifacts.lifecycleObserverDigest,
+    },
+    runtimeManifest: {
+      path: profile.artifacts.lifecycleRuntimeManifestPath,
+      digest: profile.artifacts.lifecycleRuntimeManifestDigest,
     },
   });
 }

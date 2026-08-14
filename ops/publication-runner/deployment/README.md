@@ -6,10 +6,10 @@ or a source of signed attestations. Live host activation and external signing
 eligibility are deliberately blocked.
 
 The checked-in image protocol, v2 host/job descriptors, host-unit renderer,
-gateway renderer and probe, structural lifecycle-drill contract, and strict
-data validators can be tested independently. They do not yet form one safe
-live lifecycle. In particular, the current host wrapper does not own the
-required sequence:
+gateway renderer and probe, structural lifecycle-drill contract, strict data
+validators, and native-configuration preflight can be tested independently.
+They do not yet form one safe live lifecycle. In particular, the current host
+wrapper does not own the required sequence:
 
 1. install the forced two-identity nftables policy;
 2. start the pinned static-SNI Envoy gateway and prove its listeners;
@@ -44,9 +44,25 @@ they are not Linux evidence and cannot remove any block.
 The gateway probe is also a drill component, not authorization. It refuses the
 wrong OS identity, uses numeric destinations only, tests the fixed listener and
 forced origin path separately, and requires later correlation with independent
-Envoy and nftables counters. The v2 profile's orchestrator and observer paths
-are provisioning bindings for future executables; their example digests are
-placeholders, not a statement that a live orchestrator is checked in.
+Envoy and nftables counters.
+
+`run-gateway-lifecycle.mjs --preflight` and
+`observe-gateway-lifecycle.mjs --preflight` establish the first executable
+boundary without activating it. The observer must create an exact, canonical
+readiness event before the orchestrator can render anything. The orchestrator
+then runs only Envoy's native configuration validator and nftables check mode;
+it never installs a table, starts Envoy, invokes the runner, or opens a network
+connection. The independent observer repeats those checks, snapshots the exact
+job tables and identities before and after, and reports that no gateway
+lifecycle mutation was observed. Every result is permanently
+marked non-authorizing and ineligible for release evidence, activation, or
+external signing.
+
+The v2 descriptor also binds the exact per-job runtime root that a later fault
+drill may clean up. A root-sealed lifecycle runtime manifest covers the complete
+imported script/library/template/unit closure; hashing only an entrypoint is not
+treated as a transitive runtime binding. Example digests remain placeholders
+and do not claim that any host is provisioned.
 
 Do not sign the generated request, populate a runner-attestation digest from it,
 or install/start the rendered units. The request exists only to make the future
@@ -66,6 +82,10 @@ node ops/publication-runner/deployment/render-units.mjs \
 node ops/publication-runner/deployment/observe-runner.mjs \
   --job /absolute/job-descriptor.json \
   --snapshot /absolute/contract-fixture-snapshot.json
+node ops/publication-runner/deployment/observe-gateway-lifecycle.mjs \
+  --preflight --job /absolute/job-descriptor.json
+node ops/publication-runner/deployment/run-gateway-lifecycle.mjs \
+  --preflight --job /absolute/job-descriptor.json
 ```
 
 The renderer writes candidate unit text to stdout only and does not install it.
@@ -73,17 +93,25 @@ Snapshot mode validates a synthetic contract fixture and labels the resulting
 observation `contract_fixture`; it cannot become live or signing-eligible. The
 fixture binds the exact four-container order (`prepare`, `install`, `migrate`,
 `verify`) and the offline-preparation log digest, but does not claim those
-containers ran on Linux.
+containers ran on Linux. The two preflight commands require their exact sealed
+Linux inputs and observer-first handshake; they are not ordinary local macOS
+commands and do not perform the lifecycle scenario matrix.
 
 ## Required next Linux milestone
 
-Use a disposable dedicated Linux host to implement the pinned orchestrator and
-independent observer that own
-the entire gateway/runner phase boundary. Bind every deployed executable,
-script, library, unit, Envoy configuration, and nftables artifact by digest.
-Exercise success, timeout, SIGKILL, OOM, reboot, wrong/no-SNI, direct-bypass,
-offline-network, gateway-stop, UID-idle, policy-removal, and workspace-cleanup
-paths. An independent observer must then validate the exact gateway contract and
-canonical receipt, including the separate gateway UID, unit/cgroup, listener,
-table, and teardown timestamps. Only a later reviewed change may remove the
-activation block or make a request eligible for external signing.
+First exercise the non-authorizing gateway lifecycle smoke on a fixed full
+Linux VM with no secrets, App credentials, or customer source. That smoke may
+cover native validation, policy installation, both loopback listeners, fixed
+gateway probes, correlated counters, gateway stop, both identities becoming
+idle, and exact cleanup. Hosted CI evidence must use its own smoke kind and
+remain explicitly ineligible for release evidence.
+
+The authoritative drill still requires fresh disposable dedicated Linux hosts
+controlled by an external observer. Exercise success, timeout, SIGKILL, bounded
+cgroup OOM, reboot, wrong/no-SNI, direct-bypass, offline-network, gateway-stop,
+UID-idle, policy-removal, namespace/cgroup cleanup, and workspace-cleanup paths
+as independent jobs. The observer must validate the exact gateway contract and
+canonical receipt, including the separate gateway UID, unit/cgroup, both
+listeners, correlated counters, exact runtime root, and teardown timestamps.
+Only a later reviewed change may remove the activation block or make a request
+eligible for external signing.
