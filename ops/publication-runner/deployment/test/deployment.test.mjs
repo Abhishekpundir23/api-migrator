@@ -48,7 +48,7 @@ function deploymentSchemaValidator() {
   const validator = new Ajv2020({ allErrors: true, strict: true });
   for (const file of [
     "host-profile.schema.json", "job-descriptor.schema.json", "l7-integration-status.schema.json",
-    "runner-observation.schema.json", "unsigned-signing-request.schema.json",
+    "runner-observation.schema.json", "runtime-manifest.schema.json", "unsigned-signing-request.schema.json",
   ]) {
     validator.addSchema(JSON.parse(readFileSync(join(DEPLOYMENT_DIR, file), "utf8")));
   }
@@ -141,11 +141,13 @@ function fixture() {
     rawEventsPath,
     runnerResultPath: `${rawEventsPath}.runner.json`,
     hostProfilePath: join(scratchRoot, "host-profile.json"),
+    runtimeRootPath: join(root, "orchestrator", "runtime"),
+    lifecyclePreflightPath: join(root, "orchestrator", "lifecycle-preflight.json"),
     l7IntegrationStatusPath: join(root, "l7-integration-status.json"),
     gatewayContractPath: join(root, "gateway-contract.json"),
     gatewayReceiptPath: join(root, "gateway-receipt.json"),
-    lifecycleEventsPath: join(root, "lifecycle-events.ndjson"),
-    lifecycleReportPath: join(root, "lifecycle-report.json"),
+    lifecycleEventsPath: join(root, "observer", "lifecycle-events.ndjson"),
+    lifecycleReportPath: join(root, "observer", "lifecycle-report.json"),
     observationPath: join(root, "observation.json"),
     signingRequestPath: join(root, "signing-request.json"),
   };
@@ -317,7 +319,8 @@ test("validates all checked-in schemas, examples, and shell syntax", () => {
   const files = [
     "host-profile.schema.json", "host-profile.example.json", "job-descriptor.schema.json",
     "job-descriptor.example.json", "l7-integration-status.schema.json", "l7-integration-status.example.json",
-    "runner-observation.schema.json", "runner-observation.example.json", "unsigned-signing-request.schema.json",
+    "runner-observation.schema.json", "runner-observation.example.json", "runtime-manifest.schema.json",
+    "runtime-manifest.example.json", "unsigned-signing-request.schema.json",
   ];
   for (const file of files) assert.doesNotThrow(() => JSON.parse(readFileSync(join(DEPLOYMENT_DIR, file), "utf8")), file);
   const validator = deploymentSchemaValidator();
@@ -326,6 +329,7 @@ test("validates all checked-in schemas, examples, and shell syntax", () => {
     ["https://api-migrator.invalid/schemas/runner-deployment-job-v2.json", "job-descriptor.example.json"],
     ["https://api-migrator.invalid/schemas/l7-gateway-integration-status-v1.json", "l7-integration-status.example.json"],
     ["https://api-migrator.invalid/schemas/runner-observation-v1.json", "runner-observation.example.json"],
+    ["https://api-migrator.invalid/schemas/linux-l7-runtime-manifest-v1.json", "runtime-manifest.example.json"],
   ]) {
     const example = JSON.parse(readFileSync(join(DEPLOYMENT_DIR, exampleFile), "utf8"));
     assert.equal(validator.validate(schemaId, example), true, validator.errorsText(validator.errors));
@@ -391,6 +395,46 @@ test("v2 host identities and exact job-root paths remain fail closed", () => {
     assert.throws(
       () => validateJobDescriptor({ ...fx.job, gatewayContractPath: fx.job.sourceArchivePath }),
       /paths must not overlap/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, runtimeRootPath: fx.job.outputPath }),
+      /paths must not overlap/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, lifecyclePreflightPath: `${fx.job.runtimeRootPath}/preflight.json` }),
+      /paths must not overlap/
+    );
+    assert.throws(
+      () => validateJobDescriptor({ ...fx.job, runtimeRootPath: "/var/tmp/escaped-runtime" }),
+      /escapes the exact job root/
+    );
+    assert.throws(
+      () => validateJobDescriptor({
+        ...fx.job,
+        lifecyclePreflightPath: join(fx.root, "observer", "lifecycle-preflight.json"),
+      }),
+      /exact isolated orchestrator root/
+    );
+    assert.throws(
+      () => validateJobDescriptor({
+        ...fx.job,
+        lifecycleEventsPath: join(fx.root, "orchestrator", "lifecycle-events.ndjson"),
+      }),
+      /exact isolated observer root/
+    );
+    assert.throws(
+      () => validateJobDescriptor({
+        ...fx.job,
+        sourceArchivePath: join(fx.root, "orchestrator", "source.tar"),
+      }),
+      /enters a lifecycle service write boundary/
+    );
+    assert.throws(
+      () => validateJobDescriptor({
+        ...fx.job,
+        outputPath: join(fx.root, "observer", "output"),
+      }),
+      /enters a lifecycle service write boundary/
     );
     assert.throws(
       () => validateJobDescriptor({ ...fx.job, planPath: "/tmp/job/plan.json" }),

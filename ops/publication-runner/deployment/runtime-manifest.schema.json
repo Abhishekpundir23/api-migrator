@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.invalid/schemas/linux-l7-runtime-manifest-v1.json",
+  "title": "API Migrator Linux L7 lifecycle runtime manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "runtimeRootPath",
+    "closurePolicy",
+    "artifacts",
+    "activationBlocked",
+    "externalSigningEligible",
+    "authorizationStatus"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "api_migrator_linux_l7_runtime_manifest" },
+    "runtimeRootPath": { "$ref": "#/$defs/path" },
+    "closurePolicy": { "const": "exact_root_sealed_transitive_closure" },
+    "artifacts": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "prefixItems": [
+        { "$ref": "#/$defs/lifecycleOrchestrator" },
+        { "$ref": "#/$defs/lifecycleObserver" },
+        { "$ref": "#/$defs/lifecyclePreflight" },
+        { "$ref": "#/$defs/runtimeManifestModule" },
+        { "$ref": "#/$defs/lifecycleDrill" },
+        { "$ref": "#/$defs/deploymentLib" },
+        { "$ref": "#/$defs/gatewayProbe" },
+        { "$ref": "#/$defs/gatewayContract" },
+        { "$ref": "#/$defs/nftTemplate" },
+        { "$ref": "#/$defs/cleanup" },
+        { "$ref": "#/$defs/productionWrapper" },
+        { "$ref": "#/$defs/productionObserver" },
+        { "$ref": "#/$defs/productionRunnerSystemdTemplate" },
+        { "$ref": "#/$defs/productionObserverSystemdTemplate" },
+        { "$ref": "#/$defs/lifecycleDrillSystemdTemplate" },
+        { "$ref": "#/$defs/lifecycleDrillObserverSystemdTemplate" }
+      ],
+      "items": false
+    },
+    "activationBlocked": { "const": true },
+    "externalSigningEligible": { "const": false },
+    "authorizationStatus": { "const": "non_authorizing_runtime_manifest_only" }
+  },
+  "$defs": {
+    "path": { "type": "string", "pattern": "^/[A-Za-z0-9._/-]+$", "maxLength": 1024 },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "digest"],
+      "properties": {
+        "role": { "type": "string" },
+        "path": { "$ref": "#/$defs/path" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "lifecycleOrchestrator": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "lifecycle_orchestrator" } } },
+    "lifecycleObserver": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "lifecycle_observer" } } },
+    "lifecyclePreflight": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "lifecycle_preflight" } } },
+    "runtimeManifestModule": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "runtime_manifest_module" } } },
+    "lifecycleDrill": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "lifecycle_drill" } } },
+    "deploymentLib": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "deployment_lib" } } },
+    "gatewayProbe": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "gateway_probe" } } },
+    "gatewayContract": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "gateway_contract" } } },
+    "nftTemplate": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "nft_template" } } },
+    "cleanup": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "cleanup" } } },
+    "productionWrapper": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "production_wrapper" } } },
+    "productionObserver": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "production_observer" } } },
+    "productionRunnerSystemdTemplate": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "production_runner_systemd_template" } } },
+    "productionObserverSystemdTemplate": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "production_observer_systemd_template" } } },
+    "lifecycleDrillSystemdTemplate": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "lifecycle_drill_systemd_template" } } },
+    "lifecycleDrillObserverSystemdTemplate": { "type": "object", "$ref": "#/$defs/artifact", "properties": { "role": { "const": "lifecycle_drill_observer_systemd_template" } } }
+  }
+}

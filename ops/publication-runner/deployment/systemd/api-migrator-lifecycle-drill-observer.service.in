@@ -1,0 +1,51 @@
+[Unit]
+Description=API Migrator non-authorizing lifecycle preflight observer candidate
+Documentation=file:///usr/local/libexec/api-migrator/deployment/README.md
+Before=api-migrator-lifecycle-drill.service
+
+[Service]
+# Type=simple lets the observer remain alive while the drill runs. The drill
+# must still validate the exact observer_started event before doing any work;
+# systemd process start is deliberately not treated as observer readiness.
+Type=simple
+Restart=no
+WorkingDirectory=/
+UMask=0077
+TimeoutStartSec=@PREFLIGHT_TIMEOUT_MS@ms
+TimeoutStopSec=10s
+KillMode=control-group
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=GH_TOKEN GITHUB_TOKEN GH_APP_ID GH_APP_PRIVATE_KEY GH_APP_PRIVATE_KEY_PATH GH_APP_INSTALLATION_ID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID DATABASE_URL API_MIGRATOR_DB_PATH API_MIGRATOR_OWNER_KEY_REGISTRY_PATH OPERATOR_APPROVAL_SECRET HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy NPM_CONFIG_PROXY NPM_CONFIG_HTTPS_PROXY NPM_CONFIG_USERCONFIG npm_config_proxy npm_config_https_proxy npm_config_userconfig GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM NODE_OPTIONS NODE_PATH DOCKER_HOST CONTAINER_HOST BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME SSH_AUTH_SOCK KUBECONFIG RUNNER_ATTESTATION_PRIVATE_KEY ATTESTATION_SIGNING_KEY
+ExecStart=@NODE_PATH@ @LIFECYCLE_OBSERVER_PATH@ --preflight --job @JOB_DESCRIPTOR_PATH@
+NoNewPrivileges=yes
+
+# The observer must see the host nftables namespace without opening IP sockets.
+PrivateNetwork=no
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+LockPersonality=yes
+KeyringMode=private
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN
+AmbientCapabilities=
+
+# Provisioning must bind this placeholder to the exact observer-only root. The
+# orchestrator root remains readable for the result but never writable here.
+ReadWritePaths=@LIFECYCLE_OBSERVER_ROOT@
+StandardInput=null
+StandardOutput=journal
+StandardError=journal

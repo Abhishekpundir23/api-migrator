@@ -107,6 +107,8 @@
         "lifecycleOrchestratorDigest",
         "lifecycleObserverPath",
         "lifecycleObserverDigest",
+        "lifecycleRuntimeManifestPath",
+        "lifecycleRuntimeManifestDigest",
         "imageReference",
         "imageDigest"
       ],
@@ -123,6 +125,8 @@
         "lifecycleOrchestratorDigest": { "$ref": "#/$defs/digest" },
         "lifecycleObserverPath": { "$ref": "#/$defs/path" },
         "lifecycleObserverDigest": { "$ref": "#/$defs/digest" },
+        "lifecycleRuntimeManifestPath": { "$ref": "#/$defs/path" },
+        "lifecycleRuntimeManifestDigest": { "$ref": "#/$defs/digest" },
         "imageReference": { "type": "string", "pattern": "^[A-Za-z0-9._/:@+-]+@sha256:[a-f0-9]{64}$", "maxLength": 500 },
         "imageDigest": { "$ref": "#/$defs/digest" }
       }
