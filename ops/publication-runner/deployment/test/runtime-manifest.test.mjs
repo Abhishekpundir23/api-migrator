@@ -40,7 +40,9 @@ function checkedInFixture() {
 }
 
 function filesystemFixture() {
-  const runtimeRootPath = realpathSync(mkdtempSync(join(tmpdir(), "api-migrator-runtime-manifest.")));
+  const scratchRootPath = realpathSync(mkdtempSync(join(tmpdir(), "api-migrator-runtime-manifest.")));
+  const runtimeRootPath = join(scratchRootPath, "runtime", "closure");
+  mkdirSync(runtimeRootPath, { recursive: true, mode: 0o700 });
   chmodSync(runtimeRootPath, 0o700);
   const artifacts = LIFECYCLE_RUNTIME_MANIFEST_LAYOUT.map(({ role, relativePath }) => {
     const path = join(runtimeRootPath, relativePath);
@@ -68,7 +70,7 @@ function filesystemFixture() {
     artifacts,
     manifest,
     manifestPath,
-    cleanup: () => rmSync(runtimeRootPath, { recursive: true, force: true }),
+    cleanup: () => rmSync(scratchRootPath, { recursive: true, force: true }),
   };
 }
 
@@ -114,6 +116,9 @@ test("rejects missing, duplicated, reordered, relocated, or authorizing runtime 
     mutate(manifest);
     assert.throws(() => validateRuntimeManifest(manifest));
   }
+  const shallowRoot = structuredClone(value);
+  shallowRoot.runtimeRootPath = "/tmp/runtime";
+  assert.throws(() => validateRuntimeManifest(shallowRoot), /lifecycle runtime root is too broad/);
   assert.throws(() => runtimeManifestArtifact(value, "node"), /role is unsupported/);
 });
 
