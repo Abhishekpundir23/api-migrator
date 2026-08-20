@@ -418,6 +418,7 @@ function buildEnvoyConfig(contract) {
               json_format: {
                 bytes_received: "%BYTES_RECEIVED%",
                 bytes_sent: "%BYTES_SENT%",
+                access_log_type: "%ACCESS_LOG_TYPE%",
                 connection_termination_details: "%CONNECTION_TERMINATION_DETAILS%",
                 job_id: contract.jobId,
                 requested_server_name: "%REQUESTED_SERVER_NAME%",
@@ -428,6 +429,9 @@ function buildEnvoyConfig(contract) {
             },
           },
         }],
+        access_log_options: {
+          flush_access_log_on_connected: true,
+        },
         cluster: clusterName,
         max_early_data_bytes: 65_536,
         stat_prefix: `api_migrator_npm_${suffix}`,

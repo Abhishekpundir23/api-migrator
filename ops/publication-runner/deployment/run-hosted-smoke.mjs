@@ -516,7 +516,9 @@ function toolEvidence(inventory, environment) {
 }
 
 function nativeValidate(rendered, tools, evidence) {
-  const envoy = runCommand(tools.envoy, ["--mode", "validate", "-c", rendered.envoyConfigPath], { timeoutMs: 30_000 });
+  const envoy = runCommand(tools.envoy, [
+    "--mode", "validate", "--file-flush-interval-msec", "250", "-c", rendered.envoyConfigPath,
+  ], { timeoutMs: 30_000 });
   const nft = runCommand(tools.nft, ["-c", "-f", rendered.nftablesPolicyPath]);
   return Object.freeze({
     envoyEvidenceDigest: evidence.write("envoy-native-validation", envoy.stdout + envoy.stderr),
@@ -557,6 +559,7 @@ function gatewaySystemdArguments(resources, rendered, tools) {
     "--disable-hot-restart",
     "--concurrency", "1",
     "--log-level", "info",
+    "--file-flush-interval-msec", "250",
     "-c", rendered.envoyConfigPath,
   ];
 }
@@ -643,7 +646,10 @@ function readGatewayJournal(resources, tools, evidence, label) {
   return Object.freeze({ text, digest: evidence.write(label, text) });
 }
 
-export function countMatchingAccessLogs(text, deployment) {
+export function countMatchingAccessLogs(text, deployment, accessLogType = null) {
+  if (!(accessLogType === null || new Set(["TcpUpstreamConnected", "TcpConnectionEnd"]).has(accessLogType))) {
+    throw new Error("hosted smoke access-log type filter is unsupported");
+  }
   let count = 0;
   for (const line of text.split("\n")) {
     try {
@@ -654,6 +660,7 @@ export function countMatchingAccessLogs(text, deployment) {
       const upstreamPort = Number(match?.[2]);
       if (value.job_id === deployment.contract.jobId &&
           value.requested_server_name === "registry.npmjs.org" &&
+          (accessLogType === null || value.access_log_type === accessLogType) &&
           upstreamPort === 443 && deployment.contract.origin.addresses.includes(upstream)) {
         count += 1;
       }
@@ -1059,22 +1066,17 @@ function buildDeferredScenarioEvidence(name, values) {
 
 async function emergencyCleanup(resources, tools) {
   if (!resources || !tools) return;
-  try {
-    await stopExactUnit(resources.canaryUnit, tools);
-    await stopExactUnit(resources.gatewayUnit, tools);
-  } catch {
-    return; // Never remove the owned paths or containment while a unit/cgroup may survive.
+  for (const unit of [resources.canaryUnit, resources.gatewayUnit]) {
+    try {
+      await stopExactUnit(unit, tools);
+    } catch {
+      // Continue the other exact stop attempt. The external cleanup remains
+      // authoritative and retains containment if either unit survives.
+    }
   }
-  if (pidsForUid(HOSTED_SMOKE_RUNNER_UID).length > 0 || pidsForUid(HOSTED_SMOKE_GATEWAY_UID).length > 0) {
-    return; // Keep containment installed if either dedicated identity is still active.
-  }
-  try {
-    if (existsSync(resources.ownershipMarkerPath)) removeExactRuntime(resources);
-  } catch { return; }
-  if (existsSync(resources.workspacePath) || existsSync(resources.runtimeRoot)) return;
-  try {
-    if (tableSnapshot(tools.nft, resources.nftTable, true).exists) deleteExactTable(resources, tools);
-  } catch {}
+  // Do not remove the marker, workspace, runtime root, or nftables table here.
+  // The workflow's always-run external cleanup re-authenticates the marker,
+  // proves both identities/cgroups idle, and owns table-last teardown.
 }
 
 export async function runHostedSmoke(argv, dependencies = {}) {
@@ -1128,21 +1130,34 @@ export async function runHostedSmoke(argv, dependencies = {}) {
     markEvent(eventState, "gateway_started", gatewayIdentity.evidenceDigest);
     const listeners = await waitForListener(gatewayIdentity, resources, tools, evidence);
     const readinessJournalBefore = readGatewayJournal(resources, tools, evidence, "listener-readiness-journal-before");
-    const readinessAccessCountBefore = countMatchingAccessLogs(readinessJournalBefore.text, rendered.deployment);
+    const readinessConnectedBefore = countMatchingAccessLogs(
+      readinessJournalBefore.text, rendered.deployment, "TcpUpstreamConnected"
+    );
+    const readinessEndedBefore = countMatchingAccessLogs(
+      readinessJournalBefore.text, rendered.deployment, "TcpConnectionEnd"
+    );
     const positiveV4 = runProbe("correct_sni", rendered, tools);
     const positiveV6 = runProbe("correct_sni_ipv6", rendered, tools);
     const readinessJournalText = await waitFor(() => {
       const journal = runCommand(tools.journalctl, ["--boot", "--no-pager", "-o", "cat", "-u", resources.gatewayUnit]);
-      return countMatchingAccessLogs(journal.stdout, rendered.deployment) >= readinessAccessCountBefore + 2
-        ? journal.stdout
-        : false;
+      const connected = countMatchingAccessLogs(journal.stdout, rendered.deployment, "TcpUpstreamConnected");
+      const ended = countMatchingAccessLogs(journal.stdout, rendered.deployment, "TcpConnectionEnd");
+      return connected >= readinessConnectedBefore + 2 && ended >= readinessEndedBefore + 2
+        ? journal.stdout : false;
     }, "both positive readiness access logs", 8_000);
     const readinessJournalDigest = evidence.write("listener-readiness-journal-after", readinessJournalText);
     const listenerReadinessEvidenceDigest = evidence.write("listener-positive-readiness", canonicalJson({
       listenerSnapshotDigest: listeners.digest,
       ipv4PositiveProbe: positiveV4.result,
       ipv6PositiveProbe: positiveV6.result,
-      accessLogCountBefore: readinessAccessCountBefore,
+      connectedAccessLogCountBefore: readinessConnectedBefore,
+      endedAccessLogCountBefore: readinessEndedBefore,
+      connectedAccessLogCountAfter: countMatchingAccessLogs(
+        readinessJournalText, rendered.deployment, "TcpUpstreamConnected"
+      ),
+      endedAccessLogCountAfter: countMatchingAccessLogs(
+        readinessJournalText, rendered.deployment, "TcpConnectionEnd"
+      ),
       accessLogCountAfter: countMatchingAccessLogs(readinessJournalText, rendered.deployment),
       accessLogEvidenceDigest: readinessJournalDigest,
     }));

@@ -66,6 +66,13 @@ test("renders only static exact-SNI Envoy listeners and numeric upstream endpoin
       "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog"
     );
     assert.equal(proxy.access_log[0].typed_config.path, undefined);
+    assert.deepEqual(proxy.access_log_options, {
+      flush_access_log_on_connected: true,
+    });
+    assert.equal(
+      proxy.access_log[0].typed_config.log_format.json_format.access_log_type,
+      "%ACCESS_LOG_TYPE%"
+    );
   }
   assert.deepEqual(validateRenderedEnvoyConfig(config, deployment), config);
   assert.equal(deployment.contract.profile, GATEWAY_PROFILE);

@@ -140,9 +140,10 @@ test("correlates only exact plan-bound Envoy upstream address and port records",
       origin: { addresses: ["104.16.1.35", "2606:4700::6810:123"] },
     },
   };
-  const entry = (upstream_host) => JSON.stringify({
+  const entry = (upstream_host, access_log_type = "TcpConnectionEnd") => JSON.stringify({
     job_id: deployment.contract.jobId,
     requested_server_name: "registry.npmjs.org",
+    access_log_type,
     upstream_host,
   });
   const text = [
@@ -153,6 +154,9 @@ test("correlates only exact plan-bound Envoy upstream address and port records",
     entry("[2606:4700::6810:1234]:443"),
   ].join("\n");
   assert.equal(countMatchingAccessLogs(text, deployment), 2);
+  assert.equal(countMatchingAccessLogs(text, deployment, "TcpConnectionEnd"), 2);
+  assert.equal(countMatchingAccessLogs(text, deployment, "TcpUpstreamConnected"), 0);
+  assert.throws(() => countMatchingAccessLogs(text, deployment, "TcpPeriodic"), /unsupported/);
 });
 
 test("runner source keeps the report boundary non-authorizing and table removal after cleanup", () => {
@@ -162,8 +166,15 @@ test("runner source keeps the report boundary non-authorizing and table removal 
   assert.match(source, /externalSigningEligible: false/);
   assert.doesNotMatch(source, /releaseEvidenceEligible:\s*true|externalSigningEligible:\s*true|owner:sign|runnerCapability/);
   assert(source.indexOf("removeExactRuntime(resources)") < source.indexOf("deleteExactTable(resources, tools)"));
-  assert.match(source, /Keep containment installed if either dedicated identity is still active/);
-  assert.match(source, /Never remove the owned paths or containment while a unit\/cgroup may survive/);
+  const emergency = source.slice(
+    source.indexOf("async function emergencyCleanup"),
+    source.indexOf("export async function runHostedSmoke")
+  );
+  assert.doesNotMatch(emergency, /removeExactRuntime|deleteExactTable/);
+  assert.match(emergency, /always-run external cleanup re-authenticates the marker/);
+  assert.match(emergency, /\[resources\.canaryUnit, resources\.gatewayUnit\]/);
+  assert.match(source, /"--file-flush-interval-msec", "250"/);
+  assert.match(source, /readinessConnectedBefore \+ 2 && ended >= readinessEndedBefore \+ 2/);
   assert.match(source, /LoadState !== "not-found"/);
   assert.match(source, /Result: "timeout", ExecMainCode: "2", ExecMainStatus: "15"/);
   assert.match(source, /Result: "signal", ExecMainCode: "2", ExecMainStatus: "9"/);
