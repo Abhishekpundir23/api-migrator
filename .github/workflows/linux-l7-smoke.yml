@@ -67,6 +67,7 @@ jobs:
 
           readelf -l "${prepare_root}/envoy" | grep -F '/lib64/ld-linux-x86-64.so.2'
           expected_libraries=$(printf '%s\n' \
+            ld-linux-x86-64.so.2 \
             libc.so.6 \
             libdl.so.2 \
             libm.so.6 \

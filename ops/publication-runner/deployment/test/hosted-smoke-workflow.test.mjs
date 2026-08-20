@@ -41,7 +41,7 @@ test("hosted smoke workflow pins the runner, tools, and every third-party action
   assert.match(workflow, /^  ENVOY_BINARY_SHA256: 7af83300cd615004f8b8fe58954705014c92754c5b68a1edf0dba1f3e9cc9920$/m);
   assert.match(workflow, /ld-linux-x86-64\.so\.2/);
   const expectedLibraries = workflow.match(/expected_libraries=\$\(printf '%s\\n' \\\n(?<body>(?:            [A-Za-z0-9_.-]+ \\\n)+)/)?.groups?.body ?? "";
-  assert.doesNotMatch(expectedLibraries, /ld-linux-x86-64\.so\.2/);
+  assert.match(expectedLibraries, /ld-linux-x86-64\.so\.2/);
 
   const uses = [...workflow.matchAll(/^\s+(?:-\s+)?uses: ([^\s#]+).*$/gm)].map((match) => match[1]);
   assert(uses.length >= 8);
