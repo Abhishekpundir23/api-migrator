@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   GATEWAY_PROBE_SCENARIOS,
   buildGatewayProbeSpecification,
+  expectConnectionDenied,
   expectPlaintextRejection,
   runGatewayProbe,
 } from "../gateway-probe.mjs";
@@ -31,6 +32,7 @@ function activeContractFixture() {
 test("derives only fixed numeric-address gateway probes", () => {
   const expected = {
     correct_sni: [12001, "tls", "127.0.0.1", 15443, "registry.npmjs.org", "https_ping_passed"],
+    correct_sni_ipv6: [12001, "tls", "::1", 15443, "registry.npmjs.org", "https_ping_passed"],
     direct_bypass: [12001, "tls", "104.16.1.35", 443, "registry.npmjs.org", "https_ping_passed"],
     wrong_sni: [12001, "tls", "127.0.0.1", 15443, "wrong-sni.invalid", "connection_denied"],
     absent_sni: [12001, "tls", "127.0.0.1", 15443, null, "connection_denied"],
@@ -52,6 +54,51 @@ test("derives only fixed numeric-address gateway probes", () => {
     assert.equal(spec.planCreatedAt, contractFixture().plan.createdAt);
     assert.equal(spec.planExpiresAt, contractFixture().plan.expiresAt);
     assert(Object.isFrozen(spec));
+  }
+});
+
+test("wrong and absent SNI denial proves the exact listener was reached", async () => {
+  const closedServer = createServer();
+  await new Promise((resolvePromise, rejectPromise) => {
+    closedServer.once("error", rejectPromise);
+    closedServer.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const closedAddress = closedServer.address();
+  assert(closedAddress && typeof closedAddress === "object");
+  await new Promise((resolvePromise) => closedServer.close(resolvePromise));
+  await assert.rejects(
+    expectConnectionDenied({
+      scenario: "wrong_sni",
+      transport: "tls",
+      address: "127.0.0.1",
+      port: closedAddress.port,
+      servername: "wrong-sni.invalid",
+    }, 500),
+    /before reaching|never reached/
+  );
+
+  const sockets = new Set();
+  const rejectingServer = createServer((socket) => {
+    sockets.add(socket);
+    socket.end();
+  });
+  await new Promise((resolvePromise, rejectPromise) => {
+    rejectingServer.once("error", rejectPromise);
+    rejectingServer.listen(0, "127.0.0.1", resolvePromise);
+  });
+  try {
+    const address = rejectingServer.address();
+    assert(address && typeof address === "object");
+    await assert.doesNotReject(() => expectConnectionDenied({
+      scenario: "absent_sni",
+      transport: "tls",
+      address: "127.0.0.1",
+      port: address.port,
+      servername: null,
+    }, 500));
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolvePromise) => rejectingServer.close(resolvePromise));
   }
 });
 

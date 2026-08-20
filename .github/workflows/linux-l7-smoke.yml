@@ -1,0 +1,503 @@
+name: Linux L7 hosted smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/linux-l7-smoke.yml"
+      - "ops/publication-runner/**"
+  pull_request:
+    paths:
+      - ".github/workflows/linux-l7-smoke.yml"
+      - "ops/publication-runner/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-l7-smoke-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 22.23.2
+  NFTABLES_PACKAGE_VERSION: 1.0.9-1ubuntu0.1
+  ENVOY_IMAGE_REFERENCE: docker.io/envoyproxy/envoy:v1.39.0@sha256:f6e2f57b1bef8235083a2553b523508cf97d8991c893fd2aae3a94a6b21096a2
+  ENVOY_IMAGE_CONFIG_DIGEST: sha256:0ac66ca46caa8964c146a0eb729fd890b7d5fbcc737528b6c9705ebcbcdfd0aa
+  ENVOY_BINARY_SHA256: 7af83300cd615004f8b8fe58954705014c92754c5b68a1edf0dba1f3e9cc9920
+
+jobs:
+  prepare-envoy:
+    name: Prepare pinned native Envoy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Extract without starting the image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          prepare_root="${RUNNER_TEMP}/api-migrator-envoy-tool"
+          install -d -m 0700 -- "$prepare_root"
+          container_id=""
+          cleanup_container() {
+            if [[ -n "$container_id" ]]; then
+              docker rm --force -- "$container_id" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_container EXIT
+
+          docker pull --platform linux/amd64 "$ENVOY_IMAGE_REFERENCE"
+          image_id=$(docker image inspect --format '{{.Id}}' "$ENVOY_IMAGE_REFERENCE")
+          [[ "$image_id" == "$ENVOY_IMAGE_CONFIG_DIGEST" ]]
+
+          container_id=$(docker create --platform linux/amd64 "$ENVOY_IMAGE_REFERENCE")
+          docker cp "${container_id}:/usr/local/bin/envoy" "${prepare_root}/envoy"
+          docker rm --force -- "$container_id" >/dev/null
+          container_id=""
+
+          [[ -f "${prepare_root}/envoy" && ! -L "${prepare_root}/envoy" ]]
+          [[ $(stat -c '%h' -- "${prepare_root}/envoy") == 1 ]]
+          printf '%s  %s\n' "$ENVOY_BINARY_SHA256" "${prepare_root}/envoy" | sha256sum --check --strict
+
+          readelf -l "${prepare_root}/envoy" | grep -F '/lib64/ld-linux-x86-64.so.2'
+          expected_libraries=$(printf '%s\n' \
+            libc.so.6 \
+            libdl.so.2 \
+            libm.so.6 \
+            libpthread.so.0 \
+            librt.so.1 | LC_ALL=C sort)
+          observed_libraries=$(readelf -d "${prepare_root}/envoy" |
+            sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_libraries") <(printf '%s\n' "$observed_libraries")
+          chmod 0555 "${prepare_root}/envoy"
+
+          envoy_version=$(timeout 10s "${prepare_root}/envoy" --version 2>&1)
+          jq -cn \
+            --arg imageReference "$ENVOY_IMAGE_REFERENCE" \
+            --arg imageConfigDigest "$image_id" \
+            --arg envoyBinaryDigest "sha256:${ENVOY_BINARY_SHA256}" \
+            --arg envoyVersion "$envoy_version" \
+            --arg runnerImageVersion "${ImageVersion:-unknown}" \
+            '{
+              schemaVersion: 1,
+              kind: "api_migrator_linux_l7_hosted_smoke_tool_inventory",
+              imageReference: $imageReference,
+              imageConfigDigest: $imageConfigDigest,
+              envoyBinaryDigest: $envoyBinaryDigest,
+              envoyVersion: $envoyVersion,
+              runnerImageVersion: $runnerImageVersion,
+              releaseEvidenceEligible: false,
+              activationBlocked: true,
+              externalSigningEligible: false,
+              authorizationStatus: "non_authorizing_github_hosted_smoke_only"
+            }' > "${prepare_root}/tool-inventory.json"
+          (cd "$prepare_root" && sha256sum envoy tool-inventory.json > SHA256SUMS)
+
+      - name: Upload pinned Envoy tool
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-l7-smoke-envoy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/api-migrator-envoy-tool
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 1
+          compression-level: 6
+
+  smoke:
+    name: Hosted L7 smoke (${{ matrix.scenario }})
+    needs: prepare-envoy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        scenario:
+          - success
+          - timeout
+          - sigkill
+          - wrong_sni
+          - absent_sni
+          - plaintext
+          - direct_bypass
+          - non_443
+          - non_npm
+          - offline_network
+          - gateway_stop
+          - uid_idle
+          - policy_removal
+          - cgroup_namespace_cleanup
+          - workspace_cleanup
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Initialize bounded scenario output
+        id: scenario-output
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          artifact_root="${RUNNER_TEMP}/api-migrator-hosted-smoke-artifacts/${{ matrix.scenario }}"
+          scenario_output="${artifact_root}/scenario"
+          install -d -m 0700 -- "$artifact_root"
+          sudo install -d -o root -g root -m 0700 -- "$scenario_output"
+          jq -cn --arg scenario "${{ matrix.scenario }}" '{
+            schemaVersion: 1,
+            kind: "api_migrator_github_hosted_l7_smoke_workflow_boundary",
+            scenario: $scenario,
+            selfAttested: true,
+            releaseEvidenceEligible: false,
+            activationBlocked: true,
+            externalSigningEligible: false,
+            authorizationStatus: "non_authorizing_github_hosted_smoke_only"
+          }' > "${artifact_root}/workflow-boundary.json"
+          printf 'artifact_root=%s\n' "$artifact_root" >> "$GITHUB_OUTPUT"
+          printf 'scenario_output=%s\n' "$scenario_output" >> "$GITHUB_OUTPUT"
+
+      - name: Provision exact disposable smoke identities
+        id: provision_identities
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          runner_name=api-migrator-smoke-runner
+          gateway_name=api-migrator-smoke-gateway
+          runner_uid=12001
+          gateway_uid=12002
+          runner_group_created=false
+          runner_user_created=false
+          gateway_group_created=false
+          gateway_user_created=false
+          rollback() {
+            [[ "$gateway_user_created" == false ]] || sudo userdel -- "$gateway_name" >/dev/null 2>&1 || true
+            [[ "$gateway_group_created" == false ]] || sudo groupdel -- "$gateway_name" >/dev/null 2>&1 || true
+            [[ "$runner_user_created" == false ]] || sudo userdel -- "$runner_name" >/dev/null 2>&1 || true
+            [[ "$runner_group_created" == false ]] || sudo groupdel -- "$runner_name" >/dev/null 2>&1 || true
+          }
+          trap rollback ERR
+          for key in "$runner_name" "$gateway_name" "$runner_uid" "$gateway_uid"; do
+            if getent passwd "$key" >/dev/null; then
+              echo "hosted smoke passwd identity collision: $key" >&2
+              exit 1
+            fi
+            if getent group "$key" >/dev/null; then
+              echo "hosted smoke group identity collision: $key" >&2
+              exit 1
+            fi
+          done
+          sudo groupadd --gid "$runner_uid" -- "$runner_name"
+          runner_group_created=true
+          sudo useradd --uid "$runner_uid" --gid "$runner_uid" --comment '' \
+            --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin -- "$runner_name"
+          runner_user_created=true
+          sudo groupadd --gid "$gateway_uid" -- "$gateway_name"
+          gateway_group_created=true
+          sudo useradd --uid "$gateway_uid" --gid "$gateway_uid" --comment '' \
+            --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin -- "$gateway_name"
+          gateway_user_created=true
+          [[ "$(getent passwd "$runner_name")" == "${runner_name}:x:${runner_uid}:${runner_uid}::/nonexistent:/usr/sbin/nologin" ]]
+          [[ "$(getent passwd "$gateway_name")" == "${gateway_name}:x:${gateway_uid}:${gateway_uid}::/nonexistent:/usr/sbin/nologin" ]]
+          [[ "$(getent group "$runner_name")" == "${runner_name}:x:${runner_uid}:" ]]
+          [[ "$(getent group "$gateway_name")" == "${gateway_name}:x:${gateway_uid}:" ]]
+          trap - ERR
+          printf 'identities_created=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Download pinned Envoy tool
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-l7-smoke-envoy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/api-migrator-envoy-tool
+
+      - name: Install exact native tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          downloaded_envoy="${RUNNER_TEMP}/api-migrator-envoy-tool/envoy"
+          [[ -f "$downloaded_envoy" && ! -L "$downloaded_envoy" ]]
+          (cd "${RUNNER_TEMP}/api-migrator-envoy-tool" && sha256sum --check --strict SHA256SUMS)
+          printf '%s  %s\n' "$ENVOY_BINARY_SHA256" "$downloaded_envoy" | sha256sum --check --strict
+
+          sudo apt-get update -o Acquire::Retries=3
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            "nftables=${NFTABLES_PACKAGE_VERSION}"
+
+          tool_root=/usr/local/libexec/api-migrator-hosted-smoke
+          runtime_root="${tool_root}/runtime"
+          node_source=$(realpath "$(command -v node)")
+          nft_source=$(realpath "$(command -v nft)")
+          sudo install -d -o root -g root -m 0755 -- "$tool_root"
+          sudo install -d -o root -g root -m 0755 -- \
+            "${runtime_root}/deployment" \
+            "${runtime_root}/gateway/templates"
+          sudo install -o root -g root -m 0555 -- "$downloaded_envoy" "${tool_root}/envoy"
+          sudo install -o root -g root -m 0555 -- "$node_source" "${tool_root}/node"
+          sudo install -o root -g root -m 0555 -- "$nft_source" "${tool_root}/nft"
+          sudo install -o root -g root -m 0444 -- \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/run-hosted-smoke.mjs" \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/cleanup-hosted-smoke.mjs" \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/hosted-lifecycle-smoke.mjs" \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/hosted-smoke-runtime.mjs" \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/lib.mjs" \
+            "${runtime_root}/deployment/"
+          sudo install -o root -g root -m 0444 -- \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/gateway/gateway-contract.mjs" \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/gateway/gateway-probe.mjs" \
+            "${runtime_root}/gateway/"
+          sudo install -o root -g root -m 0444 -- \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/gateway/templates/forced-gateway-egress.nft.in" \
+            "${runtime_root}/gateway/templates/forced-gateway-egress.nft.in"
+          manifest_tmp=$(mktemp "${RUNNER_TEMP}/api-migrator-runtime-manifest.XXXXXX")
+          find "$runtime_root" -xdev -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | \
+            xargs -0 sha256sum > "$manifest_tmp"
+          sudo install -o root -g root -m 0444 -- "$manifest_tmp" "${runtime_root}/SHA256SUMS"
+          rm -- "$manifest_tmp"
+
+          [[ $("${tool_root}/node" --version) == "v${NODE_VERSION}" ]]
+          printf '%s  %s\n' "$ENVOY_BINARY_SHA256" "${tool_root}/envoy" | sha256sum --check --strict
+          timeout 10s "${tool_root}/envoy" --version >/dev/null
+          "${tool_root}/nft" --version
+          (cd / && sudo sha256sum --check --strict "${runtime_root}/SHA256SUMS")
+
+          artifact_root="${{ steps.scenario-output.outputs.artifact_root }}"
+          jq -cn \
+            --arg scenario "${{ matrix.scenario }}" \
+            --arg runnerImageVersion "${ImageVersion:-unknown}" \
+            --arg nodeVersion "$("${tool_root}/node" --version)" \
+            --arg nodeDigest "sha256:$(sha256sum "${tool_root}/node" | awk '{print $1}')" \
+            --arg nftVersion "$("${tool_root}/nft" --version)" \
+            --arg nftDigest "sha256:$(sha256sum "${tool_root}/nft" | awk '{print $1}')" \
+            --arg envoyDigest "sha256:${ENVOY_BINARY_SHA256}" \
+            '{
+              schemaVersion: 1,
+              kind: "api_migrator_linux_l7_hosted_smoke_workflow_inventory",
+              scenario: $scenario,
+              runnerImageVersion: $runnerImageVersion,
+              node: {version: $nodeVersion, digest: $nodeDigest},
+              nftables: {version: $nftVersion, digest: $nftDigest},
+              envoy: {digest: $envoyDigest},
+              releaseEvidenceEligible: false,
+              activationBlocked: true,
+              externalSigningEligible: false,
+              authorizationStatus: "non_authorizing_github_hosted_smoke_only"
+            }' > "${artifact_root}/workflow-inventory.json"
+
+      - name: Run isolated hosted smoke scenario
+        shell: bash
+        env:
+          SMOKE_RUN_ID: ${{ github.run_id }}
+          SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          SMOKE_SOURCE_REVISION: ${{ github.sha }}
+          SMOKE_REPOSITORY: ${{ github.repository }}
+          SMOKE_WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          tool_root=/usr/local/libexec/api-migrator-hosted-smoke
+          runtime_root="${tool_root}/runtime"
+          (cd / && sudo sha256sum --check --strict "${runtime_root}/SHA256SUMS")
+          runner_path="${runtime_root}/deployment/run-hosted-smoke.mjs"
+          scenario_output="${{ steps.scenario-output.outputs.scenario_output }}"
+          sudo env -i \
+            PATH="${tool_root}:/usr/sbin:/usr/bin:/sbin:/bin" \
+            LANG=C LC_ALL=C TZ=UTC \
+            API_MIGRATOR_HOSTED_ENVOY_PATH="${tool_root}/envoy" \
+            API_MIGRATOR_SMOKE_RUN_ID="$SMOKE_RUN_ID" \
+            API_MIGRATOR_SMOKE_RUN_ATTEMPT="$SMOKE_RUN_ATTEMPT" \
+            API_MIGRATOR_SMOKE_SOURCE_REVISION="$SMOKE_SOURCE_REVISION" \
+            API_MIGRATOR_SMOKE_REPOSITORY="$SMOKE_REPOSITORY" \
+            API_MIGRATOR_SMOKE_WORKFLOW_REF="$SMOKE_WORKFLOW_REF" \
+            API_MIGRATOR_SMOKE_IMAGE_VERSION="${ImageVersion:-unknown}" \
+            "${tool_root}/node" "$runner_path" \
+            --scenario "${{ matrix.scenario }}" \
+            --output-dir "$scenario_output"
+
+      - name: Cleanup exact hosted smoke boundary
+        if: always() && steps.scenario-output.outputs.scenario_output != ''
+        shell: bash
+        env:
+          SMOKE_RUN_ID: ${{ github.run_id }}
+          SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          tool_root=/usr/local/libexec/api-migrator-hosted-smoke
+          node_path="${tool_root}/node"
+          [[ -x "$node_path" ]] || node_path=$(realpath "$(command -v node)")
+          cleanup_path="${tool_root}/runtime/deployment/cleanup-hosted-smoke.mjs"
+          [[ -f "$cleanup_path" ]] || cleanup_path=$(realpath "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/cleanup-hosted-smoke.mjs")
+          sudo env -i \
+            PATH="/usr/sbin:/usr/bin:/sbin:/bin" \
+            LANG=C LC_ALL=C TZ=UTC \
+            API_MIGRATOR_SMOKE_RUN_ID="$SMOKE_RUN_ID" \
+            API_MIGRATOR_SMOKE_RUN_ATTEMPT="$SMOKE_RUN_ATTEMPT" \
+            "$node_path" "$cleanup_path" \
+            --scenario "${{ matrix.scenario }}" \
+            --output-dir "${{ steps.scenario-output.outputs.scenario_output }}"
+
+      - name: Audit residual hosted smoke state
+        if: always() && steps.scenario-output.outputs.scenario_output != ''
+        shell: bash
+        env:
+          SMOKE_RUN_ID: ${{ github.run_id }}
+          SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          tool_root=/usr/local/libexec/api-migrator-hosted-smoke
+          node_path="${tool_root}/node"
+          [[ -x "$node_path" ]] || node_path=$(realpath "$(command -v node)")
+          cleanup_path="${tool_root}/runtime/deployment/cleanup-hosted-smoke.mjs"
+          [[ -f "$cleanup_path" ]] || cleanup_path=$(realpath "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/cleanup-hosted-smoke.mjs")
+          sudo env -i \
+            PATH="/usr/sbin:/usr/bin:/sbin:/bin" \
+            LANG=C LC_ALL=C TZ=UTC \
+            API_MIGRATOR_SMOKE_RUN_ID="$SMOKE_RUN_ID" \
+            API_MIGRATOR_SMOKE_RUN_ATTEMPT="$SMOKE_RUN_ATTEMPT" \
+            "$node_path" "$cleanup_path" \
+            --scenario "${{ matrix.scenario }}" \
+            --output-dir "${{ steps.scenario-output.outputs.scenario_output }}" \
+            --audit-only
+
+      - name: Remove exact disposable smoke identities
+        if: always() && steps.provision_identities.outputs.identities_created == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          runner_name=api-migrator-smoke-runner
+          gateway_name=api-migrator-smoke-gateway
+          [[ "$(getent passwd "$runner_name")" == "${runner_name}:x:12001:12001::/nonexistent:/usr/sbin/nologin" ]]
+          [[ "$(getent passwd "$gateway_name")" == "${gateway_name}:x:12002:12002::/nonexistent:/usr/sbin/nologin" ]]
+          [[ "$(getent group "$runner_name")" == "${runner_name}:x:12001:" ]]
+          [[ "$(getent group "$gateway_name")" == "${gateway_name}:x:12002:" ]]
+          if ps -eo uid= | awk '$1 == 12001 || $1 == 12002 { found = 1 } END { exit found ? 0 : 1 }'; then
+            echo "hosted smoke disposable identity still owns a process" >&2
+            exit 1
+          fi
+          sudo userdel -- "$gateway_name"
+          if getent group "$gateway_name" >/dev/null; then sudo groupdel -- "$gateway_name"; fi
+          sudo userdel -- "$runner_name"
+          if getent group "$runner_name" >/dev/null; then sudo groupdel -- "$runner_name"; fi
+          for key in "$runner_name" "$gateway_name" 12001 12002; do
+            if getent passwd "$key" >/dev/null || getent group "$key" >/dev/null; then
+              echo "hosted smoke disposable identity survived removal: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Bound scenario artifacts
+        id: bound_artifacts
+        if: always() && steps.scenario-output.outputs.artifact_root != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          artifact_root="${{ steps.scenario-output.outputs.artifact_root }}"
+          [[ "$artifact_root" == "${RUNNER_TEMP}/api-migrator-hosted-smoke-artifacts/"* ]]
+          [[ -d "$artifact_root" && ! -L "$artifact_root" ]]
+
+          if sudo find "$artifact_root" -xdev -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
+            echo "hosted smoke output contains a non-regular object" >&2
+            exit 1
+          fi
+          file_count=$(sudo find "$artifact_root" -xdev -type f -printf '.' | wc -c)
+          (( file_count >= 1 && file_count <= 64 ))
+          total_bytes=0
+          while IFS= read -r -d '' file; do
+            size=$(sudo stat -c '%s' -- "$file")
+            (( size <= 2097152 ))
+            total_bytes=$((total_bytes + size))
+          done < <(sudo find "$artifact_root" -xdev -type f -print0)
+          (( total_bytes <= 8388608 ))
+
+          sudo chown -R --no-dereference "$(id -u):$(id -g)" "$artifact_root"
+          find "$artifact_root" -xdev -type d -exec chmod 0750 {} +
+          find "$artifact_root" -xdev -type f -exec chmod 0440 {} +
+
+      - name: Upload bounded scenario artifacts
+        if: always() && steps.scenario-output.outputs.artifact_root != '' && steps.bound_artifacts.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-l7-smoke-scenario-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.scenario }}
+          path: ${{ steps.scenario-output.outputs.scenario_output }}/scenario-report.json
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
+          compression-level: 6
+
+      - name: Upload bounded scenario diagnostics
+        if: always() && steps.scenario-output.outputs.artifact_root != '' && steps.bound_artifacts.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-l7-smoke-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.scenario }}
+          path: ${{ steps.scenario-output.outputs.artifact_root }}
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
+          compression-level: 6
+
+  aggregate:
+    name: Aggregate hosted L7 smoke
+    if: always()
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require every scenario and residual cleanup check to pass
+        env:
+          SMOKE_MATRIX_RESULT: ${{ needs.smoke.result }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$SMOKE_MATRIX_RESULT" == success ]]
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download all scenario artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: linux-l7-smoke-scenario-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/api-migrator-hosted-smoke-input
+          merge-multiple: false
+
+      - name: Validate exact 15-scenario aggregate
+        id: aggregate_report
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          input_root="${RUNNER_TEMP}/api-migrator-hosted-smoke-input"
+          output_root="${RUNNER_TEMP}/api-migrator-hosted-smoke-aggregate"
+          install -d -m 0700 -- "$output_root"
+          node ops/publication-runner/deployment/aggregate-hosted-smoke.mjs \
+            --input-dir "$input_root" \
+            --output "${output_root}/aggregate-report.json"
+
+      - name: Upload aggregate report
+        if: steps.aggregate_report.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-l7-smoke-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/api-migrator-hosted-smoke-aggregate
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
+          compression-level: 6

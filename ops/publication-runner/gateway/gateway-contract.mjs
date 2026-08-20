@@ -496,8 +496,8 @@ function buildNftablesPolicy(contract, table) {
     ["@RUNNER_UID@", String(contract.runnerUid)],
     ["@GATEWAY_UID@", String(contract.gatewayUid)],
     ["@GATEWAY_PORT@", String(contract.listener.port)],
-    ["@UPSTREAM_V4@", ipv4.join(", ")],
-    ["@UPSTREAM_V6@", ipv6.join(", ")],
+    ["@UPSTREAM_V4_ELEMENTS@", renderSetElements(ipv4)],
+    ["@UPSTREAM_V6_ELEMENTS@", renderSetElements(ipv6)],
   ]);
   let rendered = template;
   for (const [placeholder, replacement] of replacements) {
@@ -507,6 +507,12 @@ function buildNftablesPolicy(contract, table) {
     throw new Error("Gateway nftables template contains an unresolved placeholder");
   }
   return rendered.endsWith("\n") ? rendered : `${rendered}\n`;
+}
+
+function renderSetElements(addresses) {
+  return addresses.length === 0
+    ? "    # Intentionally empty: this address family was not present in the bound DNS answer."
+    : `    elements = { ${addresses.join(", ")} }`;
 }
 
 function validateEvidence(value, name) {

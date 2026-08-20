@@ -7,13 +7,13 @@ table inet @TABLE@ {
   set npm_upstream_v4 {
     type ipv4_addr
     flags interval
-    elements = { @UPSTREAM_V4@ }
+@UPSTREAM_V4_ELEMENTS@
   }
 
   set npm_upstream_v6 {
     type ipv6_addr
     flags interval
-    elements = { @UPSTREAM_V6@ }
+@UPSTREAM_V6_ELEMENTS@
   }
 
   chain force_runner_gateway {

@@ -85,6 +85,23 @@ test("renders a forced two-identity nftables route with no runner direct path", 
   assert.equal(validateRenderedNftablesPolicy(policy, deployment), policy);
 });
 
+test("renders a valid empty nftables set when DNS returns only one address family", () => {
+  for (const [name, addresses, emptyFamily] of [
+    ["IPv4 only", ["104.16.1.35"], "v6"],
+    ["IPv6 only", ["2606:4700::6810:123"], "v4"],
+  ]) {
+    const contract = contractFixture();
+    contract.origin.addresses = addresses;
+    const policy = renderGatewayDeployment(contract).nftablesPolicy;
+    assert.doesNotMatch(policy, /elements = \{\s*\}/, name);
+    assert.match(
+      policy,
+      new RegExp(`set npm_upstream_${emptyFamily} \\{[\\s\\S]*?Intentionally empty:[\\s\\S]*?\\n  \\}`),
+      name
+    );
+  }
+});
+
 test("rejects gateway contracts that broaden identity, origin, address, or lifetime", () => {
   const cases = [
     ["same identity", (value) => { value.gatewayUid = value.runnerUid; }],
