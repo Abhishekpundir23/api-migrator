@@ -8,6 +8,7 @@ import {
   parseHostedSmokeCli,
   parseHostedSmokeEnvironment,
   parseNftCounterSnapshot,
+  proveHostedListenerAbsence,
   resolveHostedNpmOrigin,
   validateHostedSmokeAccounts,
 } from "../run-hosted-smoke.mjs";
@@ -131,6 +132,13 @@ test("requires the two exact static systemd identities", () => {
     () => validateHostedSmokeAccounts(passwd.replace("/usr/sbin/nologin", "/bin/bash"), group),
     /missing, duplicated, or substituted/
   );
+});
+
+test("represents an absent listener with a truthy proof while preserving exact evidence", () => {
+  assert.deepEqual(proveHostedListenerAbsence(""), { snapshot: "" });
+  assert.deepEqual(proveHostedListenerAbsence(" \n\t"), { snapshot: " \n\t" });
+  assert.equal(proveHostedListenerAbsence("LISTEN 0 4096 127.0.0.1:15443\n"), false);
+  assert.throws(() => proveHostedListenerAbsence(null), /listener snapshot is invalid/);
 });
 
 test("correlates only exact plan-bound Envoy upstream address and port records", () => {

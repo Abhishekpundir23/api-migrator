@@ -394,6 +394,11 @@ function listenerSnapshot(ssPath, port) {
   return result.stdout;
 }
 
+export function proveHostedListenerAbsence(snapshot) {
+  if (typeof snapshot !== "string") throw new Error("hosted smoke listener snapshot is invalid");
+  return snapshot.trim() === "" ? Object.freeze({ snapshot }) : false;
+}
+
 function assertNoResourceCollision(resources, tools) {
   validateHostedSmokeAccounts(readFileSync("/etc/passwd", "utf8"), readFileSync("/etc/group", "utf8"));
   if (existsSync(resources.runtimeRoot) || existsSync(resources.workspacePath)) {
@@ -871,10 +876,11 @@ async function executeOnlineScenario(name, resources, rendered, tools, evidence,
 async function stopGatewayAndCheckOffline(resources, rendered, tools, evidence, identity) {
   const stopped = await stopExactUnit(resources.gatewayUnit, tools);
   await waitFor(() => !existsSync(`/proc/${identity.pid}`), "gateway MainPID exit");
-  const listeners = await waitFor(() => {
-    const value = listenerSnapshot(tools.ss, HOSTED_SMOKE_LISTENER_PORT);
-    return value.trim() === "" ? value : false;
-  }, "gateway listener removal");
+  const listenerAbsence = await waitFor(
+    () => proveHostedListenerAbsence(listenerSnapshot(tools.ss, HOSTED_SMOKE_LISTENER_PORT)),
+    "gateway listener removal"
+  );
+  const listeners = listenerAbsence.snapshot;
   const stopEvidenceDigest = evidence.write("gateway-stop", canonicalJson({
     before: stopped.before.raw,
     after: stopped.after.raw,
