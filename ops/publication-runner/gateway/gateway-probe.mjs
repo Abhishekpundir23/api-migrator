@@ -14,6 +14,7 @@ import {
 
 export const GATEWAY_PROBE_SCENARIOS = Object.freeze([
   "correct_sni",
+  "correct_sni_ipv6",
   "direct_bypass",
   "wrong_sni",
   "absent_sni",
@@ -63,6 +64,15 @@ export function buildGatewayProbeSpecification(contractValue, scenario) {
         ...base,
         transport: "tls",
         address: loopbackAddress,
+        port: contract.listener.port,
+        servername: contract.origin.host,
+        expected: "https_ping_passed",
+      });
+    case "correct_sni_ipv6":
+      return Object.freeze({
+        ...base,
+        transport: "tls",
+        address: contract.listener.addresses[1],
         port: contract.listener.port,
         servername: contract.origin.host,
         expected: "https_ping_passed",
@@ -273,10 +283,11 @@ function expectHttpsPing(spec, timeoutMs) {
   });
 }
 
-function expectConnectionDenied(spec, timeoutMs) {
+export function expectConnectionDenied(spec, timeoutMs) {
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
-    let connected = false;
+    let tcpConnected = false;
+    const mustReachListener = spec.scenario === "wrong_sni" || spec.scenario === "absent_sni";
     const socket = spec.transport === "tls"
       ? connectTls({
           host: spec.address,
@@ -289,8 +300,13 @@ function expectConnectionDenied(spec, timeoutMs) {
       if (settled) return;
       settled = true;
       socket.destroy();
-      if (connected) rejectPromise(new Error("Gateway negative probe remained connected"));
-      else resolvePromise();
+      if (mustReachListener && !tcpConnected) {
+        rejectPromise(new Error("Gateway SNI probe never reached the exact live listener"));
+      } else if (tcpConnected) {
+        rejectPromise(new Error("Gateway negative probe remained connected"));
+      } else {
+        resolvePromise();
+      }
     }, timeoutMs);
     const done = (error) => {
       if (settled) return;
@@ -299,13 +315,28 @@ function expectConnectionDenied(spec, timeoutMs) {
       socket.destroy();
       if (error) rejectPromise(error); else resolvePromise();
     };
-    socket.once(spec.transport === "tls" ? "secureConnect" : "connect", () => {
-      connected = true;
-      done(new Error("Gateway negative probe unexpectedly connected"));
+    socket.once("connect", () => {
+      tcpConnected = true;
+      if (spec.transport === "tcp") {
+        done(new Error("Gateway negative probe unexpectedly connected"));
+      }
     });
-    socket.once("error", () => done());
+    if (spec.transport === "tls") {
+      socket.once("secureConnect", () => done(new Error("Gateway negative probe unexpectedly established TLS")));
+    }
+    socket.once("error", () => done(
+      mustReachListener && !tcpConnected
+        ? new Error("Gateway SNI probe was denied before reaching the exact live listener")
+        : undefined
+    ));
     socket.once("close", () => {
-      if (!connected) done();
+      if (mustReachListener && !tcpConnected) {
+        done(new Error("Gateway SNI probe closed before reaching the exact live listener"));
+      } else if (spec.transport === "tls") {
+        done();
+      } else if (!tcpConnected) {
+        done();
+      }
     });
   });
 }

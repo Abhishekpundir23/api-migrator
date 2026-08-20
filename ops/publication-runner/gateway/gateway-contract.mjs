@@ -411,14 +411,14 @@ function buildEnvoyConfig(contract) {
       typed_config: {
         "@type": "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
         access_log: [{
-          name: "envoy.access_loggers.file",
+          name: "envoy.access_loggers.stdout",
           typed_config: {
-            "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
-            path: "/dev/stdout",
+            "@type": "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog",
             log_format: {
               json_format: {
                 bytes_received: "%BYTES_RECEIVED%",
                 bytes_sent: "%BYTES_SENT%",
+                access_log_type: "%ACCESS_LOG_TYPE%",
                 connection_termination_details: "%CONNECTION_TERMINATION_DETAILS%",
                 job_id: contract.jobId,
                 requested_server_name: "%REQUESTED_SERVER_NAME%",
@@ -429,6 +429,9 @@ function buildEnvoyConfig(contract) {
             },
           },
         }],
+        access_log_options: {
+          flush_access_log_on_connected: true,
+        },
         cluster: clusterName,
         max_early_data_bytes: 65_536,
         stat_prefix: `api_migrator_npm_${suffix}`,
@@ -496,8 +499,8 @@ function buildNftablesPolicy(contract, table) {
     ["@RUNNER_UID@", String(contract.runnerUid)],
     ["@GATEWAY_UID@", String(contract.gatewayUid)],
     ["@GATEWAY_PORT@", String(contract.listener.port)],
-    ["@UPSTREAM_V4@", ipv4.join(", ")],
-    ["@UPSTREAM_V6@", ipv6.join(", ")],
+    ["@UPSTREAM_V4_ELEMENTS@", renderSetElements(ipv4)],
+    ["@UPSTREAM_V6_ELEMENTS@", renderSetElements(ipv6)],
   ]);
   let rendered = template;
   for (const [placeholder, replacement] of replacements) {
@@ -507,6 +510,12 @@ function buildNftablesPolicy(contract, table) {
     throw new Error("Gateway nftables template contains an unresolved placeholder");
   }
   return rendered.endsWith("\n") ? rendered : `${rendered}\n`;
+}
+
+function renderSetElements(addresses) {
+  return addresses.length === 0
+    ? "    # Intentionally empty: this address family was not present in the bound DNS answer."
+    : `    elements = { ${addresses.join(", ")} }`;
 }
 
 function validateEvidence(value, name) {

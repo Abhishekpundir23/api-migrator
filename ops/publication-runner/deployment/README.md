@@ -64,9 +64,33 @@ imported script/library/template/unit closure; hashing only an entrypoint is not
 treated as a transitive runtime binding. Example digests remain placeholders
 and do not claim that any host is provisioned.
 
-Do not sign the generated request, populate a runner-attestation digest from it,
-or install/start the rendered units. The request exists only to make the future
-schema and non-authorizing boundary testable.
+## GitHub-hosted Linux smoke
+
+`.github/workflows/linux-l7-smoke.yml` is a separate, permanently
+non-authorizing regression boundary. It runs 15 scenarios as independent fresh
+`ubuntu-24.04` jobs, extracts the reviewed Envoy 1.39.0 binary from its exact
+linux/amd64 image manifest without starting the image, seals the small runtime
+closure as root, installs one exact job-owned nftables table, and proves both
+loopback listeners and IPv4/IPv6 positive probes. Negative SNI, plaintext,
+forced-route, non-443, non-npm, gateway-stop, fail-closed offline, fault, UID,
+cgroup/process-namespace-reference, workspace, and policy-removal paths are
+correlated with bounded native
+evidence. Containment is removed only after the exact units, UIDs, cgroup, and
+workspace are absent.
+
+The workflow has no App, customer, signing, cloud, or application credentials
+and never loads customer source. GitHub Actions still supplies runner-control
+state, repository-controlled code has passwordless `sudo`, and the observer is
+co-resident with the runner. Every scenario and aggregate therefore uses the
+distinct `api_migrator_github_hosted_l7_smoke_*` kinds, declares
+`selfAttested: true`, `authoritativeDrill: false`,
+`releaseEvidenceEligible: false`, `activationBlocked: true`, and
+`externalSigningEligible: false`, and is rejected if an authority-like field is
+introduced. These reports cannot satisfy a gateway receipt, runner attestation,
+signing request, capability, challenge, or publication boundary. Separately,
+the preflight-generated signing request must not be signed or populated into a
+runner attestation, and the candidate production units remain blocked; that
+request exists only to make the future schema boundary testable.
 
 ## Static checks
 
@@ -97,14 +121,12 @@ containers ran on Linux. The two preflight commands require their exact sealed
 Linux inputs and observer-first handshake; they are not ordinary local macOS
 commands and do not perform the lifecycle scenario matrix.
 
-## Required next Linux milestone
+## Remaining Linux milestone
 
-First exercise the non-authorizing gateway lifecycle smoke on a fixed full
-Linux VM with no secrets, App credentials, or customer source. That smoke may
-cover native validation, policy installation, both loopback listeners, fixed
-gateway probes, correlated counters, gateway stop, both identities becoming
-idle, and exact cleanup. Hosted CI evidence must use its own smoke kind and
-remain explicitly ineligible for release evidence.
+The hosted workflow covers the non-authorizing full-Linux regression slice but
+does not replace externally observed release evidence. OOM and reboot are
+deliberately omitted because a co-resident hosted job cannot safely or
+authoritatively observe those host-loss boundaries.
 
 The authoritative drill still requires fresh disposable dedicated Linux hosts
 controlled by an external observer. Exercise success, timeout, SIGKILL, bounded

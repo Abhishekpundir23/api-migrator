@@ -60,6 +60,19 @@ test("renders only static exact-SNI Envoy listeners and numeric upstream endpoin
     const proxy = chain.filters[0].typed_config;
     assert.equal(proxy.cluster, cluster.name);
     assert.equal(proxy.upstream_connect_mode, "ON_DOWNSTREAM_DATA");
+    assert.equal(proxy.access_log[0].name, "envoy.access_loggers.stdout");
+    assert.equal(
+      proxy.access_log[0].typed_config["@type"],
+      "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog"
+    );
+    assert.equal(proxy.access_log[0].typed_config.path, undefined);
+    assert.deepEqual(proxy.access_log_options, {
+      flush_access_log_on_connected: true,
+    });
+    assert.equal(
+      proxy.access_log[0].typed_config.log_format.json_format.access_log_type,
+      "%ACCESS_LOG_TYPE%"
+    );
   }
   assert.deepEqual(validateRenderedEnvoyConfig(config, deployment), config);
   assert.equal(deployment.contract.profile, GATEWAY_PROFILE);
@@ -76,13 +89,41 @@ test("renders a forced two-identity nftables route with no runner direct path", 
   assert.match(policy, /meta skuid 12001 ip daddr 127\.0\.0\.1 tcp dport 15443/);
   assert.match(policy, /meta skuid 12001 ip6 daddr ::1 tcp dport 15443/);
   assert.match(policy, /meta skuid 12001 counter reject/);
+  assert.match(
+    policy,
+    /meta skuid 12002 ip saddr 127\.0\.0\.1 tcp sport 15443 ct state established ct direction reply counter accept/
+  );
+  assert.match(
+    policy,
+    /meta skuid 12002 ip6 saddr ::1 tcp sport 15443 ct state established ct direction reply counter accept/
+  );
   assert.match(policy, /meta skuid 12002 ip daddr @npm_upstream_v4 tcp dport 443/);
   assert.match(policy, /meta skuid 12002 ip6 daddr @npm_upstream_v6 tcp dport 443/);
   assert.match(policy, /meta skuid 12002 counter reject/);
   assert.match(policy, /elements = \{ 104\.16\.1\.35 \}/);
   assert.match(policy, /elements = \{ 2606:4700::6810:123 \}/);
   assert.doesNotMatch(policy, /meta skuid 12001 ip daddr @npm_upstream/);
+  assert.doesNotMatch(policy, /meta skuid 12002 ip daddr 127\.0\.0\.0\/8 ct state established/);
+  assert.doesNotMatch(policy, /meta skuid 12002 ip6 daddr ::1 ct state established/);
+  assert.doesNotMatch(policy, /meta skuid 12002 ct state established counter accept/);
   assert.equal(validateRenderedNftablesPolicy(policy, deployment), policy);
+});
+
+test("renders a valid empty nftables set when DNS returns only one address family", () => {
+  for (const [name, addresses, emptyFamily] of [
+    ["IPv4 only", ["104.16.1.35"], "v6"],
+    ["IPv6 only", ["2606:4700::6810:123"], "v4"],
+  ]) {
+    const contract = contractFixture();
+    contract.origin.addresses = addresses;
+    const policy = renderGatewayDeployment(contract).nftablesPolicy;
+    assert.doesNotMatch(policy, /elements = \{\s*\}/, name);
+    assert.match(
+      policy,
+      new RegExp(`set npm_upstream_${emptyFamily} \\{[\\s\\S]*?Intentionally empty:[\\s\\S]*?\\n  \\}`),
+      name
+    );
+  }
 });
 
 test("rejects gateway contracts that broaden identity, origin, address, or lifetime", () => {
