@@ -540,7 +540,8 @@ function validateChecks(value, gateway) {
   const offlineFailClosed = record(root.offlineFailClosed, "hosted smoke offline check");
   exactKeys(offlineFailClosed, [
     "gatewayStopped", "nftablesPolicyInstalled", "connectionBlocked", "redirectCounterDelta",
-    "runnerLoopbackCounterDelta", "gatewayUpstreamCounterDelta", "evidenceDigest",
+    "runnerLoopbackCounterDelta", "gatewayUpstreamCounterDelta", "gatewayDownstreamResponseCounterDelta",
+    "evidenceDigest",
   ], "hosted smoke offline check");
   if (offlineFailClosed.gatewayStopped !== true || offlineFailClosed.nftablesPolicyInstalled !== true ||
       offlineFailClosed.connectionBlocked !== true || offlineFailClosed.gatewayUpstreamCounterDelta !== 0) {
@@ -548,6 +549,9 @@ function validateChecks(value, gateway) {
   }
   positiveDelta(offlineFailClosed.redirectCounterDelta, "offline redirect counter delta");
   positiveDelta(offlineFailClosed.runnerLoopbackCounterDelta, "offline runner-loopback counter delta");
+  if (offlineFailClosed.gatewayDownstreamResponseCounterDelta !== 0) {
+    throw new Error("hosted smoke offline phase observed a gateway downstream response");
+  }
   digest(offlineFailClosed.evidenceDigest, "hosted smoke offline evidence");
   digest(root.scenarioStartEvidenceDigest, "hosted smoke scenario-start evidence");
   digest(root.finalSnapshotEvidenceDigest, "hosted smoke final-snapshot evidence");
@@ -615,17 +619,20 @@ function validateScenarioProof(name, value) {
     exactKeys(root, [
       "type", "directDestinationAttempted", "tcpConnected", "tlsAuthorized", "httpPingPassed",
       "requestedServerName", "upstreamAddressBoundToContract", "redirectCounterDelta",
-      "runnerLoopbackCounterDelta", "gatewayUpstreamCounterDelta", "envoyAccessLogMatches",
+      "runnerLoopbackCounterDelta", "gatewayUpstreamCounterDelta", "gatewayDownstreamResponseCounterDelta",
+      "gatewayRejectCounterDelta", "envoyAccessLogMatches",
       "counterSnapshotBeforeDigest", "counterSnapshotAfterDigest", "accessLogDigest",
     ], "direct-bypass hosted smoke proof");
     if (root.type !== "forced_gateway_route" || root.directDestinationAttempted !== true ||
         root.tcpConnected !== true || root.tlsAuthorized !== true || root.httpPingPassed !== true ||
-        root.requestedServerName !== "registry.npmjs.org" || root.upstreamAddressBoundToContract !== true) {
+        root.requestedServerName !== "registry.npmjs.org" || root.upstreamAddressBoundToContract !== true ||
+        root.gatewayRejectCounterDelta !== 0) {
       throw new Error("direct-bypass smoke did not complete the fixed TLS route");
     }
     positiveDelta(root.redirectCounterDelta, "direct-bypass redirect counter delta");
     positiveDelta(root.runnerLoopbackCounterDelta, "direct-bypass runner-loopback counter delta");
     positiveDelta(root.gatewayUpstreamCounterDelta, "direct-bypass gateway-upstream counter delta");
+    positiveDelta(root.gatewayDownstreamResponseCounterDelta, "direct-bypass gateway-downstream-response counter delta");
     positiveDelta(root.envoyAccessLogMatches, "direct-bypass Envoy access-log matches");
     validateProofDigests(root, ["counterSnapshotBeforeDigest", "counterSnapshotAfterDigest", "accessLogDigest"]);
   } else if (name === "non_443" || name === "non_npm") {
@@ -647,10 +654,12 @@ function validateScenarioProof(name, value) {
   } else if (name === "offline_network") {
     exactKeys(root, [
       "type", "gatewayStopped", "nftablesPolicyInstalled", "connectionBlocked", "redirectCounterDelta",
-      "runnerLoopbackCounterDelta", "gatewayUpstreamCounterDelta", "listenerAbsent", "evidenceDigest",
+      "runnerLoopbackCounterDelta", "gatewayUpstreamCounterDelta", "gatewayDownstreamResponseCounterDelta",
+      "listenerAbsent", "evidenceDigest",
     ], "offline-network hosted smoke proof");
     if (root.type !== "offline_fail_closed" || root.gatewayStopped !== true || root.nftablesPolicyInstalled !== true ||
-        root.connectionBlocked !== true || root.listenerAbsent !== true || root.gatewayUpstreamCounterDelta !== 0) {
+        root.connectionBlocked !== true || root.listenerAbsent !== true || root.gatewayUpstreamCounterDelta !== 0 ||
+        root.gatewayDownstreamResponseCounterDelta !== 0) {
       throw new Error("offline-network smoke was not checked after gateway stop under containment");
     }
     positiveDelta(root.redirectCounterDelta, "offline-network redirect counter delta");

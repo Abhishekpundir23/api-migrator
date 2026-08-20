@@ -89,12 +89,23 @@ test("renders a forced two-identity nftables route with no runner direct path", 
   assert.match(policy, /meta skuid 12001 ip daddr 127\.0\.0\.1 tcp dport 15443/);
   assert.match(policy, /meta skuid 12001 ip6 daddr ::1 tcp dport 15443/);
   assert.match(policy, /meta skuid 12001 counter reject/);
+  assert.match(
+    policy,
+    /meta skuid 12002 ip saddr 127\.0\.0\.1 tcp sport 15443 ct state established ct direction reply counter accept/
+  );
+  assert.match(
+    policy,
+    /meta skuid 12002 ip6 saddr ::1 tcp sport 15443 ct state established ct direction reply counter accept/
+  );
   assert.match(policy, /meta skuid 12002 ip daddr @npm_upstream_v4 tcp dport 443/);
   assert.match(policy, /meta skuid 12002 ip6 daddr @npm_upstream_v6 tcp dport 443/);
   assert.match(policy, /meta skuid 12002 counter reject/);
   assert.match(policy, /elements = \{ 104\.16\.1\.35 \}/);
   assert.match(policy, /elements = \{ 2606:4700::6810:123 \}/);
   assert.doesNotMatch(policy, /meta skuid 12001 ip daddr @npm_upstream/);
+  assert.doesNotMatch(policy, /meta skuid 12002 ip daddr 127\.0\.0\.0\/8 ct state established/);
+  assert.doesNotMatch(policy, /meta skuid 12002 ip6 daddr ::1 ct state established/);
+  assert.doesNotMatch(policy, /meta skuid 12002 ct state established counter accept/);
   assert.equal(validateRenderedNftablesPolicy(policy, deployment), policy);
 });
 

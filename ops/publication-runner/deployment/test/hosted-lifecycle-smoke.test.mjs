@@ -149,6 +149,8 @@ function proof(name) {
         redirectCounterDelta: 1,
         runnerLoopbackCounterDelta: 1,
         gatewayUpstreamCounterDelta: 1,
+        gatewayDownstreamResponseCounterDelta: 1,
+        gatewayRejectCounterDelta: 0,
         envoyAccessLogMatches: 1,
         counterSnapshotBeforeDigest: snapshots.counterSnapshotBeforeDigest,
         counterSnapshotAfterDigest: snapshots.counterSnapshotAfterDigest,
@@ -174,6 +176,7 @@ function proof(name) {
         redirectCounterDelta: 1,
         runnerLoopbackCounterDelta: 1,
         gatewayUpstreamCounterDelta: 0,
+        gatewayDownstreamResponseCounterDelta: 0,
         listenerAbsent: true,
         evidenceDigest: digest(`${name}-offline`),
       };
@@ -279,6 +282,7 @@ function scenarioInput(name, index = HOSTED_SMOKE_SCENARIO_MATRIX.findIndex((ent
       redirectCounterDelta: 1,
       runnerLoopbackCounterDelta: 1,
       gatewayUpstreamCounterDelta: 0,
+      gatewayDownstreamResponseCounterDelta: 0,
       evidenceDigest: digest(`${name}-offline-check`),
     },
     scenarioStartEvidenceDigest: digest(`${name}-scenario-start`),
@@ -406,12 +410,16 @@ test("listener readiness requires positive traffic over both IPv4 and IPv6", () 
 
 test("direct bypass requires redirect, loopback, upstream counter, and Envoy-log correlation", () => {
   for (const field of [
-    "redirectCounterDelta", "runnerLoopbackCounterDelta", "gatewayUpstreamCounterDelta", "envoyAccessLogMatches",
+    "redirectCounterDelta", "runnerLoopbackCounterDelta", "gatewayUpstreamCounterDelta",
+    "gatewayDownstreamResponseCounterDelta", "envoyAccessLogMatches",
   ]) {
     const input = scenarioInput("direct_bypass");
     input.scenarioEvidence.proof[field] = 0;
     assert.throws(() => buildHostedSmokeScenarioReport(input), /positive bounded counter delta/);
   }
+  const rejected = scenarioInput("direct_bypass");
+  rejected.scenarioEvidence.proof.gatewayRejectCounterDelta = 1;
+  assert.throws(() => buildHostedSmokeScenarioReport(rejected), /fixed TLS route/);
 });
 
 test("offline closure requires redirect and loopback deltas with zero gateway upstream traffic", () => {
@@ -419,9 +427,11 @@ test("offline closure requires redirect and loopback deltas with zero gateway up
     (input) => { input.checks.redirectCounterDelta = 0; },
     (input) => { input.checks.runnerLoopbackCounterDelta = 0; },
     (input) => { input.checks.gatewayUpstreamCounterDelta = 1; },
+    (input) => { input.checks.gatewayDownstreamResponseCounterDelta = 1; },
     (input) => { input.proof.redirectCounterDelta = 0; },
     (input) => { input.proof.runnerLoopbackCounterDelta = 0; },
     (input) => { input.proof.gatewayUpstreamCounterDelta = 1; },
+    (input) => { input.proof.gatewayDownstreamResponseCounterDelta = 1; },
   ]) {
     const input = scenarioInput("offline_network");
     mutate({ checks: input.checks.offlineFailClosed, proof: input.scenarioEvidence.proof });

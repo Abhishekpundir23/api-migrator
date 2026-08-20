@@ -67,9 +67,8 @@ test("parses the exact report coordinates without accepting credentials", () => 
 test("requires every exact nftables rule counter and computes monotonic deltas", () => {
   const policy = readFileSync(new URL("../../gateway/templates/forced-gateway-egress.nft.in", import.meta.url), "utf8");
   const comments = [...policy.matchAll(/comment "([^"]+)"/g)]
-    .map((match) => match[1])
-    .filter((comment) => !comment.includes("downstream response"));
-  assert.equal(comments.length, 7);
+    .map((match) => match[1]);
+  assert.equal(comments.length, 9);
   const snapshot = comments.map((comment, index) =>
     `counter packets ${index + 1} bytes ${(index + 1) * 10} accept comment "${comment}"`
   ).join("\n");
@@ -79,9 +78,11 @@ test("requires every exact nftables rule counter and computes monotonic deltas",
     runnerV4: 2,
     runnerV6: 3,
     runnerReject: 4,
-    gatewayV4: 5,
-    gatewayV6: 6,
-    gatewayReject: 7,
+    gatewayDownstreamV4: 5,
+    gatewayDownstreamV6: 6,
+    gatewayV4: 7,
+    gatewayV6: 8,
+    gatewayReject: 9,
   });
   assert.equal(nftCounterDelta(counters, { ...counters, redirect: 3 }, "redirect"), 2);
   assert.throws(() => nftCounterDelta(counters, { ...counters, redirect: 0 }, "redirect"), /backwards/);

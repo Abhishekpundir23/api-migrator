@@ -64,6 +64,8 @@ const NFT_COMMENTS = Object.freeze({
   runnerV4: "api-migrator runner to IPv4 gateway",
   runnerV6: "api-migrator runner to IPv6 gateway",
   runnerReject: "api-migrator reject runner direct egress",
+  gatewayDownstreamV4: "api-migrator gateway IPv4 downstream response",
+  gatewayDownstreamV6: "api-migrator gateway IPv6 downstream response",
   gatewayV4: "api-migrator gateway to exact npm IPv4",
   gatewayV6: "api-migrator gateway to exact npm IPv6",
   gatewayReject: "api-migrator reject gateway non-npm egress",
@@ -466,7 +468,7 @@ async function renderHostedGateway(resources, toolBindings, evidence) {
     profile: "static-envoy-sni-passthrough-v1",
     jobId: resources.jobId,
     plan: { digest: planDigest, createdAt, expiresAt },
-    egressPolicyDigest: sha256Bytes(Buffer.from("github-hosted-smoke:forced-gateway-egress-v1", "utf8")),
+    egressPolicyDigest: sha256Bytes(Buffer.from("github-hosted-smoke:forced-gateway-egress-v2", "utf8")),
     gatewayRuntimeDigest: toolBindings.envoy.digest,
     runnerUid: HOSTED_SMOKE_RUNNER_UID,
     gatewayUid: HOSTED_SMOKE_GATEWAY_UID,
@@ -794,6 +796,9 @@ async function executeOnlineScenario(name, resources, rendered, tools, evidence,
   const observedAt = timeline.tick();
   const gatewayDelta = nftCounterDelta(before.counters, after.counters, "gatewayV4") +
     nftCounterDelta(before.counters, after.counters, "gatewayV6");
+  const gatewayDownstreamDelta = nftCounterDelta(before.counters, after.counters, "gatewayDownstreamV4") +
+    nftCounterDelta(before.counters, after.counters, "gatewayDownstreamV6");
+  const gatewayRejectDelta = nftCounterDelta(before.counters, after.counters, "gatewayReject");
   const loopbackDelta = nftCounterDelta(before.counters, after.counters, "runnerV4") +
     nftCounterDelta(before.counters, after.counters, "runnerV6");
   const accessDelta = after.accessCount - before.accessCount;
@@ -852,6 +857,8 @@ async function executeOnlineScenario(name, resources, rendered, tools, evidence,
         redirectCounterDelta: nftCounterDelta(before.counters, after.counters, "redirect"),
         runnerLoopbackCounterDelta: loopbackDelta,
         gatewayUpstreamCounterDelta: gatewayDelta,
+        gatewayDownstreamResponseCounterDelta: gatewayDownstreamDelta,
+        gatewayRejectCounterDelta: gatewayRejectDelta,
         envoyAccessLogMatches: accessDelta,
         counterSnapshotBeforeDigest: before.digest,
         counterSnapshotAfterDigest: after.digest,
@@ -897,7 +904,10 @@ async function stopGatewayAndCheckOffline(resources, rendered, tools, evidence, 
     nftCounterDelta(before.counters, after.counters, "runnerV6");
   const gatewayUpstreamDelta = nftCounterDelta(before.counters, after.counters, "gatewayV4") +
     nftCounterDelta(before.counters, after.counters, "gatewayV6");
-  if (redirectDelta < 1 || runnerLoopbackDelta < 1 || gatewayUpstreamDelta !== 0) {
+  const gatewayDownstreamResponseDelta = nftCounterDelta(before.counters, after.counters, "gatewayDownstreamV4") +
+    nftCounterDelta(before.counters, after.counters, "gatewayDownstreamV6");
+  if (redirectDelta < 1 || runnerLoopbackDelta < 1 || gatewayUpstreamDelta !== 0 ||
+      gatewayDownstreamResponseDelta !== 0) {
     throw new Error("hosted smoke offline check did not prove fail-closed correlated routing");
   }
   const offlineEvidenceDigest = evidence.write("offline-fail-closed", canonicalJson({
@@ -907,11 +917,12 @@ async function stopGatewayAndCheckOffline(resources, rendered, tools, evidence, 
     redirectDelta,
     runnerLoopbackDelta,
     gatewayUpstreamDelta,
+    gatewayDownstreamResponseDelta,
     actionDigest,
   }));
   return Object.freeze({
     stopEvidenceDigest, offlineEvidenceDigest,
-    redirectDelta, runnerLoopbackDelta, gatewayUpstreamDelta,
+    redirectDelta, runnerLoopbackDelta, gatewayUpstreamDelta, gatewayDownstreamResponseDelta,
     listenerDigest: evidence.write("gateway-listeners-absent", listeners || "listeners absent"),
     beforeDigest: before.digest, afterDigest: after.digest,
   });
@@ -1014,6 +1025,7 @@ function buildDeferredScenarioEvidence(name, values) {
           connectionBlocked: true, redirectCounterDelta: values.offline.redirectDelta,
           runnerLoopbackCounterDelta: values.offline.runnerLoopbackDelta,
           gatewayUpstreamCounterDelta: values.offline.gatewayUpstreamDelta,
+          gatewayDownstreamResponseCounterDelta: values.offline.gatewayDownstreamResponseDelta,
           listenerAbsent: true, evidenceDigest: values.offline.offlineEvidenceDigest,
         },
       };
@@ -1314,6 +1326,7 @@ export async function runHostedSmoke(argv, dependencies = {}) {
         redirectCounterDelta: offline.redirectDelta,
         runnerLoopbackCounterDelta: offline.runnerLoopbackDelta,
         gatewayUpstreamCounterDelta: offline.gatewayUpstreamDelta,
+        gatewayDownstreamResponseCounterDelta: offline.gatewayDownstreamResponseDelta,
         evidenceDigest: offline.offlineEvidenceDigest,
       },
       scenarioStartEvidenceDigest,
