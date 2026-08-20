@@ -151,9 +151,12 @@ export function cleanupHostedSmoke(input, dependencies = {}) {
   if (!beforeSnapshot.completeAbsence) {
     cleanupMode = "owned_resources_removed";
     assertOwnedPreMutationState(resources, beforeSnapshot, deps);
+    const tableWasInitiallyPresent = !beforeSnapshot.nftTableAbsent;
 
-    settleExactUnit(resources.canaryUnit, deps, commandTrace);
-    settleExactUnit(resources.gatewayUnit, deps, commandTrace);
+    if (tableWasInitiallyPresent) {
+      settleExactUnit(resources.canaryUnit, deps, commandTrace);
+      settleExactUnit(resources.gatewayUnit, deps, commandTrace);
+    }
     const unitsSettled = inspectHostedSmokeAbsence(resources, deps);
     const gatewayStopped = stageEvidence("gatewayStopped", clock, {
       unit: resources.gatewayUnit,
@@ -176,6 +179,13 @@ export function cleanupHostedSmoke(input, dependencies = {}) {
     if (!unitsSettled.runnerUidIdle || !unitsSettled.gatewayUidIdle) {
       // Containment deliberately remains installed when either identity lives.
       throw new Error("hosted smoke dedicated identities remain live; containment retained");
+    }
+    if (tableWasInitiallyPresent === unitsSettled.nftTableAbsent) {
+      throw new Error(
+        tableWasInitiallyPresent
+          ? "hosted smoke owned containment disappeared before filesystem cleanup"
+          : "hosted smoke containment appeared during pre-policy cleanup"
+      );
     }
     const cgroupCleanup = stageEvidence("cgroupCleanup", clock, {
       gatewayUnitAbsent: !unitsSettled.gatewayUnit.exists,
@@ -202,12 +212,19 @@ export function cleanupHostedSmoke(input, dependencies = {}) {
         !beforeTableRemoval.runnerUidIdle || !beforeTableRemoval.gatewayUidIdle) {
       throw new Error("hosted smoke resources are not quiescent before nftables removal");
     }
+    if (tableWasInitiallyPresent === beforeTableRemoval.nftTableAbsent) {
+      throw new Error(
+        tableWasInitiallyPresent
+          ? "hosted smoke owned containment disappeared before exact removal"
+          : "hosted smoke containment appeared during pre-policy cleanup"
+      );
+    }
     const workspaceCleanup = stageEvidence("workspaceCleanup", clock, {
       workspaceAbsent: !beforeTableRemoval.workspace.exists,
       runtimeRootAbsent: !beforeTableRemoval.runtime.exists,
     });
 
-    const tableWasPresent = !beforeTableRemoval.nftTableAbsent;
+    const tableWasPresent = tableWasInitiallyPresent;
     if (tableWasPresent) {
       commandTrace.push(traceEntry("delete_nft_table", resources.nftTable));
       deps.deleteTable(resources.nftTable);
@@ -328,8 +345,13 @@ function cleanupResult(resources, auditOnly, cleanupMode, observations, commandT
 }
 
 function assertOwnedPreMutationState(resources, snapshot, deps) {
-  if (snapshot.nftTableAbsent) {
-    throw new Error("hosted smoke owned containment table is absent before cleanup");
+  if (snapshot.nftTableAbsent &&
+      (snapshot.gatewayUnit.exists || snapshot.canaryUnit.exists ||
+       !snapshot.gatewayUnit.cgroupEmpty || !snapshot.canaryUnit.cgroupEmpty ||
+       !snapshot.runnerUidIdle || !snapshot.gatewayUidIdle)) {
+    throw new Error(
+      "hosted smoke containment is absent while an exact unit, cgroup, or dedicated identity may be live"
+    );
   }
   if (!snapshot.runtime.exists) {
     throw new Error("hosted smoke state exists without its exact ownership marker root");

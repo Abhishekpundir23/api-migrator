@@ -41,17 +41,18 @@ function absentUnit() {
 
 function lifecycleHarness(options = {}) {
   const value = resources(options.scenario);
+  const prePolicyFailure = options.prePolicyFailure === true;
   const state = {
-    table: options.absent === true || options.tableAbsent === true ? false : true,
+    table: options.absent === true || options.tableAbsent === true || prePolicyFailure ? false : true,
     runtime: options.absent === true ? false : true,
     workspace: options.absent === true ? false : true,
-    runnerIdle: options.absent === true ? true : false,
-    gatewayIdle: options.absent === true ? true : false,
+    runnerIdle: options.absent === true || prePolicyFailure ? true : false,
+    gatewayIdle: options.absent === true || prePolicyFailure ? true : false,
     units: new Map([
-      [value.canaryUnit, options.absent === true ? absentUnit() : {
+      [value.canaryUnit, options.absent === true || prePolicyFailure ? absentUnit() : {
         exists: true, active: true, controlGroup: `/system.slice/${value.canaryUnit}`, cgroupEmpty: false,
       }],
-      [value.gatewayUnit, options.absent === true ? absentUnit() : {
+      [value.gatewayUnit, options.absent === true || prePolicyFailure ? absentUnit() : {
         exists: true, active: true, controlGroup: `/system.slice/${value.gatewayUnit}`, cgroupEmpty: false,
       }],
     ]),
@@ -90,7 +91,11 @@ function lifecycleHarness(options = {}) {
     },
     removeExactTree: (path) => {
       calls.push(["remove", path]);
-      if (path === value.runtimeRoot) state.runtime = false;
+      if (path === value.runtimeRoot) {
+        state.runtime = false;
+        if (options.tableDisappearsDuringCleanup === true) state.table = false;
+        if (options.tableAppearsDuringCleanup === true) state.table = true;
+      }
       else if (path === value.workspacePath) state.workspace = false;
       else throw new Error("broad cleanup target");
     },
@@ -303,11 +308,88 @@ test("a live identity or populated cgroup fails before paths or containment are 
   }
 });
 
+test("removes exact owned paths after a failure before containment installation", () => {
+  const harness = lifecycleHarness({ prePolicyFailure: true });
+  const result = cleanupHostedSmoke({
+    resources: harness.resources,
+    outputDir: OUTPUT_DIR,
+    auditOnly: false,
+  }, harness.deps);
+
+  assert.equal(result.report.status, "passed");
+  assert.equal(result.report.cleanupMode, "owned_resources_removed");
+  assert.equal(result.beforeSnapshot.nftTableAbsent, true);
+  assert.equal(result.afterSnapshot.completeAbsence, true);
+  assert.deepEqual(harness.calls.map(([operation]) => operation), [
+    "remove", "remove", "write-report",
+  ]);
+  assert.equal(result.commandTrace.some(({ operation }) => operation === "delete_nft_table"), false);
+  assert.equal(result.observations.nftRemoval.detail.tableWasPresent, false);
+});
+
+test("pre-policy cleanup refuses every live unit, cgroup, or dedicated identity before mutation", () => {
+  const cases = [
+    (harness) => { harness.state.runnerIdle = false; },
+    (harness) => { harness.state.gatewayIdle = false; },
+    (harness) => {
+      harness.state.units.set(harness.resources.gatewayUnit, {
+        exists: true,
+        active: true,
+        controlGroup: `/system.slice/${harness.resources.gatewayUnit}`,
+        cgroupEmpty: false,
+      });
+    },
+    (harness) => {
+      harness.state.units.set(harness.resources.canaryUnit, {
+        ...absentUnit(),
+        cgroupEmpty: false,
+      });
+    },
+  ];
+  for (const mutate of cases) {
+    const harness = lifecycleHarness({ prePolicyFailure: true });
+    mutate(harness);
+    assert.throws(
+      () => cleanupHostedSmoke({ resources: harness.resources, outputDir: OUTPUT_DIR, auditOnly: false }, harness.deps),
+      /containment is absent while an exact unit, cgroup, or dedicated identity may be live/
+    );
+    assert.deepEqual(harness.calls, []);
+    assert.equal(harness.state.runtime, true);
+    assert.equal(harness.state.workspace, true);
+  }
+});
+
+test("cleanup never false-passes if exact containment presence changes during teardown", () => {
+  const disappeared = lifecycleHarness({ tableDisappearsDuringCleanup: true });
+  assert.throws(
+    () => cleanupHostedSmoke({
+      resources: disappeared.resources,
+      outputDir: OUTPUT_DIR,
+      auditOnly: false,
+    }, disappeared.deps),
+    /containment disappeared before exact removal/
+  );
+  assert.equal(disappeared.calls.some(([operation]) => operation === "delete-table"), false);
+  assert.equal(disappeared.calls.some(([operation]) => operation === "write-report"), false);
+
+  const appeared = lifecycleHarness({ prePolicyFailure: true, tableAppearsDuringCleanup: true });
+  assert.throws(
+    () => cleanupHostedSmoke({
+      resources: appeared.resources,
+      outputDir: OUTPUT_DIR,
+      auditOnly: false,
+    }, appeared.deps),
+    /containment appeared during pre-policy cleanup/
+  );
+  assert.equal(appeared.calls.some(([operation]) => operation === "delete-table"), false);
+  assert.equal(appeared.calls.some(([operation]) => operation === "write-report"), false);
+});
+
 test("rejects missing ownership, symlink state, broad output, and substituted resources before mutation", () => {
   const uncontained = lifecycleHarness({ tableAbsent: true });
   assert.throws(
     () => cleanupHostedSmoke({ resources: uncontained.resources, outputDir: OUTPUT_DIR, auditOnly: false }, uncontained.deps),
-    /containment table is absent/
+    /containment is absent while an exact unit, cgroup, or dedicated identity may be live/
   );
   assert.deepEqual(uncontained.calls, []);
 

@@ -60,6 +60,12 @@ test("renders only static exact-SNI Envoy listeners and numeric upstream endpoin
     const proxy = chain.filters[0].typed_config;
     assert.equal(proxy.cluster, cluster.name);
     assert.equal(proxy.upstream_connect_mode, "ON_DOWNSTREAM_DATA");
+    assert.equal(proxy.access_log[0].name, "envoy.access_loggers.stdout");
+    assert.equal(
+      proxy.access_log[0].typed_config["@type"],
+      "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog"
+    );
+    assert.equal(proxy.access_log[0].typed_config.path, undefined);
   }
   assert.deepEqual(validateRenderedEnvoyConfig(config, deployment), config);
   assert.equal(deployment.contract.profile, GATEWAY_PROFILE);

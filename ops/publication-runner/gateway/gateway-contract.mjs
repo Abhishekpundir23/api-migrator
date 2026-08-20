@@ -411,10 +411,9 @@ function buildEnvoyConfig(contract) {
       typed_config: {
         "@type": "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
         access_log: [{
-          name: "envoy.access_loggers.file",
+          name: "envoy.access_loggers.stdout",
           typed_config: {
-            "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
-            path: "/dev/stdout",
+            "@type": "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog",
             log_format: {
               json_format: {
                 bytes_received: "%BYTES_RECEIVED%",
