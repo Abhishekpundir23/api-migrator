@@ -174,6 +174,8 @@ test("runner source keeps the report boundary non-authorizing and table removal 
   assert.match(source, /externalSigningEligible: false/);
   assert.doesNotMatch(source, /releaseEvidenceEligible:\s*true|externalSigningEligible:\s*true|owner:sign|runnerCapability/);
   assert(source.indexOf("removeExactRuntime(resources)") < source.indexOf("deleteExactTable(resources, tools)"));
+  assert.match(source, /rmdirSync\(resources\.runtimeRoot\)/);
+  assert.doesNotMatch(source, /rmSync\(resources\.runtimeRoot,\s*\{\s*recursive:\s*false/);
   const emergency = source.slice(
     source.indexOf("async function emergencyCleanup"),
     source.indexOf("export async function runHostedSmoke")

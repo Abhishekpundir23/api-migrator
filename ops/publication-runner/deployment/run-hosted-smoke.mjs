@@ -14,6 +14,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  rmdirSync,
   writeFileSync,
 } from "node:fs";
 import { arch, release } from "node:os";
@@ -968,7 +969,7 @@ function removeExactRuntime(resources) {
   }
   rmSync(resources.workspacePath, { recursive: true, force: false });
   rmSync(resources.ownershipMarkerPath, { force: false });
-  rmSync(resources.runtimeRoot, { recursive: false, force: false });
+  rmdirSync(resources.runtimeRoot);
 }
 
 function deleteExactTable(resources, tools) {
