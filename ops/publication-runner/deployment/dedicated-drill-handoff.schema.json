@@ -1,0 +1,508 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-migrator.invalid/schemas/dedicated-drill-handoff-v1.json",
+  "title": "API Migrator external dedicated-host drill handoff v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "suiteId",
+    "sourceRevision",
+    "issuedAt",
+    "provider",
+    "providerScopeDigest",
+    "controller",
+    "observer",
+    "evidenceSink",
+    "attempts",
+    "attemptsDigest",
+    "handoffScope",
+    "selfAttested",
+    "authoritativeDrill",
+    "releaseEvidenceEligible",
+    "activationBlocked",
+    "externalSigningEligible",
+    "authorizationStatus"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "api_migrator_external_dedicated_host_drill_handoff" },
+    "suiteId": { "type": "string", "pattern": "^dedicatedsuite_[a-f0-9]{64}$" },
+    "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "issuedAt": { "$ref": "#/$defs/timestamp" },
+    "provider": { "$ref": "#/$defs/provider" },
+    "providerScopeDigest": { "$ref": "#/$defs/digest" },
+    "controller": { "$ref": "#/$defs/controller" },
+    "observer": { "$ref": "#/$defs/observer" },
+    "evidenceSink": { "$ref": "#/$defs/evidenceSink" },
+    "attempts": {
+      "type": "array",
+      "minItems": 17,
+      "maxItems": 17,
+      "prefixItems": [
+        { "$ref": "#/$defs/successAttempt" },
+        { "$ref": "#/$defs/timeoutAttempt" },
+        { "$ref": "#/$defs/sigkillAttempt" },
+        { "$ref": "#/$defs/oomAttempt" },
+        { "$ref": "#/$defs/rebootAttempt" },
+        { "$ref": "#/$defs/wrongSniAttempt" },
+        { "$ref": "#/$defs/absentSniAttempt" },
+        { "$ref": "#/$defs/plaintextAttempt" },
+        { "$ref": "#/$defs/directBypassAttempt" },
+        { "$ref": "#/$defs/non443Attempt" },
+        { "$ref": "#/$defs/nonNpmAttempt" },
+        { "$ref": "#/$defs/offlineNetworkAttempt" },
+        { "$ref": "#/$defs/gatewayStopAttempt" },
+        { "$ref": "#/$defs/uidIdleAttempt" },
+        { "$ref": "#/$defs/policyRemovalAttempt" },
+        { "$ref": "#/$defs/cgroupNamespaceCleanupAttempt" },
+        { "$ref": "#/$defs/workspaceCleanupAttempt" }
+      ],
+      "items": false
+    },
+    "attemptsDigest": { "$ref": "#/$defs/digest" },
+    "handoffScope": { "const": "external_controller_17_fresh_dedicated_hosts" },
+    "selfAttested": { "const": false },
+    "authoritativeDrill": { "const": false },
+    "releaseEvidenceEligible": { "const": false },
+    "activationBlocked": { "const": true },
+    "externalSigningEligible": { "const": false },
+    "authorizationStatus": {
+      "const": "non_authorizing_external_dedicated_host_drill_candidate_only"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._:@+-]{5,127}$"
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8640000000000000
+    },
+    "provider": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$",
+      "not": { "enum": ["github-hosted", "localhost", "local", "self-hosted"] }
+    },
+    "evidenceReference": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(?!(?:https|s3|gs|az)://(?:(?:[a-z0-9.-]+\\.)?localhost|0(?:\\.[0-9]+){0,3}|127(?:\\.[0-9]+){0,3})(?::|/))(?!https://[^/]+:443/)(?:https|s3|gs|az)://[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~-]+(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~-]+)*$"
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controllerId",
+        "hostId",
+        "trustDomain",
+        "principalDigest",
+        "runtimeDigest",
+        "role",
+        "targetMutationAccess",
+        "evidenceSinkOwner",
+        "targetCredentialDelivery"
+      ],
+      "properties": {
+        "controllerId": { "$ref": "#/$defs/identifier" },
+        "hostId": { "$ref": "#/$defs/identifier" },
+        "trustDomain": { "$ref": "#/$defs/identifier" },
+        "principalDigest": { "$ref": "#/$defs/digest" },
+        "runtimeDigest": { "$ref": "#/$defs/digest" },
+        "role": { "const": "external_controller" },
+        "targetMutationAccess": { "const": "provider_control_plane" },
+        "evidenceSinkOwner": { "const": true },
+        "targetCredentialDelivery": { "const": "ephemeral_session_only" }
+      }
+    },
+    "observer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observerId",
+        "hostId",
+        "trustDomain",
+        "principalDigest",
+        "runtimeDigest",
+        "role",
+        "targetMutationAccess",
+        "evidenceSinkAppendOnly"
+      ],
+      "properties": {
+        "observerId": { "$ref": "#/$defs/identifier" },
+        "hostId": { "$ref": "#/$defs/identifier" },
+        "trustDomain": { "$ref": "#/$defs/identifier" },
+        "principalDigest": { "$ref": "#/$defs/digest" },
+        "runtimeDigest": { "$ref": "#/$defs/digest" },
+        "role": { "const": "external_read_only_observer" },
+        "targetMutationAccess": { "const": "none" },
+        "evidenceSinkAppendOnly": { "const": true }
+      }
+    },
+    "evidenceSink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "ownerControllerId",
+        "locationReference",
+        "locationDigest",
+        "retentionUntil",
+        "offHost",
+        "appendOnly",
+        "controllerOwned",
+        "targetWriteAccess",
+        "targetCredentialsPresent"
+      ],
+      "properties": {
+        "kind": { "const": "controller_owned_append_only" },
+        "ownerControllerId": { "$ref": "#/$defs/identifier" },
+        "locationReference": { "$ref": "#/$defs/evidenceReference" },
+        "locationDigest": { "$ref": "#/$defs/digest" },
+        "retentionUntil": { "$ref": "#/$defs/timestamp" },
+        "offHost": { "const": true },
+        "appendOnly": { "const": true },
+        "controllerOwned": { "const": true },
+        "targetWriteAccess": { "const": false },
+        "targetCredentialsPresent": { "const": false }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jobDigest",
+        "planDigest",
+        "hostProfileDigest",
+        "runtimeManifestDigest",
+        "gatewayContractDigest",
+        "nftablesPolicyDigest",
+        "imageDigest"
+      ],
+      "properties": {
+        "jobDigest": { "$ref": "#/$defs/digest" },
+        "planDigest": { "$ref": "#/$defs/digest" },
+        "hostProfileDigest": { "$ref": "#/$defs/digest" },
+        "runtimeManifestDigest": { "$ref": "#/$defs/digest" },
+        "gatewayContractDigest": { "$ref": "#/$defs/digest" },
+        "nftablesPolicyDigest": { "$ref": "#/$defs/digest" },
+        "imageDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "providerLeaseReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "providerScopeDigest",
+        "leaseId",
+        "instanceId",
+        "instanceIdentityDigest",
+        "imageDigest",
+        "controllerPrincipalDigest",
+        "createdAt",
+        "expiresAt",
+        "receiptDigest"
+      ],
+      "properties": {
+        "kind": { "const": "provider_lease_receipt" },
+        "provider": { "$ref": "#/$defs/provider" },
+        "providerScopeDigest": { "$ref": "#/$defs/digest" },
+        "leaseId": { "$ref": "#/$defs/identifier" },
+        "instanceId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{5,255}$"
+        },
+        "instanceIdentityDigest": { "$ref": "#/$defs/digest" },
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "controllerPrincipalDigest": { "$ref": "#/$defs/digest" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "receiptDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "hostLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leaseId",
+        "provider",
+        "providerScopeDigest",
+        "providerLeaseReceiptDigest",
+        "providerLeaseReceipt",
+        "instanceId",
+        "instanceIdentityDigest",
+        "imageDigest",
+        "initialBootId",
+        "createdAt",
+        "expiresAt",
+        "fresh",
+        "dedicated",
+        "disposable",
+        "reused",
+        "selfAttested"
+      ],
+      "properties": {
+        "leaseId": { "$ref": "#/$defs/identifier" },
+        "provider": { "$ref": "#/$defs/provider" },
+        "providerScopeDigest": { "$ref": "#/$defs/digest" },
+        "providerLeaseReceiptDigest": { "$ref": "#/$defs/digest" },
+        "providerLeaseReceipt": { "$ref": "#/$defs/providerLeaseReceipt" },
+        "instanceId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{5,255}$"
+        },
+        "instanceIdentityDigest": { "$ref": "#/$defs/digest" },
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "initialBootId": { "$ref": "#/$defs/digest" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "fresh": { "const": true },
+        "dedicated": { "const": true },
+        "disposable": { "const": true },
+        "reused": { "const": false },
+        "selfAttested": { "const": false }
+      }
+    },
+    "noFaultProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "const": "none" }
+      }
+    },
+    "oomFaultProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "cgroupVersion",
+        "memoryMaxBytes",
+        "memorySwapMaxBytes",
+        "allocationBytes",
+        "oomKillDeltaMinimum",
+        "unitNameDigest",
+        "cgroupPathDigest",
+        "expectedSystemdResult",
+        "hostMustRemainReachable"
+      ],
+      "properties": {
+        "kind": { "const": "bounded_cgroup_v2_oom" },
+        "cgroupVersion": { "const": 2 },
+        "memoryMaxBytes": {
+          "type": "integer",
+          "minimum": 67108864,
+          "maximum": 4294967296
+        },
+        "memorySwapMaxBytes": { "const": 0 },
+        "allocationBytes": {
+          "type": "integer",
+          "minimum": 67108865,
+          "maximum": 8589934592
+        },
+        "oomKillDeltaMinimum": { "const": 1 },
+        "unitNameDigest": { "$ref": "#/$defs/digest" },
+        "cgroupPathDigest": { "$ref": "#/$defs/digest" },
+        "expectedSystemdResult": { "const": "oom-kill" },
+        "hostMustRemainReachable": { "const": true }
+      }
+    },
+    "rebootFaultProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "operationNonceDigest",
+        "requireUnreachableTransition",
+        "requireReconnect",
+        "requireSameInstanceIdentity",
+        "requireBootIdChange",
+        "maxUnavailableMs"
+      ],
+      "properties": {
+        "kind": { "const": "provider_control_plane_reboot" },
+        "operationNonceDigest": { "$ref": "#/$defs/digest" },
+        "requireUnreachableTransition": { "const": true },
+        "requireReconnect": { "const": true },
+        "requireSameInstanceIdentity": { "const": true },
+        "requireBootIdChange": { "const": true },
+        "maxUnavailableMs": {
+          "type": "integer",
+          "minimum": 30000,
+          "maximum": 600000
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario",
+        "expectedOutcome",
+        "scenarioNonce",
+        "deadlineAt",
+        "jobId",
+        "bindings",
+        "hostLease",
+        "faultProfile",
+        "attemptDigest"
+      ],
+      "properties": {
+        "scenario": {
+          "enum": [
+            "success",
+            "timeout",
+            "sigkill",
+            "oom",
+            "reboot",
+            "wrong_sni",
+            "absent_sni",
+            "plaintext",
+            "direct_bypass",
+            "non_443",
+            "non_npm",
+            "offline_network",
+            "gateway_stop",
+            "uid_idle",
+            "policy_removal",
+            "cgroup_namespace_cleanup",
+            "workspace_cleanup"
+          ]
+        },
+        "expectedOutcome": {
+          "enum": [
+            "registry_npm_tls_sni_tcp443_only",
+            "fail_closed_and_teardown",
+            "blocked",
+            "forced_through_gateway_with_correlated_counters",
+            "verified"
+          ]
+        },
+        "scenarioNonce": { "$ref": "#/$defs/digest" },
+        "deadlineAt": { "$ref": "#/$defs/timestamp" },
+        "jobId": { "type": "string", "pattern": "^previewjob_[a-f0-9]{64}$" },
+        "bindings": { "$ref": "#/$defs/bindings" },
+        "hostLease": { "$ref": "#/$defs/hostLease" },
+        "faultProfile": {
+          "oneOf": [
+            { "$ref": "#/$defs/noFaultProfile" },
+            { "$ref": "#/$defs/oomFaultProfile" },
+            { "$ref": "#/$defs/rebootFaultProfile" }
+          ]
+        },
+        "attemptDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "successAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "success" }, "expectedOutcome": { "const": "registry_npm_tls_sni_tcp443_only" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "timeoutAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "timeout" }, "expectedOutcome": { "const": "fail_closed_and_teardown" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "sigkillAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "sigkill" }, "expectedOutcome": { "const": "fail_closed_and_teardown" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "oomAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "oom" }, "expectedOutcome": { "const": "fail_closed_and_teardown" }, "faultProfile": { "$ref": "#/$defs/oomFaultProfile" } } }
+      ]
+    },
+    "rebootAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "reboot" }, "expectedOutcome": { "const": "fail_closed_and_teardown" }, "faultProfile": { "$ref": "#/$defs/rebootFaultProfile" } } }
+      ]
+    },
+    "wrongSniAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "wrong_sni" }, "expectedOutcome": { "const": "blocked" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "absentSniAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "absent_sni" }, "expectedOutcome": { "const": "blocked" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "plaintextAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "plaintext" }, "expectedOutcome": { "const": "blocked" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "directBypassAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "direct_bypass" }, "expectedOutcome": { "const": "forced_through_gateway_with_correlated_counters" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "non443Attempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "non_443" }, "expectedOutcome": { "const": "blocked" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "nonNpmAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "non_npm" }, "expectedOutcome": { "const": "blocked" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "offlineNetworkAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "offline_network" }, "expectedOutcome": { "const": "blocked" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "gatewayStopAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "gateway_stop" }, "expectedOutcome": { "const": "fail_closed_and_teardown" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "uidIdleAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "uid_idle" }, "expectedOutcome": { "const": "verified" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "policyRemovalAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "policy_removal" }, "expectedOutcome": { "const": "verified" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "cgroupNamespaceCleanupAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "cgroup_namespace_cleanup" }, "expectedOutcome": { "const": "verified" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    },
+    "workspaceCleanupAttempt": {
+      "allOf": [
+        { "$ref": "#/$defs/attempt" },
+        { "type": "object", "properties": { "scenario": { "const": "workspace_cleanup" }, "expectedOutcome": { "const": "verified" }, "faultProfile": { "$ref": "#/$defs/noFaultProfile" } } }
+      ]
+    }
+  }
+}
