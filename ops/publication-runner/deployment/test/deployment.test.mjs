@@ -32,6 +32,10 @@ import {
   validateL7IntegrationStatus,
   validateLiveSnapshot,
 } from "../lib.mjs";
+import {
+  parseCanonicalDedicatedDrillAttemptReport,
+  parseCanonicalDedicatedDrillHandoff,
+} from "../dedicated-drill-handoff.mjs";
 import { renderUnits } from "../render-units.mjs";
 
 const DEPLOYMENT_DIR = resolve(new URL("..", import.meta.url).pathname);
@@ -47,6 +51,7 @@ function digest(label) {
 function deploymentSchemaValidator() {
   const validator = new Ajv2020({ allErrors: true, strict: true });
   for (const file of [
+    "dedicated-drill-attempt-report.schema.json", "dedicated-drill-handoff.schema.json",
     "host-profile.schema.json", "job-descriptor.schema.json", "l7-integration-status.schema.json",
     "runner-observation.schema.json", "runtime-manifest.schema.json", "unsigned-signing-request.schema.json",
   ]) {
@@ -317,6 +322,8 @@ function build(fx, overrides = {}) {
 
 test("validates all checked-in schemas, examples, and shell syntax", () => {
   const files = [
+    "dedicated-drill-attempt-report.schema.json", "dedicated-drill-attempt-report.example.json",
+    "dedicated-drill-handoff.schema.json", "dedicated-drill-handoff.example.json",
     "host-profile.schema.json", "host-profile.example.json", "job-descriptor.schema.json",
     "job-descriptor.example.json", "l7-integration-status.schema.json", "l7-integration-status.example.json",
     "runner-observation.schema.json", "runner-observation.example.json", "runtime-manifest.schema.json",
@@ -325,6 +332,8 @@ test("validates all checked-in schemas, examples, and shell syntax", () => {
   for (const file of files) assert.doesNotThrow(() => JSON.parse(readFileSync(join(DEPLOYMENT_DIR, file), "utf8")), file);
   const validator = deploymentSchemaValidator();
   for (const [schemaId, exampleFile] of [
+    ["https://api-migrator.invalid/schemas/dedicated-drill-attempt-report-v1.json", "dedicated-drill-attempt-report.example.json"],
+    ["https://api-migrator.invalid/schemas/dedicated-drill-handoff-v1.json", "dedicated-drill-handoff.example.json"],
     ["https://api-migrator.invalid/schemas/runner-host-profile-v2.json", "host-profile.example.json"],
     ["https://api-migrator.invalid/schemas/runner-deployment-job-v2.json", "job-descriptor.example.json"],
     ["https://api-migrator.invalid/schemas/l7-gateway-integration-status-v1.json", "l7-integration-status.example.json"],
@@ -333,6 +342,65 @@ test("validates all checked-in schemas, examples, and shell syntax", () => {
   ]) {
     const example = JSON.parse(readFileSync(join(DEPLOYMENT_DIR, exampleFile), "utf8"));
     assert.equal(validator.validate(schemaId, example), true, validator.errorsText(validator.errors));
+  }
+  const handoffText = readFileSync(join(DEPLOYMENT_DIR, "dedicated-drill-handoff.example.json"), "utf8");
+  const handoffRecord = parseCanonicalDedicatedDrillHandoff(handoffText);
+  const reportText = readFileSync(join(DEPLOYMENT_DIR, "dedicated-drill-attempt-report.example.json"), "utf8");
+  const reportRecord = parseCanonicalDedicatedDrillAttemptReport(reportText, handoffRecord);
+  assert.equal(handoffText, canonicalJson(handoffRecord.handoff));
+  assert.equal(reportText, canonicalJson(reportRecord.report));
+  assert.equal(reportRecord.report.handoffDigest, handoffRecord.digest);
+  assert.equal(reportRecord.report.attemptDigest, handoffRecord.handoff.attempts[0].attemptDigest);
+
+  const handoffSchemaId = "https://api-migrator.invalid/schemas/dedicated-drill-handoff-v1.json";
+  const reportSchemaId = "https://api-migrator.invalid/schemas/dedicated-drill-attempt-report-v1.json";
+  const nestedExtension = structuredClone(reportRecord.report);
+  nestedExtension.evidenceBundle.gatewayReceipt.unexpected = true;
+  assert.equal(validator.validate(reportSchemaId, nestedExtension), false);
+  const reorderedEventEvidence = structuredClone(reportRecord.report);
+  [reorderedEventEvidence.evidenceBundle.eventEvidence[0], reorderedEventEvidence.evidenceBundle.eventEvidence[1]] =
+    [reorderedEventEvidence.evidenceBundle.eventEvidence[1], reorderedEventEvidence.evidenceBundle.eventEvidence[0]];
+  assert.equal(validator.validate(reportSchemaId, reorderedEventEvidence), false);
+  const substitutedFaultEvidence = structuredClone(reportRecord.report);
+  substitutedFaultEvidence.evidenceBundle.faultEvidence[0].name = "observation";
+  assert.equal(validator.validate(reportSchemaId, substitutedFaultEvidence), false);
+  const substitutedProofEvents = structuredClone(reportRecord.report);
+  substitutedProofEvents.faultProof.stimulusEvent = "timeout_injected";
+  substitutedProofEvents.faultProof.observationEvent = "timeout_observed";
+  assert.equal(validator.validate(reportSchemaId, substitutedProofEvents), false);
+  const crossScenarioModel = structuredClone(reportRecord.report);
+  crossScenarioModel.faultProof.scenario = "wrong_sni";
+  crossScenarioModel.faultProof.stimulusEvent = "wrong_sni_probe_started";
+  crossScenarioModel.faultProof.observationEvent = "wrong_sni_observed";
+  for (const event of crossScenarioModel.events) event.scenario = "wrong_sni";
+  crossScenarioModel.events[9].event = "wrong_sni_probe_started";
+  crossScenarioModel.events[10].event = "wrong_sni_observed";
+  crossScenarioModel.evidenceBundle.eventEvidence[9].event = "wrong_sni_probe_started";
+  crossScenarioModel.evidenceBundle.eventEvidence[10].event = "wrong_sni_observed";
+  assert.equal(validator.validate(reportSchemaId, crossScenarioModel), false);
+  const successWithProviderOperation = structuredClone(reportRecord.report);
+  successWithProviderOperation.evidenceBundle.providerOperationReceipt = {
+    digest: digest("substituted-provider-operation"),
+    objectReference: "s3://example-api-migrator-evidence/substituted-provider-operation.json",
+  };
+  assert.equal(validator.validate(reportSchemaId, successWithProviderOperation), false);
+  for (const invalidReference of [
+    "https://localhost/evidence.json",
+    "https://evidence.localhost/evidence.json",
+    "https://127.0.0.2/evidence.json",
+    "https://0.0.0.0/evidence.json",
+    "https://evidence.example:443/evidence.json",
+    "HTTPS://evidence.example/evidence.json",
+    "https://Evidence.example/evidence.json",
+    "https://evidence.example/a/../evidence.json",
+    "https://evidence.example/%65vidence.json",
+  ]) {
+    const invalidHandoffReference = structuredClone(handoffRecord.handoff);
+    invalidHandoffReference.evidenceSink.locationReference = invalidReference;
+    assert.equal(validator.validate(handoffSchemaId, invalidHandoffReference), false, invalidReference);
+    const invalidReportReference = structuredClone(reportRecord.report);
+    invalidReportReference.evidenceBundle.gatewayReceipt.objectReference = invalidReference;
+    assert.equal(validator.validate(reportSchemaId, invalidReportReference), false, invalidReference);
   }
   assert.doesNotThrow(() => validateHostProfile(JSON.parse(readFileSync(join(DEPLOYMENT_DIR, "host-profile.example.json"), "utf8"))));
   assert.doesNotThrow(() => validateJobDescriptor(JSON.parse(readFileSync(join(DEPLOYMENT_DIR, "job-descriptor.example.json"), "utf8"))));

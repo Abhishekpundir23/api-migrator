@@ -23,13 +23,13 @@ export const LIFECYCLE_EVENT_ORDER = Object.freeze([
   "gateway_started",
   "gateway_ready",
   "scenario_started",
-  "scenario_finished",
   "gateway_stopped",
   "runner_uid_idle",
   "gateway_uid_idle",
-  "nftables_policy_removed",
   "cgroup_namespace_cleanup",
   "workspace_cleanup",
+  "nftables_policy_removed",
+  "scenario_finished",
   "observer_finished",
 ]);
 

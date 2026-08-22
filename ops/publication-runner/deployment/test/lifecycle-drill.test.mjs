@@ -129,12 +129,12 @@ function reportFixture(deployment) {
       events,
       eventsDigest: sha256(Buffer.from(canonicalJson(events), "utf8")),
       teardown: {
-        gatewayStoppedAt: events[8].observedAt,
-        runnerUidIdleAt: events[9].observedAt,
-        gatewayUidIdleAt: events[10].observedAt,
-        nftablesPolicyRemovedAt: events[11].observedAt,
-        cgroupNamespaceCleanupAt: events[12].observedAt,
-        workspaceCleanupAt: events[13].observedAt,
+        gatewayStoppedAt: events[7].observedAt,
+        runnerUidIdleAt: events[8].observedAt,
+        gatewayUidIdleAt: events[9].observedAt,
+        cgroupNamespaceCleanupAt: events[10].observedAt,
+        workspaceCleanupAt: events[11].observedAt,
+        nftablesPolicyRemovedAt: events[12].observedAt,
         complete: true,
         evidenceDigest: digest(`teardown-${scenario.name}`),
       },
@@ -247,6 +247,17 @@ test("validates the exact observer-first aggregate scenario and teardown report"
   assert.deepEqual(validated.scenarios.map(({ name }) => name), LIFECYCLE_SCENARIO_MATRIX.map(({ name }) => name));
   assert(validated.scenarios.every(({ events }) => events[0].event === "observer_started"));
   assert(validated.scenarios.every(({ teardown }) => teardown.complete));
+  assert.deepEqual(LIFECYCLE_EVENT_ORDER.slice(6), [
+    "scenario_started",
+    "gateway_stopped",
+    "runner_uid_idle",
+    "gateway_uid_idle",
+    "cgroup_namespace_cleanup",
+    "workspace_cleanup",
+    "nftables_policy_removed",
+    "scenario_finished",
+    "observer_finished",
+  ]);
   assert.equal(new Set(validated.scenarios.map(({ jobId }) => jobId)).size, LIFECYCLE_SCENARIO_MATRIX.length);
   assert.equal(validated.reportScope, "structural_aggregate_independent_scenario_jobs");
   assert.equal(validated.activationBlocked, true);
@@ -283,4 +294,53 @@ test("rejects incomplete, reordered, stale, substituted, or authorizing aggregat
     mutate(report);
     assert.throws(() => validateLifecycleDrillReport(report, deployment));
   }
+});
+
+test("rejects the former teardown mapping that removed containment before cgroup and workspace cleanup", () => {
+  const deployment = renderFixture();
+  const report = reportFixture(deployment);
+  const scenario = report.scenarios[0];
+
+  scenario.teardown.nftablesPolicyRemovedAt = scenario.events[11].observedAt;
+  scenario.teardown.cgroupNamespaceCleanupAt = scenario.events[12].observedAt;
+  scenario.teardown.workspaceCleanupAt = scenario.events[13].observedAt;
+
+  assert.throws(
+    () => validateLifecycleDrillReport(report, deployment),
+    /does not match observer evidence/
+  );
+});
+
+test("rejects the former event order that finished the scenario before teardown", () => {
+  const deployment = renderFixture();
+  const report = reportFixture(deployment);
+  const scenario = report.scenarios[0];
+  const formerOrder = [
+    "observer_started",
+    "contract_validated",
+    "envoy_config_validated",
+    "nftables_policy_installed",
+    "gateway_started",
+    "gateway_ready",
+    "scenario_started",
+    "scenario_finished",
+    "gateway_stopped",
+    "runner_uid_idle",
+    "gateway_uid_idle",
+    "nftables_policy_removed",
+    "cgroup_namespace_cleanup",
+    "workspace_cleanup",
+    "observer_finished",
+  ];
+  scenario.events = scenario.events.map((event, index) => ({
+    ...event,
+    event: formerOrder[index],
+    evidenceDigest: digest(`former-order-${formerOrder[index]}`),
+  }));
+  scenario.eventsDigest = sha256(Buffer.from(canonicalJson(scenario.events), "utf8"));
+
+  assert.throws(
+    () => validateLifecycleDrillReport(report, deployment),
+    /not in exact observer-first order/
+  );
 });
