@@ -48,7 +48,9 @@ const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 1024 * 1024;
 const MAX_CGROUP_DIRECTORIES = 128;
 const PLAN_MAX_MS = 14 * 60 * 1000;
-const DNS_MIN_TTL_SECONDS = 75;
+const PLAN_MIN_MS = 60_000;
+const DNS_PLAN_CREATION_BUDGET_MS = 5_000;
+const DNS_MIN_TTL_SECONDS = (PLAN_MIN_MS + DNS_PLAN_CREATION_BUDGET_MS) / 1000;
 const DNS_REFRESH_WAIT_MAX_MS = 90_000;
 const DNS_RESOLUTION_TIMEOUT = Symbol("hosted smoke DNS resolution timeout");
 const HOSTED_SMOKE_RUNNER_ACCOUNT = "api-migrator-smoke-runner";
@@ -285,7 +287,7 @@ export function hostedNpmPlanWindow({ minimumTtlSeconds, resolutionObservedAt, c
     throw new Error("hosted smoke npm DNS timing input is invalid");
   }
   const expiresAt = Math.min(runnerExpiresAt, resolutionExpiresAt);
-  if (expiresAt - createdAt < 60_000) {
+  if (expiresAt - createdAt < PLAN_MIN_MS) {
     throw new Error("hosted smoke npm DNS resolution cannot bind a complete plan lifetime");
   }
   return Object.freeze({ resolutionExpiresAt, expiresAt });

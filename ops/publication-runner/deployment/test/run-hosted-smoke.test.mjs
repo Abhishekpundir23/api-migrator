@@ -132,7 +132,7 @@ test("timestamps the completed DNS answer and preserves the exact resolver contr
       now += 250;
       return [
         { address: "104.16.2.35", ttl: 300 },
-        { address: "104.16.1.35", ttl: 75 },
+        { address: "104.16.1.35", ttl: 65 },
         { address: "104.16.2.35", ttl: 300 },
       ];
     },
@@ -141,7 +141,7 @@ test("timestamps the completed DNS answer and preserves the exact resolver contr
   assert.deepEqual(calls, [["registry.npmjs.org", { ttl: true }]]);
   assert.deepEqual(result, {
     addresses: ["104.16.1.35", "104.16.2.35"],
-    minimumTtlSeconds: 75,
+    minimumTtlSeconds: 65,
     observedAt: 2_000_000_000_250,
     attempts: 1,
   });
@@ -201,7 +201,7 @@ test("reports bounded DNS exhaustion evidence without weakening the active plan 
     resolveHostedNpmOrigin({
       resolver: async () => {
         attempts += 1;
-        return [{ address: "104.16.1.35", ttl: attempts % 2 === 0 ? 12 : 74 }];
+        return [{ address: "104.16.1.35", ttl: attempts % 2 === 0 ? 12 : 64 }];
       },
       now: () => now,
       sleep: async (milliseconds) => {
@@ -212,9 +212,9 @@ test("reports bounded DNS exhaustion evidence without weakening the active plan 
     dnsFailure("ttl_floor_exhausted", [
       "attempts=18",
       "elapsedMs=90000",
-      "requiredMinimumTtlSeconds=75",
+      "requiredMinimumTtlSeconds=65",
       "lowestObservedTtlSeconds=12",
-      "highestObservedTtlSeconds=74",
+      "highestObservedTtlSeconds=64",
       "lastAnswerCount=1",
     ])
   );
@@ -236,7 +236,7 @@ test("rejects a DNS answer that completes outside the bounded refresh window", a
     dnsFailure("resolver_timeout", [
       "attempts=1",
       "elapsedMs=90001",
-      "requiredMinimumTtlSeconds=75",
+      "requiredMinimumTtlSeconds=65",
       "lowestObservedTtlSeconds=none",
       "highestObservedTtlSeconds=none",
       "lastAnswerCount=1",
@@ -288,7 +288,7 @@ test("uses a monotonic retry budget when the wall clock moves backwards", async 
     resolveHostedNpmOrigin({
       resolver: async () => {
         attempts += 1;
-        return [{ address: "104.16.1.35", ttl: 74 }];
+        return [{ address: "104.16.1.35", ttl: 64 }];
       },
       now: () => wallNow,
       elapsedNow: () => budgetNow,
@@ -302,7 +302,7 @@ test("uses a monotonic retry budget when the wall clock moves backwards", async 
     dnsFailure("ttl_floor_exhausted", [
       "attempts=18",
       "elapsedMs=90000",
-      "highestObservedTtlSeconds=74",
+      "highestObservedTtlSeconds=64",
     ])
   );
   assert.equal(attempts, 18);
@@ -325,18 +325,18 @@ test("sanitizes resolver rejection details into bounded diagnostics", async () =
 test("binds the exact minimum hosted npm plan lifetime and both expiry ceilings", () => {
   const resolutionObservedAt = 2_000_000_000_000;
   assert.deepEqual(hostedNpmPlanWindow({
-    minimumTtlSeconds: 75,
+    minimumTtlSeconds: 65,
     resolutionObservedAt,
-    createdAt: resolutionObservedAt + 15_000,
+    createdAt: resolutionObservedAt + 5_000,
   }), {
-    resolutionExpiresAt: resolutionObservedAt + 75_000,
-    expiresAt: resolutionObservedAt + 75_000,
+    resolutionExpiresAt: resolutionObservedAt + 65_000,
+    expiresAt: resolutionObservedAt + 65_000,
   });
   assert.throws(
     () => hostedNpmPlanWindow({
-      minimumTtlSeconds: 75,
+      minimumTtlSeconds: 65,
       resolutionObservedAt,
-      createdAt: resolutionObservedAt + 15_001,
+      createdAt: resolutionObservedAt + 5_001,
     }),
     /cannot bind a complete plan lifetime/
   );
@@ -351,7 +351,7 @@ test("binds the exact minimum hosted npm plan lifetime and both expiry ceilings"
   });
   assert.throws(
     () => hostedNpmPlanWindow({
-      minimumTtlSeconds: 74,
+      minimumTtlSeconds: 64,
       resolutionObservedAt,
       createdAt: resolutionObservedAt,
     }),
