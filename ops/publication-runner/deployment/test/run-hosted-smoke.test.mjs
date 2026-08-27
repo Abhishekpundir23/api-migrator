@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   countMatchingAccessLogs,
+  hostedNpmPlanWindow,
   nftCounterDelta,
   parseHostedSmokeCli,
   parseHostedSmokeEnvironment,
@@ -28,6 +29,18 @@ function environment() {
     API_MIGRATOR_SMOKE_REPOSITORY: "example/api-migrator",
     API_MIGRATOR_SMOKE_WORKFLOW_REF: "example/api-migrator/.github/workflows/linux-l7-smoke.yml@refs/pull/1/merge",
     API_MIGRATOR_SMOKE_IMAGE_VERSION: "20260818.1",
+  };
+}
+
+function dnsFailure(reason, fields, forbidden = []) {
+  return (error) => {
+    assert(error instanceof Error);
+    assert.match(error.message, /^hosted smoke npm DNS resolution failed \(/);
+    for (const field of [`reason=${reason}`, ...fields]) {
+      assert.match(error.message, new RegExp(`(?:\\(|, )${field}(?:, |\\))`));
+    }
+    for (const value of forbidden) assert.doesNotMatch(error.message, new RegExp(value, "u"));
+    return true;
   };
 }
 
@@ -108,6 +121,250 @@ test("waits through a cached low TTL and binds only a fresh DNS plan window", as
     attempts: 3,
   });
   assert.deepEqual(sleeps, [5_000, 5_000]);
+});
+
+test("timestamps the completed DNS answer and preserves the exact resolver contract", async () => {
+  let now = 2_000_000_000_000;
+  const calls = [];
+  const result = await resolveHostedNpmOrigin({
+    resolver: async (...args) => {
+      calls.push(args);
+      now += 250;
+      return [
+        { address: "104.16.2.35", ttl: 300 },
+        { address: "104.16.1.35", ttl: 65 },
+        { address: "104.16.2.35", ttl: 300 },
+      ];
+    },
+    now: () => now,
+  });
+  assert.deepEqual(calls, [["registry.npmjs.org", { ttl: true }]]);
+  assert.deepEqual(result, {
+    addresses: ["104.16.1.35", "104.16.2.35"],
+    minimumTtlSeconds: 65,
+    observedAt: 2_000_000_000_250,
+    attempts: 1,
+  });
+});
+
+test("rejects malformed DNS answer records before they can enter a plan", async () => {
+  for (const answer of [
+    undefined,
+    null,
+    [],
+    Array.from({ length: 33 }, (_, index) => ({ address: `104.16.1.${index + 1}`, ttl: 300 })),
+    [null],
+    ["104.16.1.35"],
+    [{ address: "2606:4700::6810:123", ttl: 300 }],
+    [{ address: "not-an-ip", ttl: 300 }],
+    [{ address: Symbol("not-an-address"), ttl: 300 }],
+    [{ address: "104.16.1.35", ttl: "300" }],
+    [{ address: "104.16.1.35", ttl: -1 }],
+    [{ address: "104.16.1.35", ttl: 1.5 }],
+  ]) {
+    const missingOrExcessive = !Array.isArray(answer) || answer.length < 1 || answer.length > 32;
+    await assert.rejects(
+      resolveHostedNpmOrigin({
+        resolver: async () => answer,
+        sleep: async () => assert.fail("invalid DNS answers must not be retried"),
+      }),
+      dnsFailure(missingOrExcessive ? "missing_or_excessive_answer" : "invalid_answer", [
+        "attempts=1",
+        `lastAnswerCount=${Array.isArray(answer) ? answer.length : 0}`,
+      ])
+    );
+  }
+});
+
+test("rejects accessor-based DNS records without invoking untrusted getters", async () => {
+  let getterCalls = 0;
+  const record = { ttl: 300 };
+  Object.defineProperty(record, "address", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error("DNS getter secret");
+    },
+  });
+  await assert.rejects(
+    resolveHostedNpmOrigin({ resolver: async () => [record] }),
+    dnsFailure("invalid_answer", ["attempts=1", "lastAnswerCount=1"], ["DNS getter secret"])
+  );
+  assert.equal(getterCalls, 0);
+});
+
+test("reports bounded DNS exhaustion evidence without weakening the active plan floor", async () => {
+  let now = 2_000_000_000_000;
+  let attempts = 0;
+  const sleeps = [];
+  await assert.rejects(
+    resolveHostedNpmOrigin({
+      resolver: async () => {
+        attempts += 1;
+        return [{ address: "104.16.1.35", ttl: attempts % 2 === 0 ? 12 : 64 }];
+      },
+      now: () => now,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        now += milliseconds;
+      },
+    }),
+    dnsFailure("ttl_floor_exhausted", [
+      "attempts=18",
+      "elapsedMs=90000",
+      "requiredMinimumTtlSeconds=65",
+      "lowestObservedTtlSeconds=12",
+      "highestObservedTtlSeconds=64",
+      "lastAnswerCount=1",
+    ])
+  );
+  assert.equal(attempts, 18);
+  assert.deepEqual(sleeps, Array(18).fill(5_000));
+});
+
+test("rejects a DNS answer that completes outside the bounded refresh window", async () => {
+  let now = 2_000_000_000_000;
+  await assert.rejects(
+    resolveHostedNpmOrigin({
+      resolver: async () => {
+        now += 90_001;
+        return [{ address: "104.16.1.35", ttl: 300 }];
+      },
+      now: () => now,
+      sleep: async () => assert.fail("an over-budget DNS answer must not be retried"),
+    }),
+    dnsFailure("resolver_timeout", [
+      "attempts=1",
+      "elapsedMs=90001",
+      "requiredMinimumTtlSeconds=65",
+      "lowestObservedTtlSeconds=none",
+      "highestObservedTtlSeconds=none",
+      "lastAnswerCount=1",
+    ])
+  );
+});
+
+test("times out a non-settling resolver within the monotonic budget", async () => {
+  let wallNow = 2_000_000_000_000;
+  let budgetNow = 10_000;
+  let scheduledMilliseconds = 0;
+  let clearedTimer = null;
+  let cancelCalls = 0;
+  await assert.rejects(
+    resolveHostedNpmOrigin({
+      resolver: async () => new Promise(() => {}),
+      now: () => wallNow,
+      elapsedNow: () => budgetNow,
+      setTimer: (callback, milliseconds) => {
+        scheduledMilliseconds = milliseconds;
+        budgetNow += milliseconds;
+        wallNow += milliseconds;
+        queueMicrotask(callback);
+        return 71;
+      },
+      clearTimer: (timer) => {
+        clearedTimer = timer;
+      },
+      cancelResolver: () => {
+        cancelCalls += 1;
+      },
+    }),
+    dnsFailure("resolver_timeout", [
+      "attempts=1",
+      "elapsedMs=90000",
+      "lastAnswerCount=0",
+    ])
+  );
+  assert.equal(scheduledMilliseconds, 90_000);
+  assert.equal(clearedTimer, 71);
+  assert.equal(cancelCalls, 1);
+});
+
+test("uses a monotonic retry budget when the wall clock moves backwards", async () => {
+  let wallNow = 2_000_000_000_000;
+  let budgetNow = 10_000;
+  let attempts = 0;
+  await assert.rejects(
+    resolveHostedNpmOrigin({
+      resolver: async () => {
+        attempts += 1;
+        return [{ address: "104.16.1.35", ttl: 64 }];
+      },
+      now: () => wallNow,
+      elapsedNow: () => budgetNow,
+      sleep: async (milliseconds) => {
+        budgetNow += milliseconds;
+        wallNow -= 10_000;
+      },
+      setTimer: () => 72,
+      clearTimer: () => {},
+    }),
+    dnsFailure("ttl_floor_exhausted", [
+      "attempts=18",
+      "elapsedMs=90000",
+      "highestObservedTtlSeconds=64",
+    ])
+  );
+  assert.equal(attempts, 18);
+});
+
+test("sanitizes resolver rejection details into bounded diagnostics", async () => {
+  await assert.rejects(
+    resolveHostedNpmOrigin({
+      resolver: async () => {
+        throw new Error("secret resolver credential and 192.0.2.4");
+      },
+    }),
+    dnsFailure("resolver_error", [
+      "attempts=1",
+      "lastAnswerCount=0",
+    ], ["secret resolver credential", "192\\.0\\.2\\.4"])
+  );
+});
+
+test("binds the exact minimum hosted npm plan lifetime and both expiry ceilings", () => {
+  const resolutionObservedAt = 2_000_000_000_000;
+  assert.deepEqual(hostedNpmPlanWindow({
+    minimumTtlSeconds: 65,
+    resolutionObservedAt,
+    createdAt: resolutionObservedAt + 5_000,
+  }), {
+    resolutionExpiresAt: resolutionObservedAt + 65_000,
+    expiresAt: resolutionObservedAt + 65_000,
+  });
+  assert.throws(
+    () => hostedNpmPlanWindow({
+      minimumTtlSeconds: 65,
+      resolutionObservedAt,
+      createdAt: resolutionObservedAt + 5_001,
+    }),
+    /cannot bind a complete plan lifetime/
+  );
+
+  assert.deepEqual(hostedNpmPlanWindow({
+    minimumTtlSeconds: 1_800,
+    resolutionObservedAt,
+    createdAt: resolutionObservedAt,
+  }), {
+    resolutionExpiresAt: resolutionObservedAt + 1_800_000,
+    expiresAt: resolutionObservedAt + 14 * 60_000,
+  });
+  assert.throws(
+    () => hostedNpmPlanWindow({
+      minimumTtlSeconds: 64,
+      resolutionObservedAt,
+      createdAt: resolutionObservedAt,
+    }),
+    /timing input is invalid/
+  );
+  assert.throws(
+    () => hostedNpmPlanWindow({
+      minimumTtlSeconds: 300,
+      resolutionObservedAt,
+      createdAt: resolutionObservedAt - 1,
+    }),
+    /timing input is invalid/
+  );
 });
 
 test("requires the two exact static systemd identities", () => {
