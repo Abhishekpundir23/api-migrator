@@ -29,6 +29,7 @@ export interface PreviewResultInput {
   prUrl?: string | null;
   error?: string;
   report?: {
+    manifest?: { deployment?: unknown };
     changedFiles?: unknown;
     entries?: unknown;
     summary?: {
@@ -55,6 +56,7 @@ export interface PreviewEvidenceView {
   slug: string;
   status: string;
   publishable: boolean;
+  deploymentKind: "long-running" | "serverless" | "unknown";
   prUrl: string | null;
   error: string | null;
   identity: {
@@ -104,11 +106,13 @@ export function buildPreviewEvidence(result: PreviewResultInput): PreviewEvidenc
   const checks = asRecord(verification?.checks);
   const entries = Array.isArray(result.report?.entries) ? result.report.entries : [];
   const blockers = Array.isArray(result.publication?.blockers) ? result.publication.blockers : [];
+  const deploymentKind = asRecord(result.report?.manifest?.deployment).kind;
 
   return {
     slug: safeText(result.slug, 220) ?? "Unknown repository",
     status: safeText(result.status, 80) ?? "unknown",
     publishable: result.status === "preview_ready",
+    deploymentKind: deploymentKind === "long-running" || deploymentKind === "serverless" ? deploymentKind : "unknown",
     prUrl: safeHttpUrl(result.prUrl),
     error: safeText(result.error, 500),
     identity: {

@@ -5,21 +5,16 @@ import type { Manifest } from "@api-migrator/engine";
 import { loadEnv } from "./env.js";
 import { migrateRepo } from "./github.js";
 import { safeErrorMessage } from "./security.js";
+import { parsePreviewArgs, type PreviewArgs } from "./cli-args.js";
 
 loadEnv();
-
-const VALUE_FLAGS = new Set([
-  "--base",
-  "--branch",
-]);
-const BOOLEAN_FLAGS = new Set<string>();
 
 function usage(): never {
   console.error(
     [
       "Preview:",
-      "  tsx packages/app/src/cli.ts owner/repo [--base main] [--branch name]",
-      "",
+      "  tsx packages/app/src/cli.ts owner/repo [--base main] [--branch name] [--deployment-kind long-running|serverless]",
+      "  Deployment is operator-declared. Omission remains unknown and F12-blocked.",
       "",
       "Direct CLI publication is intentionally disabled. Use the local operator console",
       "so the signed owner authorization and durable one-use receipt are enforced.",
@@ -28,37 +23,20 @@ function usage(): never {
   exit(1);
 }
 
-function parseArgs(args: string[]): { slug: string; flags: Map<string, string | true> } {
-  const positional: string[] = [];
-  const flags = new Map<string, string | true>();
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (VALUE_FLAGS.has(arg)) {
-      const value = args[++i];
-      if (!value || value.startsWith("--")) usage();
-      flags.set(arg, value);
-    } else if (BOOLEAN_FLAGS.has(arg)) {
-      flags.set(arg, true);
-    } else if (arg.startsWith("--")) {
-      usage();
-    } else {
-      positional.push(arg);
-    }
-  }
-  if (positional.length !== 1) usage();
-  return { slug: positional[0]!, flags };
+let args: PreviewArgs;
+try {
+  args = parsePreviewArgs(argv.slice(2));
+} catch (error) {
+  console.error(safeErrorMessage(error));
+  usage();
 }
-
-const { slug, flags } = parseArgs(argv.slice(2));
-const value = (name: string): string | undefined => {
-  const found = flags.get(name);
-  return typeof found === "string" ? found : undefined;
-};
+const { slug } = args;
 
 const manifest: Manifest = {
   name: "Inngest TypeScript SDK v3 -> v4",
   provider: "inngest",
   transformSet: "inngest-v3-to-v4",
+  ...(args.deploymentKind ? { deployment: { kind: args.deploymentKind } } : {}),
   runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
   package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
   peerFloors: [{ name: "typescript", range: "^5.8.0" }],
@@ -68,12 +46,13 @@ console.log(`Previewing ${slug}...\n`);
 migrateRepo({
   slug,
   manifest,
-  baseBranch: value("--base"),
-  branch: value("--branch"),
+  baseBranch: args.baseBranch,
+  branch: args.branch,
   publication: { mode: "preview" },
 })
   .then(({ report, prUrl, publication: outcome }) => {
     console.log(`Changed files: ${report.changedFiles.length}`);
+    console.log(`Operator-declared deployment: ${report.manifest.deployment?.kind ?? "unknown"} (not independently verified)`);
     console.log(`Applied: ${report.summary.applied}  |  Flagged: ${report.summary.review}`);
     console.log(`Preflight: ${outcome.preflightId}`);
     console.log(`Base: ${outcome.baseBranch}@${outcome.baseSha}`);

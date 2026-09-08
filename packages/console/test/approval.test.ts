@@ -81,6 +81,19 @@ test("manifest digests use canonical stored JSON while owner digests preserve ex
   assert.match(digestOwnerAuthorizationEnvelope(ENVELOPE), /^sha256:[a-f0-9]{64}$/);
 });
 
+test("changing a deployment declaration invalidates the previous preview receipt", () => {
+  const declared = (kind: string) => JSON.stringify({ ...JSON.parse(MANIFEST), deployment: { kind } });
+  const longRunning = declared("long-running");
+  const serverless = declared("serverless");
+  assert.equal(new Set([MANIFEST, longRunning, serverless].map(digestManifest)).size, 3);
+  const receipt = createPreviewReceipt({ campaignId: CAMPAIGN_ID, manifestJson: longRunning,
+    repository: REVIEWED, now: REVIEWED.previewCompletedAt, secret: SECRET });
+  for (const manifestJson of [MANIFEST, serverless]) {
+    assert.throws(() => verifyPreviewReceipt({ previewReceipt: receipt.previewReceipt,
+      campaignId: CAMPAIGN_ID, manifestJson, now: REVIEWED.previewCompletedAt + 1, secret: SECRET }), /does not match this campaign/);
+  }
+});
+
 test("preview receipt is HMAC-bound to one exact preview but cannot authorize publication", () => {
   const receipt = preview();
   const verified = verifyPreviewReceipt({

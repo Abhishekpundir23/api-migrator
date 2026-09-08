@@ -268,6 +268,58 @@ test("dry-run verifies proposed output without mutating source and matches write
   });
 });
 
+for (const kind of [undefined, "long-running", "serverless"] as const) {
+  for (const transforms of [undefined, [], ["T1", "T2", "T3", "T4", "T5"]]) {
+    test(`pipeline binds deployment ${kind ?? "unknown"} with transforms ${JSON.stringify(transforms)}`, async () => {
+      await withRepo(async (repo) => {
+        const declared = {
+          ...manifest,
+          ...(kind ? { deployment: { kind } } : {}),
+          ...(transforms ? { transforms } : {}),
+        };
+        const before = readFileSync(join(repo, "src", "functions.ts"), "utf8");
+        const result = await runMigration(declared, repo, {
+          writeChanges: false,
+          verify: { runner: new InspectingRunner(), install: true },
+        });
+        assert.equal(result.report.verification.ok, true);
+        assert.deepEqual(result.report.manifest.deployment, kind ? { kind } : undefined);
+        const reviews = result.report.entries.filter((entry) => entry.code === "F12");
+        assert.equal(reviews.length, kind === "long-running" ? 0 : 1);
+        if (kind !== "long-running") {
+          assert.equal(reviews[0]!.kind, "review");
+          assert.match(reviews[0]!.message, kind === "serverless" ? /maxRuntime.*platform limit/ : /runtime container is unknown/i);
+        }
+        assert.equal(readFileSync(join(repo, "src", "functions.ts"), "utf8"), before);
+      });
+    });
+  }
+}
+
+test("invalid deployment fails before the repository or verifier is accessed", async () => {
+  const runner = new InspectingRunner();
+  await assert.rejects(() => runMigration(
+    { ...manifest, deployment: { kind: "docker" } } as unknown as Manifest,
+    "/nonexistent-api-migrator-deployment-test",
+    { writeChanges: true, verify: { runner } }
+  ), /deployment/);
+  assert.equal(runner.commands.length, 0);
+});
+
+test("long-running clears only F12 and preserves other review findings and verification failures", async () => {
+  await withRepo(async (repo) => {
+    const source = join(repo, "src", "functions.ts");
+    writeFileSync(source, readFileSync(source, "utf8") + '\ninngest.send({ name: "demo/run", data: {} });\n');
+    const result = await runMigration({ ...manifest, deployment: { kind: "long-running" } }, repo, {
+      writeChanges: false, verify: { runner: new InspectingRunner(true), install: true },
+    });
+    assert.equal(result.report.entries.some((entry) => entry.code === "F12"), false);
+    assert.equal(result.report.entries.some((entry) => entry.code === "F14" && entry.kind === "review"), true);
+    assert.equal(result.report.verification.ok, false);
+    assert.ok(result.report.summary.review > 0);
+  });
+});
+
 test("write mode rejects a concurrent target edit before applying any candidate file", async () => {
   await withRepo(async (repo) => {
     const packageBefore = readFileSync(join(repo, "package.json"));

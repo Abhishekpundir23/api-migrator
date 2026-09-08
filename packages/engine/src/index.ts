@@ -16,7 +16,7 @@ export {
 export { applyKnockV0ToV1, default as knockTransform } from "./transforms/knock-v0-to-v1.js";
 export { findInngestFiles, findSdkFiles, findSourceFiles, selectSdkFiles, isDirectory, SourceScanError, type ScannedFile, type ScanOptions } from "./scanner.js";
 export {
-  Manifest, PeerFloor, NodeRuntimePolicy, RuntimePolicy, TransformId,
+  Manifest, PeerFloor, NodeRuntimePolicy, RuntimePolicy, DeploymentPolicy, TransformId,
   TRANSFORM_ALLOWLIST, parseManifest, enabledTransforms,
   type LoadedManifest, type TransformSet,
 } from "./manifest.js";

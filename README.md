@@ -52,6 +52,22 @@ The engine includes experimental Inngest TypeScript SDK v3→v4 and Knock Node S
 
 The Inngest v4 campaign also migrates the deployment floor to Node 20+, pins its audited Node 22.23.2 Docker profile and Dockerfile frontend by digest, and verifies the post-edit package and Dockerfile declarations. This pilot accepts only the exact audited three-stage Fly/Next.js Docker recipe; it is not a general Dockerfile rewriter. A complete repository Docker build and default-command smoke test still belong in a disposable, secret-free CI worker; the local verifier does not execute repository Dockerfiles on the host daemon.
 
+New Inngest campaigns require an explicit operator-declared hosting model:
+`"deployment": { "kind": "long-running" }` or
+`"deployment": { "kind": "serverless" }`. This is not independent hosting
+verification, and the Node/Docker runtime profile does not imply either kind.
+Long-running clears only the F12 checkpointing review; all other findings and
+verification requirements remain. Serverless stays blocked for manual review of
+checkpointing and `maxRuntime` below the platform's limit. See
+[Inngest's checkpointing guide](https://www.inngest.com/docs/setup/checkpointing).
+
+Legacy manifests without this declaration remain unknown and F12-blocked. Create
+a new campaign with the correct declaration and run a fresh preview; never reuse
+an approval from another declaration. Use separate campaigns for different
+hosting models. F12 remains mandatory even if `transforms` excludes it. The CLI
+accepts `--deployment-kind long-running|serverless`; omission is allowed only as
+an unknown, blocked preview. Serverless configuration rewriting is not supported.
+
 SQLite is for local pilot state. Foreign keys are enabled, migrations are idempotent, and the console stores structured reports and run metadata. Source trees are processed in disposable working directories rather than stored in the database.
 
 The package root also exposes a fail-closed pre-publication runner plan and

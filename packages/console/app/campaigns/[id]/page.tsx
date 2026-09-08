@@ -1,5 +1,6 @@
 import { init, getCampaign, listRunsWithReposForCampaign, campaignRollup } from "@api-migrator/db";
 import { notFound } from "next/navigation";
+import { parseStoredManifest } from "@api-migrator/app";
 import RunForm from "./RunForm";
 import Link from "next/link";
 import { formatRunSummary, parseRunSummary } from "../../../lib/summary";
@@ -18,6 +19,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
   if (!campaign) notFound();
   const runs = listRunsWithReposForCampaign(id);
   const rollup = campaignRollup(id);
+  const manifest = parseStoredManifest(campaign.manifest);
 
   const stats = [
     { num: rollup._total ?? 0, lbl: "Runs" },
@@ -33,6 +35,13 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
       <Link href="/campaigns" className="muted">← All campaigns</Link>
       <h1>{campaign.name}</h1>
       <p className="muted">Status: <span className={`badge ${campaign.status}`}>{campaign.status}</span></p>
+      {manifest.transformSet === "inngest-v3-to-v4" && (
+        <p className="muted">
+          Operator-declared deployment: <strong>{manifest.deployment?.kind ?? "unknown"}</strong> (not independently verified).
+          {!manifest.deployment && " Create a new campaign with an explicit hosting choice and run a fresh preview to resolve the unknown-deployment review."}
+          {manifest.deployment?.kind === "serverless" && " F12 remains blocked pending checkpointing and maxRuntime review."}
+        </p>
+      )}
 
       <h2>Summary</h2>
       <div className="grid">

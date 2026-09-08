@@ -87,6 +87,17 @@ test("Inngest manifests require the audited Node runtime profile", () => {
   );
 });
 
+test("deployment declaration is optional for legacy manifests but strict when supplied", () => {
+  assert.equal(parseManifest(manifest).deployment, undefined);
+  for (const kind of ["long-running", "serverless"] as const) {
+    assert.deepEqual(parseManifest({ ...manifest, deployment: { kind } }).deployment, { kind });
+  }
+  for (const deployment of [null, {}, { kind: "unknown" }, { kind: "docker" },
+    { kind: "long-running", verified: true }, { kind: "serverless", maxRuntime: 10 }]) {
+    assert.throws(() => parseManifest({ ...manifest, deployment }));
+  }
+});
+
 test("runtime and dependency migration pins Node 22, adds the Node 20 floor, and is idempotent", () => {
   withRepo((repo) => {
     const entries: ReportEntry[] = [];

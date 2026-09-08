@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { init, listCampaigns, createCampaign, getProviderBySlug, createProvider } from "@api-migrator/db";
-import { Manifest } from "@api-migrator/engine";
+import { NewCampaignManifest } from "../../../lib/new-campaign";
 import { asObject, HttpInputError, readLimitedJson } from "../../../lib/request";
 
 export const dynamic = "force-dynamic";
@@ -14,9 +14,8 @@ export async function GET() {
 /** POST /api/campaigns — create a campaign from a manifest JSON. */
 export async function POST(req: NextRequest) {
   try {
-    init();
     const body = asObject(await readLimitedJson(req));
-    const parsed = Manifest.safeParse(body.manifest);
+    const parsed = NewCampaignManifest.safeParse(body.manifest);
     if (!parsed.success) {
       return NextResponse.json(
         { error: "invalid manifest", details: parsed.error.flatten() },
@@ -24,6 +23,7 @@ export async function POST(req: NextRequest) {
       );
     }
     const manifest = parsed.data;
+    init();
 
     // createProvider is an atomic upsert, so concurrent requests cannot race.
     const provider =

@@ -28,6 +28,9 @@ export function sanitizeMigrationReport(report: MigrationReport): MigrationRepor
     manifest: {
       name: bounded(report.manifest.name, MAX_LABEL),
       provider: bounded(report.manifest.provider, MAX_LABEL),
+      ...(report.manifest.deployment?.kind === "long-running" || report.manifest.deployment?.kind === "serverless"
+        ? { deployment: { kind: report.manifest.deployment.kind } }
+        : {}),
       ...(report.manifest.notes === undefined
         ? {}
         : { notes: safeMessage(report.manifest.notes, MAX_NOTES) }),

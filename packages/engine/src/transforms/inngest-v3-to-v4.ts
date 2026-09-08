@@ -124,7 +124,7 @@ export function inngestBehavioralReviewEntries(
   if (!enabled.has("F12") || context.runtimeContainer === "long-running") return [];
   const message = context.runtimeContainer === "serverless"
     ? "Inngest v4 enables checkpointing by default; for this serverless deployment, review retries/timeouts and set maxRuntime below the platform limit."
-    : "The runtime container is unknown; determine whether this is serverless before accepting v4 checkpointing and maxRuntime behavior.";
+    : "The runtime container is unknown; declare deployment.kind as long-running or serverless in a new campaign, then generate a fresh preview. A Node image does not establish hosting type.";
   return [{ file: "(migration)", kind: "review", code: "F12", message, line: null }];
 }
 

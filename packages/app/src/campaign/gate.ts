@@ -24,34 +24,28 @@ function assert(cond: boolean, msg: string) {
   console.log(`  ✓ ${msg}`);
 }
 
-function assertVerifiedF12Only(report: MigrationReport, label: string): void {
+function assertVerifiedLongRunning(report: MigrationReport, label: string): void {
   assert(report.verification.ok === true, `${label} verification is explicitly successful`);
   assert(report.summary.verified === true, `${label} summary records successful verification`);
   assert(report.verification.checks.runtime?.status === "passed", `${label} Node runtime attestation passed`);
   const reviews = report.entries.filter((entry) => entry.kind === "review");
   assert(
-    report.summary.review === 1 && reviews.length === 1,
-    `${label} has exactly one unresolved review`
+    report.summary.review === 0 && reviews.length === 0,
+    `${label} has no unresolved reviews with the complete transform set`
   );
   assert(
-    reviews[0]?.code === "F12" && /runtime container is unknown/i.test(reviews[0].message),
-    `${label} sole review is F12 for an unknown deployment kind`
+    report.manifest.deployment?.kind === "long-running",
+    `${label} preserves the operator-declared long-running deployment`
   );
 }
 
-function assertOnlyManualReviewBlocker(
+function assertNoPublicationBlockers(
   blockers: ReadonlyArray<{ code?: string; message?: string }>,
   label: string
 ): void {
   assert(
-    blockers.length === 1
-      && blockers[0]?.code === "manual_review_required"
-      && /^1 unresolved item\(s\) require manual review$/.test(blockers[0].message ?? ""),
-    `${label} contains only the F12-derived manual-review blocker`
-  );
-  assert(
-    !blockers.some((blocker) => blocker.code === "verification_failed" || blocker.code === "verification_skipped"),
-    `${label} contains no verification blocker`
+    blockers.length === 0,
+    `${label} contains no publication blockers`
   );
 }
 
@@ -72,6 +66,8 @@ async function main() {
     name: "Inngest TS SDK v3 -> v4",
     provider: "inngest",
     transformSet: "inngest-v3-to-v4",
+    // This gate is only for a sandbox approved as long-running by its operator.
+    deployment: { kind: "long-running" },
     runtime: { node: { minimumMajor: 20, profile: "node22-bookworm-slim-2026-07", packageJson: "package.json", dockerfile: "Dockerfile" } },
     package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
     peerFloors: [{ name: "typescript", range: "^5.8.0" }],
@@ -98,9 +94,9 @@ async function main() {
   assert(summary.results.length === 1, "1 result recorded");
   const result = summary.results[0]!;
   assert(Boolean(result.report), "campaign returned the migration report");
-  assertVerifiedF12Only(result.report!, "campaign result");
+  assertVerifiedLongRunning(result.report!, "campaign result");
   assert(Boolean(result.publication), "campaign returned the publication decision");
-  assertOnlyManualReviewBlocker(result.publication!.blockers, "campaign blocker set");
+  assertNoPublicationBlockers(result.publication!.blockers, "campaign blocker set");
 
   const runs = listRunsForCampaign(campaign.id);
   assert(runs.length === 1, "1 migration_run row persisted in DB");
@@ -109,19 +105,19 @@ async function main() {
   console.log(`  status : ${run.status}`);
   console.log(`  pr_url : ${run.prUrl}`);
   console.log(`  summary: ${run.summary}`);
-  assert(run.status === "blocked", "F12 blocks the preview until deployment kind is reviewed");
+  assert(run.status === "preview_ready", "the declared long-running preview is ready for review");
   assert(!run.prUrl, "preview did not open a PR");
   assert(Boolean(run.report), "run stored the full report JSON");
   const persistedReport = JSON.parse(run.report!) as MigrationReport;
-  assertVerifiedF12Only(persistedReport, "durable report");
+  assertVerifiedLongRunning(persistedReport, "durable report");
   const persistedBlockers = JSON.parse(run.publicationBlockers ?? "[]") as Array<{
     code?: string;
     message?: string;
   }>;
-  assertOnlyManualReviewBlocker(persistedBlockers, "durable publication blocker set");
+  assertNoPublicationBlockers(persistedBlockers, "durable publication blocker set");
   assert(
-    run.error === persistedBlockers[0]?.message,
-    "the blocked run stores the exact publication blocker reason"
+    !run.error,
+    "the ready preview has no stored error"
   );
 
   console.log(`\n=== Campaign rollup ===`);
