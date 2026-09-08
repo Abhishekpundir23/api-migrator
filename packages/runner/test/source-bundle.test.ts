@@ -54,6 +54,38 @@ test("pins the original source bundle bytes for the deterministic Git fixture", 
   }
 });
 
+test("fixture ignores hostile inherited Git signing configuration", () => {
+  const keys = [
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_VALUE_1",
+  ] as const;
+  const previous = keys.map((key) => process.env[key]);
+  let fixture: ReturnType<typeof repositoryFixture> | undefined;
+  Object.assign(process.env, {
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "commit.gpgSign",
+    GIT_CONFIG_VALUE_0: "true",
+    GIT_CONFIG_KEY_1: "gpg.program",
+    GIT_CONFIG_VALUE_1: "/definitely-not-a-gpg-program",
+  });
+  try {
+    fixture = repositoryFixture();
+    const record = createSourceBundle(fixture.input);
+    assert.equal(record.digest, PRE_MOVE_BUNDLE_DIGEST);
+    assert.equal(record.bytes.toString("base64"), PRE_MOVE_BUNDLE_BASE64);
+  } finally {
+    if (fixture) rmSync(fixture.root, { recursive: true, force: true });
+    keys.forEach((key, index) => {
+      const value = previous[index];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    });
+  }
+});
+
 test("app and runner source bundle surfaces preserve bytes, extraction, and Git identities", () => {
   const fixture = repositoryFixture();
   const extractionParent = realpathSync(mkdtempSync(join(tmpdir(), "api-migrator-source-compat-")));
@@ -284,18 +316,21 @@ function lstatIfExists(path: string): boolean {
 }
 
 function git(cwd: string, args: readonly string[]): string {
-  return execFileSync("git", args, {
+  return execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: {
-      ...process.env,
+      PATH: process.env.PATH,
       GIT_AUTHOR_NAME: "Runner Test",
       GIT_AUTHOR_EMAIL: "runner@example.invalid",
       GIT_AUTHOR_DATE: "2025-01-02T03:04:05Z",
       GIT_COMMITTER_NAME: "Runner Test",
       GIT_COMMITTER_EMAIL: "runner@example.invalid",
       GIT_COMMITTER_DATE: "2025-01-02T03:04:05Z",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_TERMINAL_PROMPT: "0",
       LC_ALL: "C",
     },
   }).trim();
