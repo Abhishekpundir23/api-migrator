@@ -34,4 +34,12 @@ test("report includes provider notes without overstating verification", () => {
   assert.match(markdown, /Verification: \*\*failed\*\*/);
   assert.match(markdown, /No manual-review items were reported/);
   assert.doesNotMatch(markdown, /all changes are deterministic/);
+  assert.match(markdown, /Operator-declared deployment: \*\*unknown\*\*/);
+  for (const kind of ["long-running", "serverless"] as const) {
+    const declared = { ...report, manifest: { ...report.manifest, deployment: { kind } } };
+    const text = reportToMarkdown(declared);
+    assert.match(text, new RegExp(`Operator-declared deployment: \\*\\*${kind}\\*\\*`));
+    assert.match(text, /not independently verified/i);
+    assert.equal(declared.summary.applied, report.summary.applied);
+  }
 });

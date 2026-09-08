@@ -40,6 +40,11 @@ export const RuntimePolicy = z.object({
   node: NodeRuntimePolicy,
 }).strict();
 
+/** Operator-declared hosting model; not inferred from the Node runtime image. */
+export const DeploymentPolicy = z.object({
+  kind: z.enum(["long-running", "serverless"]),
+}).strict();
+
 const ManifestBase = z.object({
   name: z.string().trim().min(1),
   provider: z.string().trim().min(1),
@@ -51,7 +56,8 @@ const ManifestBase = z.object({
   }).strict(),
   peerFloors: z.array(PeerFloor).default([]),
   runtime: RuntimePolicy.optional(),
-  /** Omit to enable the complete audited set. An explicit empty list enables none. */
+  deployment: DeploymentPolicy.optional(),
+  /** Omit for the complete set. Inngest F12 remains mandatory even with a subset. */
   transforms: z.array(TransformId).optional(),
   notes: z.string().optional(),
 }).strict();
@@ -94,6 +100,7 @@ export type Manifest = z.infer<typeof Manifest>;
 export type LoadedManifest = Manifest;
 export type NodeRuntimePolicy = z.infer<typeof NodeRuntimePolicy>;
 export type RuntimePolicy = z.infer<typeof RuntimePolicy>;
+export type DeploymentPolicy = z.infer<typeof DeploymentPolicy>;
 
 export function parseManifest(input: unknown): Manifest {
   return Manifest.parse(input);

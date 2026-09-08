@@ -8,7 +8,7 @@ import type { VerifyResult } from "./verifier.js";
 import type { Manifest } from "./manifest.js";
 
 export interface MigrationReport {
-  manifest: Pick<Manifest, "name" | "provider" | "notes">;
+  manifest: Pick<Manifest, "name" | "provider" | "notes" | "deployment">;
   /** Source files inspected by the selected migration pass. */
   scannedFiles: string[];
   /** Files the transform actually changed. */
@@ -28,7 +28,7 @@ export interface MigrationReport {
 }
 
 export function buildReport(
-  manifest: Pick<Manifest, "name" | "provider" | "notes">,
+  manifest: Pick<Manifest, "name" | "provider" | "notes" | "deployment">,
   scannedFiles: string[],
   changedFiles: string[],
   entries: ReportEntry[],
@@ -71,6 +71,9 @@ export function reportToMarkdown(r: MigrationReport): string {
     lines.push("");
   }
   lines.push("### Summary");
+  if (r.manifest.provider === "inngest" || r.manifest.deployment) {
+    lines.push(`- Operator-declared deployment: **${r.manifest.deployment?.kind ?? "unknown"}** (not independently verified)`);
+  }
   lines.push(`- Files scanned: **${r.scannedFiles.length}**`);
   lines.push(`- Files changed: **${r.changedFiles.length}**`);
   lines.push(`- Transforms applied: **${r.summary.applied}**`);

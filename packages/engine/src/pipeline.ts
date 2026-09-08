@@ -138,11 +138,10 @@ export async function runMigration(
     const sourceChanges = sourceEdits.map((edit) => edit.relative);
 
     if (manifest.transformSet === "inngest-v3-to-v4") {
-      entries.push(...inngestBehavioralReviewEntries(enabled, {
-        // A Node image/runtime floor does not prove whether the deployment is
-        // serverless or long-running. Keep F12 unresolved until a separately
-        // validated deployment-kind signal exists.
-        runtimeContainer: "unknown",
+      entries.push(...inngestBehavioralReviewEntries(new Set([...enabled, "F12"]), {
+        // F12 is a mandatory campaign check, not an optional source transform.
+        // This is an operator declaration; a Node image is not hosting proof.
+        runtimeContainer: manifest.deployment?.kind ?? "unknown",
       }));
     }
 
@@ -192,7 +191,8 @@ export async function runMigration(
     }
 
     const report = buildReport(
-      { name: manifest.name, provider: manifest.provider, notes: manifest.notes },
+      { name: manifest.name, provider: manifest.provider, notes: manifest.notes,
+        ...(manifest.deployment ? { deployment: manifest.deployment } : {}) },
       scanned.map((file) => file.relative),
       changedFiles,
       entries,

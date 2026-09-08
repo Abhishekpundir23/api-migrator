@@ -172,6 +172,10 @@ test("preflight ids bind repository, base commit, manifest, and report", () => {
   const first = createPreflightId(input);
   assert.match(first, /^pf_[a-f0-9]{64}$/);
   assert.equal(first, createPreflightId(input));
+  const declaredIds = ["long-running", "serverless"].map((kind) => createPreflightId({
+    ...input, manifest: { ...manifest, deployment: { kind } } as Manifest,
+  }));
+  assert.equal(new Set([first, ...declaredIds]).size, 3);
   const noisy = report();
   noisy.verification.checks.install.output = "different non-deterministic timing output";
   assert.equal(first, createPreflightId({ ...input, report: noisy }));

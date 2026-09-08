@@ -536,6 +536,7 @@ function PreviewEvidenceCard({ result }: { result: ResultItem }) {
       </header>
 
       <div className="evidence-grid">
+        <EvidenceValue label="Operator-declared deployment (not independently verified)" value={evidence.deploymentKind} />
         <EvidenceValue label="Preflight ID" value={evidence.identity.preflightId} important />
         <EvidenceValue label="Artifact fingerprint" value={evidence.identity.artifactDigest} important />
         <EvidenceValue label="Candidate tree" value={evidence.identity.candidateTreeSha} important />

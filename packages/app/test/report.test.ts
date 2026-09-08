@@ -61,6 +61,14 @@ test("app-boundary reports discard raw process text and redact structured messag
   };
 
   const safe = sanitizeMigrationReport(report);
+  for (const kind of ["long-running", "serverless"] as const) {
+    const declared = { ...report, manifest: { ...report.manifest, deployment: { kind, extra: "discard" } } };
+    assert.deepEqual(sanitizeMigrationReport(declared).manifest.deployment, { kind });
+  }
+  assert.equal(safe.manifest.deployment, undefined);
+  assert.equal(sanitizeMigrationReport({ ...report, manifest: {
+    ...report.manifest, deployment: { kind: "docker" },
+  } } as unknown as MigrationReport).manifest.deployment, undefined);
   const serializedResult = JSON.stringify({
     report: safe,
     changed: true,

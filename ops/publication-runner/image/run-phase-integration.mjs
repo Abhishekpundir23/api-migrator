@@ -44,6 +44,7 @@ try {
     name: "Inngest TypeScript SDK v3 -> v4",
     provider: "inngest",
     transformSet: "inngest-v3-to-v4",
+    deployment: { kind: "long-running" },
     runtime: {
       node: {
         minimumMajor: 20,
@@ -54,10 +55,8 @@ try {
     },
     package: { name: "inngest", from: "^3.0.0", to: "^4.0.0" },
     peerFloors: [{ name: "typescript", range: "^5.8.0" }],
-    // Exercise only deterministic transforms in this blocker-free protocol
-    // fixture. A real campaign that enables deployment-specific F12 remains
-    // blocked until its runtime-container behavior is independently reviewed.
-    transforms: ["T1", "T2", "T3", "T4", "T5"],
+    // Use the full audited set, including F12, with an explicit fixture
+    // declaration. A transform subset must never bypass deployment review.
   };
   const manifestJson = canonicalJson(manifest);
   const repository = { slug: "sandbox-owner/runner-fixture", id: 910_001, ownerId: 910_002 };
@@ -175,6 +174,9 @@ try {
   }
   assert.equal(evidence.report.verification.ok, true);
   assert.equal(evidence.report.verification.skipped, false);
+  assert.equal(evidence.report.summary.review, 0);
+  assert.deepEqual(evidence.report.manifest.deployment, { kind: "long-running" });
+  assert.equal(evidence.report.entries.some((entry) => entry.kind === "review"), false);
   assert.deepEqual(evidence.blockers, []);
   assert.equal(
     verifyOutput,

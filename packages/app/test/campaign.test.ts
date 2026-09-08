@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertCampaignActive, parseStoredManifest } from "../src/campaign/runner.js";
+import { closeDb, createCampaign, createProvider, getCampaign, getDb, migrate } from "@api-migrator/db";
+
+test("campaign storage round-trips the declaration without assigning one to legacy data", () => {
+  try {
+    migrate(getDb(":memory:"));
+    const provider = createProvider({ name: "Inngest", slug: "inngest" });
+    for (const kind of [undefined, "long-running", "serverless"] as const) {
+      const manifest = parseStoredManifest(JSON.stringify({ name: "Legacy-compatible", provider: "inngest",
+        transformSet: "inngest-v3-to-v4", package: { name: "inngest", from: "^3", to: "^4" },
+        ...(kind ? { deployment: { kind } } : {}) }));
+      const campaign = createCampaign({ providerId: provider.id, name: manifest.name, manifest, status: "active" });
+      const stored = parseStoredManifest(getCampaign(campaign.id)!.manifest);
+      assert.deepEqual(stored.deployment, kind ? { kind } : undefined);
+    }
+  } finally { closeDb(); }
+});
 
 test("only active campaigns can execute", () => {
   assert.doesNotThrow(() => assertCampaignActive("active", "c1"));
@@ -19,6 +35,10 @@ test("stored campaign manifests are runtime validated at the boundary", () => {
     peerFloors: [],
   });
   assert.equal(parseStoredManifest(valid).transformSet, "inngest-v3-to-v4");
+  assert.equal(parseStoredManifest(valid).deployment, undefined);
+  for (const kind of ["long-running", "serverless"] as const) {
+    assert.deepEqual(parseStoredManifest(JSON.stringify({ ...JSON.parse(valid), deployment: { kind } })).deployment, { kind });
+  }
   const legacy = JSON.stringify({
     name: "Legacy Inngest v4",
     provider: "inngest",

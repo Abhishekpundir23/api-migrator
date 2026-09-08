@@ -26,7 +26,11 @@ npm run runner:image:integration
 ```
 
 The integration script uses real containers and proves the phase protocol and
-result bindings. It does not prove the Linux systemd, cgroup, nftables, L7
+result bindings. Its Inngest fixture uses the complete audited transform set
+and an explicit operator-declared `long-running` deployment; it asserts zero
+review findings and preservation of the declaration in runner evidence. It
+does not infer hosting from the container or omit F12 to obtain a passing run.
+It does not prove the Linux systemd, cgroup, nftables, L7
 gateway, teardown-observer, or independent-signer controls. Live host activation
 and external publication remain disabled until those controls pass a supervised
 disposable-host drill.
