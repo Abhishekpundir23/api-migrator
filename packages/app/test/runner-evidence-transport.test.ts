@@ -214,6 +214,36 @@ test("uncompleted connect is cancelled and its owned agent is destroyed (injecte
   } finally { deadline.close(); await fixture.close(); }
 });
 
+function assertProxyChildStderr(stderr: string): void {
+  // Node 22 reports this diagnostic when the deliberately poisoned proxy env
+  // initializes its agent. Consume only that exact record, never other stderr.
+  const diagnostic = /\(node:[1-9]\d*\) \[UNDICI-EHPA\] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time\.\n(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?/g;
+  assert.equal(stderr.replace(diagnostic, ""), "", "unexpected proxy-test subprocess stderr");
+}
+
+test("proxy diagnostic guard accepts only the known runtime warning or empty stderr", () => {
+  const warning = "(node:123) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n";
+  const hint = "(Use `node --trace-warnings ...` to show where the warning was created)\n";
+  for (const stderr of ["", warning, warning + hint, warning + hint + warning + hint]) {
+    assert.doesNotThrow(() => assertProxyChildStderr(stderr));
+  }
+});
+
+test("proxy diagnostic guard rejects unexpected output even alongside a known warning", () => {
+  const warning = "(node:123) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n";
+  for (const stderr of [
+    "unexpected stderr\n",
+    warning + "unexpected stderr\n",
+    "unexpected stderr\n" + warning,
+    warning.replace("UNDICI-EHPA", "UNEXPECTED"),
+    warning.replace("at any time.", "at any time. extra diagnostic"),
+    warning + "\n",
+    "(Use `node --trace-warnings ...` to show where the warning was created)\n",
+  ]) {
+    assert.throws(() => assertProxyChildStderr(stderr), { code: "ERR_ASSERTION" });
+  }
+});
+
 test("poisoned proxy and token environment cannot route or credential the request (isolated process)", async () => {
   let hits = 0;
   const proxy = http.createServer((_req, res) => { hits++; res.end("poison"); });
@@ -231,6 +261,7 @@ test("poisoned proxy and token environment cannot route or credential the reques
     const deadline = createRunnerEvidenceDeadline({ wallNow: () => Date.now(), monotonicNow: () => performance.now() }, Date.now() + 5000);
     try {
       assert.equal(await createRunnerEvidenceTransport(fixture.request)(fixture.config, ${JSON.stringify(job)}, deadline), '{}');
+      assert.equal(fixture.requests.length, 1);
       assert.deepEqual(fixture.requests[0].headers, { host: 'evidence.example.invalid', connection: 'close', accept: 'application/json', 'accept-encoding': 'identity' });
     } finally { deadline.close(); await fixture.close(); }
   `;
@@ -241,8 +272,8 @@ test("poisoned proxy and token environment cannot route or credential the reques
         https_proxy: proxyUrl, http_proxy: proxyUrl, all_proxy: proxyUrl, NO_PROXY: "", no_proxy: "",
         NODE_USE_ENV_PROXY: "1", GH_TOKEN: "fake-never-real-gh-token", GITHUB_TOKEN: "fake-never-real-github-token" },
     });
-    assert.equal(result.stderr, "");
     assert.equal(hits, 0);
+    assertProxyChildStderr(result.stderr);
   } finally { proxy.closeAllConnections(); await new Promise<void>((resolve) => proxy.close(() => resolve())); }
 });
 

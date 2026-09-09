@@ -2,9 +2,37 @@
 
 Date: 2026-09-09. Scope: a read-only evidence client, not publication activation.
 
+## Node 22 warning-handling follow-up
+
+GitHub's first Node 22.23.2 validation run failed one subprocess test because
+the runtime emitted its `UNDICI-EHPA` diagnostic while the test expected empty
+stderr. The same real subprocess failure was reproduced locally using an
+isolated `npm exec --package=node@22.23.2` runtime, without changing the global
+Node installation or production code.
+
+The test now accepts only that exact warning record and its optional standard
+trace hint; all other stderr still fails. Zero proxy hits are asserted before
+diagnostic handling, and the child verifies one request with the exact
+credential-free headers. No proxy setting or global warning suppression was
+changed. Regression cases reject unknown codes, altered messages, extra output,
+and an unaccompanied trace hint.
+
+The focused guard/proxy tests passed 3/3 on Node 22.23.2 and Node 26.5.0 after
+failing before the fix. The entire transport suite passed 70/70 on Node 22.23.2.
+Fresh Docker-enabled local `npm run ci` on Node 26.5.0 passed **812/812**, with
+zero failures/skips; the pre-existing NFT warning below remains. The suite
+counts are app393, console42, DB26, engine137, runner21, pilot26, gateway16,
+deployment149, and assembled image2.
+
+Current-head Linux CI and merge status are recorded in
+[PR #17](https://github.com/Abhishekpundir23/api-migrator/pull/17); merge requires
+all current-head checks to pass. The sections below preserve the earlier
+implementation evidence and its original commit identities, not the latest
+follow-up test counts or live PR status.
+
 ## Tested identity and execution environment
 
-The latest locally tested software commit is
+The original post-review locally tested software commit was
 `58e5db205144e15267b858d1772b304e511641c1`
 (`fix: classify evidence service status failures`), on
 `codex/protected-runner-evidence`. The execution record is committed afterward
@@ -164,7 +192,7 @@ SHA above.
 | R6 | Derive the two acquisition-test subprocess cwd values from their module URL, not the invoking shell. | Subprocess fixture-path rework; production code/assertions unchanged. |
 | R7 | Keep the final-review-confirmed callback Minor deferred rather than widening the classification fix. The transport rechecks before request construction, expired success is blocked, and late filesystem handles are disposed. | Unnecessary read-only filesystem work can still start on an already-aborted budget; a later callback recheck and regression are needed, with no known authority bypass. |
 
-## Remaining gates
+## Original handoff gates
 
 The prior Task 2 **Minor** remains deferred after final review:
 `runner-evidence-deadline.ts` queues an operation callback without an immediate
