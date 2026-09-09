@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after, before } from "node:test";
+import test, { after, before, mock } from "node:test";
+import https from "node:https";
+import { syncBuiltinESMExports } from "node:module";
 import { NextRequest } from "next/server";
 import {
   closeDb,
@@ -13,7 +15,6 @@ import {
   listRunsForCampaign,
 } from "@api-migrator/db";
 import type { LocalPreviewExecution } from "@api-migrator/app/preview-evidence";
-import { POST } from "../app/api/campaigns/[id]/runs/route";
 import {
   createOwnerChallengeReceipt,
   createPreviewReceipt,
@@ -50,6 +51,7 @@ const EXECUTION: LocalPreviewExecution = {
 
 let directory = "";
 let campaignId = "";
+let POST: typeof import("../app/api/campaigns/[id]/runs/route").POST;
 
 before(() => {
   Date.now = () => NOW;
@@ -106,138 +108,171 @@ function legacyPreview(offset: number) {
 }
 
 test("actual POST keeps every post-preview action closed for legacy, local, forged, future, malformed, and missing controls", async () => {
-  const ownerPreview = legacyPreview(0);
-  const preparePreview = legacyPreview(10_000);
-  const prepareChallenge = createOwnerChallengeReceipt({
-    previewReceipt: preparePreview.previewReceipt,
-    campaignId,
-    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    ownerChallengeDigest: `sha256:${"1".repeat(64)}`,
-    challengeExpiresAt: NOW + 5 * 60 * 1_000,
-    now: NOW,
-    secret: SECRET,
+  let networkCalls = 0;
+  const network = mock.method(https, "request", () => {
+    networkCalls++;
+    throw new Error("closed POST must not acquire runner evidence");
   });
-  const publishPreview = legacyPreview(20_000);
-  const publishChallenge = createOwnerChallengeReceipt({
-    previewReceipt: publishPreview.previewReceipt,
-    campaignId,
-    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    ownerChallengeDigest: `sha256:${"2".repeat(64)}`,
-    challengeExpiresAt: NOW + 5 * 60 * 1_000,
-    now: NOW,
-    secret: SECRET,
-  });
-  const publishApproval = prepareOperatorApproval({
-    previewReceipt: publishPreview.previewReceipt,
-    ownerChallengeReceipt: publishChallenge.ownerChallengeReceipt,
-    ownerAuthorizationEnvelope: ENVELOPE,
-    campaignId,
-    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: NOW,
-    secret: SECRET,
-  });
-  const localPreview = createPreviewReceipt({
-    campaignId,
-    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    repository: {
-      ...REVIEWED,
-      previewCompletedAt: REVIEWED.previewCompletedAt + 30_000,
-    },
-    execution: EXECUTION,
-    now: NOW,
-    secret: SECRET,
-  });
-  assert.match(localPreview.previewReceipt, /^preview-v2\./);
+  syncBuiltinESMExports();
+  try {
+    // Native transport captures HTTPS on import: install the spy first in this
+    // isolated node:test process, then load both the factory and actual route.
+    const { createRunnerEvidenceClient } = await import("@api-migrator/app/runner-evidence-internal");
+    const production = createRunnerEvidenceClient({
+      serviceOrigin: "https://evidence.example.invalid",
+      serviceAddresses: ["93.184.216.34"],
+      serviceTlsSpkiDigest: `sha256:${"a".repeat(64)}`,
+      registryDirectory: "/missing-console-evidence-registry",
+    }, { migrationWorkspaceRoots: ["/missing-console-migration-workspace"] });
+    assert.equal(production.ok, true);
+    ({ POST } = await import("../app/api/campaigns/[id]/runs/route"));
+    const ownerPreview = legacyPreview(0);
+    const preparePreview = legacyPreview(10_000);
+    const prepareChallenge = createOwnerChallengeReceipt({
+      previewReceipt: preparePreview.previewReceipt,
+      campaignId,
+      manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+      ownerChallengeDigest: `sha256:${"1".repeat(64)}`,
+      challengeExpiresAt: NOW + 5 * 60 * 1_000,
+      now: NOW,
+      secret: SECRET,
+    });
+    const publishPreview = legacyPreview(20_000);
+    const publishChallenge = createOwnerChallengeReceipt({
+      previewReceipt: publishPreview.previewReceipt,
+      campaignId,
+      manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+      ownerChallengeDigest: `sha256:${"2".repeat(64)}`,
+      challengeExpiresAt: NOW + 5 * 60 * 1_000,
+      now: NOW,
+      secret: SECRET,
+    });
+    const publishApproval = prepareOperatorApproval({
+      previewReceipt: publishPreview.previewReceipt,
+      ownerChallengeReceipt: publishChallenge.ownerChallengeReceipt,
+      ownerAuthorizationEnvelope: ENVELOPE,
+      campaignId,
+      manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+      now: NOW,
+      secret: SECRET,
+    });
+    const localPreview = createPreviewReceipt({
+      campaignId,
+      manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+      repository: {
+        ...REVIEWED,
+        previewCompletedAt: REVIEWED.previewCompletedAt + 30_000,
+      },
+      execution: EXECUTION,
+      now: NOW,
+      secret: SECRET,
+    });
+    assert.match(localPreview.previewReceipt, /^preview-v2\./);
 
-  const legacyByAction = {
-    prepare_owner_challenge: { previewReceipt: ownerPreview.previewReceipt },
-    prepare_publish: {
+    const legacyByAction = {
+      prepare_owner_challenge: { previewReceipt: ownerPreview.previewReceipt },
+      prepare_publish: {
+        previewReceipt: preparePreview.previewReceipt,
+        ownerChallengeReceipt: prepareChallenge.ownerChallengeReceipt,
+        ownerAuthorizationEnvelope: ENVELOPE,
+      },
+      publish: {
+        operatorApprovalToken: publishApproval.operatorApprovalToken,
+        ownerAuthorizationEnvelope: ENVELOPE,
+        confirmation: publishApproval.confirmationPhrase,
+      },
+    } as const;
+    const actions = Object.keys(legacyByAction) as Array<keyof typeof legacyByAction>;
+    const acquisitionControls = () => ({
+      previewReceipt: "preview-v3.claimed-attestation.token",
+      runnerEvidence: { ok: true, verified: {}, identity: { schemaVersion: 1 } },
+      runnerEvidenceConfig: {
+        serviceOrigin: "https://evidence.example.invalid",
+        serviceAddresses: ["127.0.0.1"], registryDirectory: "/untrusted",
+      },
+      runnerCapabilityProviderAvailable: true,
+    });
+    const shapedControls = [
+      acquisitionControls,
+      (action: keyof typeof legacyByAction) => legacyByAction[action],
+      () => ({
+        previewReceipt: localPreview.previewReceipt,
+        ownerChallengeReceipt: localPreview.previewReceipt,
+        operatorApprovalToken: localPreview.previewReceipt,
+        ownerAuthorizationEnvelope: ENVELOPE,
+        confirmation: "PUBLISH owner/repo local-preview",
+      }),
+      () => ({
+        previewReceipt: "preview-v2.forged.token",
+        ownerChallengeReceipt: "owner-challenge-v1.forged.token",
+        operatorApprovalToken: "operator-v2.forged.token",
+      }),
+      () => ({
+        previewReceipt: "preview-v3.future-verified-runner.token",
+        execution: { schemaVersion: 1, kind: "verified-runner" },
+      }),
+      () => ({ previewReceipt: { malformed: true }, ownerAuthorizationEnvelope: ["not", "bytes"] }),
+      () => ({}),
+    ];
+
+    for (const action of actions) {
+      for (const controls of shapedControls) {
+        await post({ action, ...controls(action) });
+      }
+    }
+
+    verifyPreviewReceipt({
+      previewReceipt: ownerPreview.previewReceipt,
+      campaignId,
+      manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+      now: Date.now(),
+      secret: SECRET,
+    });
+    verifyPreviewReceipt({
+      previewReceipt: localPreview.previewReceipt,
+      campaignId,
+      manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+      now: Date.now(),
+      secret: SECRET,
+    });
+    const preparedAfterRejection = prepareOperatorApproval({
       previewReceipt: preparePreview.previewReceipt,
       ownerChallengeReceipt: prepareChallenge.ownerChallengeReceipt,
       ownerAuthorizationEnvelope: ENVELOPE,
-    },
-    publish: {
+      campaignId,
+      manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+      now: Date.now(),
+      secret: SECRET,
+    });
+    assert.match(preparedAfterRejection.operatorApprovalToken, /^operator-v2\./);
+    verifyOperatorApprovalToken({
       operatorApprovalToken: publishApproval.operatorApprovalToken,
       ownerAuthorizationEnvelope: ENVELOPE,
       confirmation: publishApproval.confirmationPhrase,
-    },
-  } as const;
-  const actions = Object.keys(legacyByAction) as Array<keyof typeof legacyByAction>;
-  const shapedControls = [
-    (action: keyof typeof legacyByAction) => legacyByAction[action],
-    () => ({
-      previewReceipt: localPreview.previewReceipt,
-      ownerChallengeReceipt: localPreview.previewReceipt,
-      operatorApprovalToken: localPreview.previewReceipt,
-      ownerAuthorizationEnvelope: ENVELOPE,
-      confirmation: "PUBLISH owner/repo local-preview",
-    }),
-    () => ({
-      previewReceipt: "preview-v2.forged.token",
-      ownerChallengeReceipt: "owner-challenge-v1.forged.token",
-      operatorApprovalToken: "operator-v2.forged.token",
-    }),
-    () => ({
-      previewReceipt: "preview-v3.future-verified-runner.token",
-      execution: { schemaVersion: 1, kind: "verified-runner" },
-    }),
-    () => ({ previewReceipt: { malformed: true }, ownerAuthorizationEnvelope: ["not", "bytes"] }),
-    () => ({}),
-  ];
-
-  for (const action of actions) {
-    for (const controls of shapedControls) {
-      await post({ action, ...controls(action) });
-    }
+      campaignId,
+      manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+      now: Date.now(),
+      secret: SECRET,
+    });
+    assert.equal(
+      await withOperatorApprovalRunLock(
+        publishApproval.operatorApprovalToken,
+        publishApproval.expiresAt,
+        async () => "approval available"
+      ),
+      "approval available"
+    );
+    await assert.rejects(
+      () => withOperatorApprovalRunLock(
+        publishApproval.operatorApprovalToken,
+        publishApproval.expiresAt,
+        async () => "replayed approval"
+      ),
+      /operator approval was already used/
+    );
+    assert.equal(networkCalls, 0);
+  } finally {
+    network.mock.restore();
+    syncBuiltinESMExports();
   }
-
-  verifyPreviewReceipt({
-    previewReceipt: ownerPreview.previewReceipt,
-    campaignId,
-    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: Date.now(),
-    secret: SECRET,
-  });
-  verifyPreviewReceipt({
-    previewReceipt: localPreview.previewReceipt,
-    campaignId,
-    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: Date.now(),
-    secret: SECRET,
-  });
-  const preparedAfterRejection = prepareOperatorApproval({
-    previewReceipt: preparePreview.previewReceipt,
-    ownerChallengeReceipt: prepareChallenge.ownerChallengeReceipt,
-    ownerAuthorizationEnvelope: ENVELOPE,
-    campaignId,
-    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: Date.now(),
-    secret: SECRET,
-  });
-  assert.match(preparedAfterRejection.operatorApprovalToken, /^operator-v2\./);
-  verifyOperatorApprovalToken({
-    operatorApprovalToken: publishApproval.operatorApprovalToken,
-    ownerAuthorizationEnvelope: ENVELOPE,
-    confirmation: publishApproval.confirmationPhrase,
-    campaignId,
-    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: Date.now(),
-    secret: SECRET,
-  });
-  assert.equal(
-    await withOperatorApprovalRunLock(
-      publishApproval.operatorApprovalToken,
-      publishApproval.expiresAt,
-      async () => "approval available"
-    ),
-    "approval available"
-  );
-  await assert.rejects(
-    () => withOperatorApprovalRunLock(
-      publishApproval.operatorApprovalToken,
-      publishApproval.expiresAt,
-      async () => "replayed approval"
-    ),
-    /operator approval was already used/
-  );
 });

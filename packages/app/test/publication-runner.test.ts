@@ -1,10 +1,5 @@
 import assert from "node:assert/strict";
-import {
-  createHash,
-  generateKeyPairSync,
-  sign,
-  type KeyObject,
-} from "node:crypto";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import type { MigrationReport } from "@api-migrator/engine";
 import { canonicalJson } from "../src/canonical-json.js";
@@ -13,161 +8,44 @@ import {
   type OwnerPublicationPolicy,
 } from "../src/owner-publication-policy.js";
 import {
-  PUBLICATION_RUNNER_ATTESTATION_DOMAIN,
   PUBLICATION_RUNNER_COMMAND_SCOPE_DIGEST,
-  PUBLICATION_RUNNER_PROFILE,
   assertVerifiedPublicationRunnerAttestation,
   assertPublicationRunnerPlanCurrent,
   createPublicationRunnerPlan,
   validatePublicationRunnerPlan,
   verifyPublicationRunnerAttestation as verifyPublicationRunnerAttestationAtClock,
   type CreatePublicationRunnerPlanInput,
-  type PublicationRunnerAttestation,
   type PublicationRunnerOutput,
   type PublicationRunnerPlanRecord,
   type RunnerAttestationTrust,
 } from "../src/publication-runner.js";
+import {
+  fixtureDigest as digest,
+  publicationRunnerAttestation,
+  publicationRunnerPlanInput,
+  publicationRunnerReviewedOutput as reviewedOutput,
+  publicationRunnerTrustPair,
+  signedPublicationRunnerEnvelope as signedEnvelope,
+} from "./helpers/publication-runner-fixture.js";
 
 const NOW = 2_000_000_000_000;
 const EXPIRES_AT = NOW + 10 * 60 * 1_000;
 const VERIFIED_AT = NOW + 105_000;
 
-function digest(label: string): string {
-  return `sha256:${createHash("sha256").update(label).digest("hex")}`;
-}
-
 function planInput(): CreatePublicationRunnerPlanInput {
-  return {
-    pilotId: "pilot_sandbox_001",
-    repository: {
-      slug: "example-org/example-repo",
-      id: 1_234_567,
-      ownerId: 7_654_321,
-    },
-    base: { branch: "main", sha: "1".repeat(40) },
-    sourceArchiveDigest: digest("source"),
-    manifestDigest: digest("manifest"),
-    imageDigest: digest("migration-image"),
-    migrationInstallEgress: [{
-      host: "registry.npmjs.org",
-      protocol: "tcp",
-      port: 443,
-      tls: true,
-      // Deliberately out of order; the constructor canonicalizes exact IPs.
-      addresses: ["2606:4700::6810:123", "104.16.1.35"],
-      resolutionEvidenceDigest: digest("npm-resolution"),
-      resolutionObservedAt: NOW - 60_000,
-      resolutionExpiresAt: NOW + 20 * 60 * 1_000,
-    }],
-    expiresAt: EXPIRES_AT,
-    now: NOW,
-  };
-}
-
-function reviewedOutput(): PublicationRunnerOutput {
-  return {
-    preflightId: `pf_${"2".repeat(64)}`,
-    artifactDigest: digest("artifact"),
-    candidateTreeSha: "3".repeat(40),
-  };
+  return publicationRunnerPlanInput(NOW);
 }
 
 function plan(): PublicationRunnerPlanRecord {
   return createPublicationRunnerPlan(planInput());
 }
 
-function trustPair(): { privateKey: KeyObject; trust: RunnerAttestationTrust } {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
-  return {
-    privateKey,
-    trust: {
-      keyId: "runner-key-001",
-      algorithm: "Ed25519",
-      publicKeyPem,
-      fingerprint: digestBytes(publicKey.export({ type: "spki", format: "der" })),
-      validFrom: NOW - 60_000,
-      validUntil: NOW + 24 * 60 * 60 * 1_000,
-      revokedAt: null,
-    },
-  };
+function trustPair() {
+  return publicationRunnerTrustPair(NOW);
 }
 
-function attestation(
-  record: PublicationRunnerPlanRecord,
-  output = reviewedOutput()
-): PublicationRunnerAttestation {
-  const evidence = (name: string) => ({
-    status: "passed" as const,
-    evidenceReference: `evidence/run-001#${name}`,
-    evidenceDigest: digest(`check-${name}`),
-  });
-  return {
-    schemaVersion: 1,
-    profile: PUBLICATION_RUNNER_PROFILE,
-    planDigest: record.digest,
-    jobId: record.plan.job.id,
-    runnerInstanceDigest: digest("runner-instance"),
-    subject: structuredClone(record.plan.subject),
-    inputs: structuredClone(record.plan.inputs),
-    output: structuredClone(output),
-    execution: {
-      identity: record.plan.execution.identity,
-      imageDigest: record.plan.imageDigest,
-      executionInstanceDigest: digest("execution-containers"),
-      startedAt: NOW + 1_000,
-      finishedAt: NOW + 100_000,
-      credentialsObserved: "none",
-      sourceReadOnly: true,
-      proxyEnvironmentObserved: "absent",
-      installEgressPolicyDigest: record.plan.egress.install.policyDigest,
-      egressEvidenceReference: "evidence/run-001#egress",
-      egressEvidenceDigest: digest("egress-evidence"),
-      checksNetwork: "none",
-      checks: {
-        install: evidence("install"),
-        typecheck: evidence("typecheck"),
-        test: evidence("test"),
-        lint: evidence("lint"),
-        runtime: evidence("runtime"),
-      },
-      outputArtifactDigest: output.artifactDigest,
-      candidateTreeSha: output.candidateTreeSha,
-      status: "passed",
-      evidenceReference: "evidence/run-001#execution",
-      evidenceDigest: digest("execution-evidence"),
-    },
-    teardown: {
-      containersDestroyedAt: NOW + 101_000,
-      networkNamespaceDestroyedAt: NOW + 102_000,
-      nftablesPolicyRemovedAt: NOW + 103_000,
-      workspaceDestroyedAt: NOW + 102_000,
-      complete: true,
-      evidenceReference: "evidence/run-001#teardown",
-      evidenceDigest: digest("teardown-evidence"),
-    },
-    observedAt: NOW + 104_000,
-  };
-}
-
-function signedEnvelope(
-  payload: PublicationRunnerAttestation,
-  privateKey: KeyObject,
-  keyId: string,
-  domain = PUBLICATION_RUNNER_ATTESTATION_DOMAIN
-): string {
-  const payloadBytes = Buffer.from(canonicalJson(payload), "utf8");
-  const signature = sign(
-    null,
-    Buffer.concat([Buffer.from(domain, "utf8"), payloadBytes]),
-    privateKey
-  ).toString("base64url");
-  return canonicalJson({
-    schemaVersion: 1,
-    keyId,
-    payload: payloadBytes.toString("base64url"),
-    signature,
-  });
+function attestation(record: PublicationRunnerPlanRecord, output = reviewedOutput()) {
+  return publicationRunnerAttestation(record, NOW, output);
 }
 
 function verifyPublicationRunnerAttestation(

@@ -18,6 +18,10 @@
       "types": "./dist/runner-internal.d.ts",
       "default": "./dist/runner-internal.js"
     },
+    "./runner-evidence-internal": {
+      "types": "./dist/runner-evidence-internal.d.ts",
+      "default": "./dist/runner-evidence-internal.js"
+    },
     "./preview-evidence": {
       "types": "./dist/preview-evidence.d.ts",
       "default": "./dist/preview-evidence.js"
