@@ -86,6 +86,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
               candidateTreeSha: ready.publication.candidateTreeSha,
               previewCompletedAt: ready.publication.previewCompletedAt,
             },
+            execution: ready.report?.previewExecution,
           })
         : null;
       return NextResponse.json(
