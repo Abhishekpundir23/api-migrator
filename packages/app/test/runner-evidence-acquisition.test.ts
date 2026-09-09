@@ -471,6 +471,23 @@ test("production construction detaches validated configuration without I/O or en
   assert.deepEqual(createRunnerEvidenceClient({}, {}), { ok: false, code: "configuration_invalid" });
 });
 
+test("production factory rejects extra positional clock, CA, port or dependency arguments", async (t) => {
+  const config = { serviceOrigin: "https://evidence.example.invalid", serviceAddresses: ["93.184.216.34"],
+    serviceTlsSpkiDigest: `sha256:${"a".repeat(64)}`, registryDirectory: "/missing-registry" };
+  const policy = { migrationWorkspaceRoots: ["/missing-workspace"] };
+  assert.equal(createRunnerEvidenceClient(config, policy).ok, true);
+  for (const [label, extra] of [
+    ["clock", { wallNow: () => now, monotonicNow: () => 0 }],
+    ["CA", { ca: "sensitive-test-CA" }], ["port", 8443],
+    ["dependencies", { readKey: () => { throw new Error("sensitive"); } }],
+    ["explicit undefined", undefined],
+  ] as const) await t.test(label, () => {
+    assert.deepEqual(Reflect.apply(createRunnerEvidenceClient, undefined, [config, policy, extra]), {
+      ok: false, code: "configuration_invalid",
+    });
+  });
+});
+
 test("production policy uses module checkout and detached mandatory roots plus code-owned optional roots", () => {
   const script = `
     import assert from 'node:assert/strict';

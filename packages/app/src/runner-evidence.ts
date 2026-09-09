@@ -10,6 +10,7 @@ const APPLICATION_CHECKOUT = resolve(dirname(fileURLToPath(import.meta.url)), ".
 
 /** Construct an unconfigured-to-any-route, read-only server client without IO. */
 export function createRunnerEvidenceClient(config: unknown, policy: unknown): RunnerEvidenceClientResult {
+  if (arguments.length !== 2) return runnerEvidenceFailure("configuration_invalid");
   try {
     const validated = validateRunnerEvidenceConfiguration(config, policy);
     const registryPolicy: RunnerRegistryPolicy = Object.freeze({
