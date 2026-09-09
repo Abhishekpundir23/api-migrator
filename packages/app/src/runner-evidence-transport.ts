@@ -17,7 +17,7 @@ const SINGLETON_HEADERS = new Set([
 ]);
 
 function responseLength(response: IncomingMessage): number | undefined {
-  if (response.statusCode !== 200) throw new RunnerEvidenceError("evidence_invalid");
+  if (response.statusCode !== 200) throw new RunnerEvidenceError("evidence_unavailable");
   const headers = new Map<string, string>();
   for (let index = 0; index < response.rawHeaders.length; index += 2) {
     const name = response.rawHeaders[index]!.toLowerCase();

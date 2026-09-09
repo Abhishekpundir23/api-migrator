@@ -104,8 +104,11 @@ test("invalid job identifiers do not construct any request", async () => {
 });
 
 const framingCases: Array<[string, Buffer, RunnerEvidenceFailureCode]> = [
-  ["redirect", wire("Content-Type: application/json\r\nContent-Length: 2\r\nLocation: https://other.example.invalid", "{}", "302 Found"), "evidence_invalid"],
-  ["server diagnostics", wire("Content-Type: application/json\r\nContent-Length: 2", "{}", "500 Secret diagnostic"), "evidence_invalid"],
+  ["redirect", wire("Content-Type: application/json\r\nContent-Length: 2\r\nLocation: https://other.example.invalid", "{}", "302 Found"), "evidence_unavailable"],
+  ["missing evidence", wire("Content-Type: application/json\r\nContent-Length: 2", "{}", "404 Not Found"), "evidence_unavailable"],
+  ["rate limited", wire("Content-Type: application/json\r\nContent-Length: 2\r\nRetry-After: 30", "{}", "429 Too Many Requests"), "evidence_unavailable"],
+  ["server diagnostics", wire("Content-Type: application/json\r\nContent-Length: 2", "{}", "500 Secret diagnostic"), "evidence_unavailable"],
+  ["service unavailable", wire("Content-Type: application/json\r\nContent-Length: 2\r\nRetry-After: 30", "{}", "503 Service Unavailable"), "evidence_unavailable"],
   ["missing type", wire("Content-Length: 2"), "evidence_invalid"],
   ["wrong type", wire("Content-Type: text/json\r\nContent-Length: 2"), "evidence_invalid"],
   ["extra type parameter", wire("Content-Type: application/json; charset=utf-8; secret=yes\r\nContent-Length: 2"), "evidence_invalid"],
