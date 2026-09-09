@@ -26,6 +26,9 @@ test("the API hard stop precedes every post-preview ceremony and mutation bounda
     "utf8"
   );
   const gate = source.indexOf("if (isRunnerCapabilityActionBlocked(action))");
+  assert.doesNotMatch(source, /runner-evidence|createRunnerEvidenceClient|acquireInitial|reacquire|runnerEvidenceConfig|runnerCapabilityProviderAvailable/);
+  const capability = readFileSync(new URL("../lib/runner-capability.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(capability, /process\.env|runner-evidence|createRunnerEvidenceClient/);
   assert.notEqual(gate, -1);
   for (const marker of [
     'if (action === "prepare_owner_challenge")',

@@ -119,6 +119,12 @@ test("real built runtime root loads the runner entrypoint and canonical app expo
     ]) {
       assert.equal(existsSync(join(runtimeRoot, privilegedPath)), false, privilegedPath);
     }
+    for (const name of ["runner-evidence-contract", "runner-evidence-deadline",
+      "runner-key-registry", "runner-evidence-transport", "runner-evidence-core",
+      "runner-evidence", "runner-evidence-internal"]) {
+      assert.equal(existsSync(join(runtimeRoot, "packages/app/dist", `${name}.js`)), false, name);
+    }
+    assert.equal(existsSync(join(runtimeRoot, "packages/app/test")), false);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }

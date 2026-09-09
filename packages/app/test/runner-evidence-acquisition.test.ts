@@ -466,7 +466,7 @@ test("production construction detaches validated configuration without I/O or en
     assert.equal(io, 0);
   `;
   execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
-    cwd: process.cwd(), encoding: "utf8", env: { ...process.env, RUNNER_EVIDENCE_ENABLED: "true", RUNNER_EVIDENCE_SERVICE_ORIGIN: "https://secret.invalid" },
+    cwd: new URL("../../..", import.meta.url), encoding: "utf8", env: { ...process.env, RUNNER_EVIDENCE_ENABLED: "true", RUNNER_EVIDENCE_SERVICE_ORIGIN: "https://secret.invalid" },
   });
   assert.deepEqual(createRunnerEvidenceClient({}, {}), { ok: false, code: "configuration_invalid" });
 });
@@ -529,7 +529,7 @@ test("production policy uses module checkout and detached mandatory roots plus c
     assert.equal(network, 0);
   `;
   execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
-    cwd: process.cwd(), encoding: "utf8", env: { ...process.env, TMPDIR: "/tmp" },
+    cwd: new URL("../../..", import.meta.url), encoding: "utf8", env: { ...process.env, TMPDIR: "/tmp" },
   });
 });
 
