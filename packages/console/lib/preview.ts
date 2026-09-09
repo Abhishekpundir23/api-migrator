@@ -1,3 +1,8 @@
+import {
+  buildPreviewSourceEvidence,
+  type PreviewSourceEvidenceView,
+} from "./source-evidence";
+
 export interface PreviewCheckInput {
   status?: unknown;
   command?: unknown;
@@ -29,6 +34,7 @@ export interface PreviewResultInput {
   prUrl?: string | null;
   error?: string;
   report?: {
+    previewExecution?: unknown;
     manifest?: { deployment?: unknown };
     changedFiles?: unknown;
     entries?: unknown;
@@ -59,6 +65,7 @@ export interface PreviewEvidenceView {
   deploymentKind: "long-running" | "serverless" | "unknown";
   prUrl: string | null;
   error: string | null;
+  source: PreviewSourceEvidenceView;
   identity: {
     preflightId: string | null;
     artifactDigest: string | null;
@@ -115,6 +122,7 @@ export function buildPreviewEvidence(result: PreviewResultInput): PreviewEvidenc
     deploymentKind: deploymentKind === "long-running" || deploymentKind === "serverless" ? deploymentKind : "unknown",
     prUrl: safeHttpUrl(result.prUrl),
     error: safeText(result.error, 500),
+    source: buildPreviewSourceEvidence(result.report?.previewExecution, result.slug),
     identity: {
       preflightId: safeText(result.preflightId, 80),
       artifactDigest: safeText(result.publication?.artifactDigest, 240),

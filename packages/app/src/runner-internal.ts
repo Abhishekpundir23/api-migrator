@@ -28,3 +28,33 @@ export {
 } from "./repository.js";
 export { createPreflightId, publicationBlockers } from "./publication.js";
 export { sanitizeMigrationReport } from "./report.js";
+export {
+  SOURCE_BUNDLE_SCHEMA_VERSION,
+  MAX_SOURCE_ENTRIES,
+  MAX_SOURCE_TOTAL_BYTES,
+  MAX_SOURCE_FILE_BYTES,
+  MAX_CANONICAL_MANIFEST_BYTES,
+  createSourceBundle,
+  parseSourceBundle,
+  extractSourceBundle,
+  extractSourceBundleIntoDirectory,
+  sourceBundleDigest,
+  type SourceBundleRepositoryIdentity,
+  type SourceBundleBaseIdentity,
+  type CreateSourceBundleInput,
+  type SourceBundleHeader,
+  type SourceBundleEntry,
+  type SourceBundleRecord,
+  type ParsedSourceBundle,
+} from "./runner-source-bundle.js";
+export {
+  MAX_GIT_PATH_BYTES,
+  MAX_GIT_TREE_DEPTH,
+  gitObjectFormatFromOid,
+  gitBlobOid,
+  gitTreeOid,
+  validateGitPath,
+  type GitObjectFormat,
+  type GitFileMode,
+  type GitTreeEntry,
+} from "./runner-git-tree.js";

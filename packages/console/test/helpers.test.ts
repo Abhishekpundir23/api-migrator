@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { LocalPreviewExecution } from "@api-migrator/app/preview-evidence";
 import {
   createOwnerChallengeReceipt,
   createPreviewReceipt,
@@ -21,6 +22,21 @@ import { buildPreviewEvidence } from "../lib/preview";
 import { buildHistoricalRunEvidence, shortAuditValue } from "../lib/run-history";
 import { RunBusyError, withOperatorApprovalRunLock, withRunLock } from "../lib/run-lock";
 import { DEFAULT_INNGEST_MANIFEST_JSON } from "../lib/default-manifest";
+
+const CAPTURED_EXECUTION: LocalPreviewExecution = {
+  schemaVersion: 1,
+  kind: "local-preview",
+  source: {
+    repository: { slug: "owner/repo", id: 101, ownerId: 202 },
+    base: {
+      branch: "main",
+      sha: "b".repeat(40),
+      treeSha: "c".repeat(40),
+    },
+    manifestDigest: `sha256:${"d".repeat(64)}`,
+    sourceArchiveDigest: `sha256:${"e".repeat(64)}`,
+  },
+};
 
 test("operator credentials stay server-side and Basic headers are checked", () => {
   const credentials = credentialsFromEnv({
@@ -209,6 +225,54 @@ test("preview evidence treats a missing artifact digest as unavailable and never
   assert.equal(blocked.verification.reason, "Docker unavailable");
 });
 
+test("fresh preview source evidence distinguishes captured, unavailable, legacy, and invalid states", () => {
+  const source = (previewExecution?: unknown) => buildPreviewEvidence({
+    slug: "owner/repo",
+    status: "preview_ready",
+    report: previewExecution === undefined ? {} : { previewExecution },
+  }).source;
+
+  assert.deepEqual(source(CAPTURED_EXECUTION), {
+    status: "captured",
+    label: "Local preview — not independently attested",
+    reason: null,
+    sourceArchiveDigest: `sha256:${"e".repeat(64)}`,
+    baseTreeSha: "c".repeat(40),
+    repositoryId: 101,
+    ownerId: 202,
+  });
+  assert.deepEqual(source({
+    schemaVersion: 1,
+    kind: "local-preview",
+    source: null,
+    unavailableReason: "repository_identity_unavailable",
+  }), {
+    status: "unavailable",
+    label: "Local preview — not independently attested",
+    reason: "Repository identity was unavailable during local preview.",
+    sourceArchiveDigest: null,
+    baseTreeSha: null,
+    repositoryId: null,
+    ownerId: null,
+  });
+  assert.equal(source().label, "Not recorded (legacy)");
+  assert.equal(source({ ...CAPTURED_EXECUTION, rawError: "ghp_must_never_render" }).label, "Invalid or unavailable");
+  assert.doesNotMatch(
+    JSON.stringify(source({ ...CAPTURED_EXECUTION, rawError: "ghp_must_never_render" })),
+    /must_never_render/
+  );
+  assert.equal(buildPreviewEvidence({
+    slug: "owner/other",
+    status: "preview_ready",
+    report: { previewExecution: CAPTURED_EXECUTION },
+  }).source.status, "invalid");
+  assert.equal(buildPreviewEvidence({
+    slug: "Owner/Repo",
+    status: "preview_ready",
+    report: { previewExecution: CAPTURED_EXECUTION },
+  }).source.status, "captured");
+});
+
 test("historical run evidence preserves exact identity and structured blockers safely", () => {
   const evidence = buildHistoricalRunEvidence({
     artifactDigest: "a".repeat(64),
@@ -242,4 +306,41 @@ test("historical run evidence distinguishes legacy and malformed blocker records
   const malformed = buildHistoricalRunEvidence({ publicationBlockers: "not-json" });
   assert.equal(malformed.blockerEvidence, "invalid");
   assert.deepEqual(malformed.blockers, []);
+});
+
+test("historical source evidence parses bounded report JSON into four safe states", () => {
+  const captured = buildHistoricalRunEvidence({
+    report: JSON.stringify({ previewExecution: CAPTURED_EXECUTION }),
+  });
+  assert.equal(captured.source.status, "captured");
+  assert.equal(captured.source.label, "Local preview — not independently attested");
+  assert.equal(captured.source.sourceArchiveDigest, `sha256:${"e".repeat(64)}`);
+
+  const unavailable = buildHistoricalRunEvidence({
+    report: JSON.stringify({
+      previewExecution: {
+        schemaVersion: 1,
+        kind: "local-preview",
+        source: null,
+        unavailableReason: "source_bundle_unavailable",
+      },
+    }),
+  });
+  assert.equal(unavailable.source.status, "unavailable");
+  assert.equal(unavailable.source.reason, "Source bundle identity was unavailable during local preview.");
+
+  assert.equal(buildHistoricalRunEvidence({ report: JSON.stringify({ summary: {} }) }).source.label, "Not recorded (legacy)");
+  assert.equal(buildHistoricalRunEvidence({ report: "not-json" }).source.label, "Invalid or unavailable");
+  assert.equal(buildHistoricalRunEvidence({
+    repoSlug: "owner/other",
+    report: JSON.stringify({ previewExecution: CAPTURED_EXECUTION }),
+  }).source.status, "invalid");
+  assert.equal(buildHistoricalRunEvidence({
+    repoSlug: "Owner/Repo",
+    report: JSON.stringify({ previewExecution: CAPTURED_EXECUTION }),
+  }).source.status, "captured");
+  assert.equal(
+    buildHistoricalRunEvidence({ report: `{"padding":"${"x".repeat(1_048_577)}"}` }).source.status,
+    "invalid"
+  );
 });

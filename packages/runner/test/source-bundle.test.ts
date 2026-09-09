@@ -16,6 +16,22 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import {
+  createSourceBundle as createAppSourceBundle,
+  extractSourceBundle as extractAppSourceBundle,
+  gitBlobOid as appGitBlobOid,
+  gitObjectFormatFromOid as appGitObjectFormatFromOid,
+  gitTreeOid as appGitTreeOid,
+  parseSourceBundle as parseAppSourceBundle,
+  sourceBundleDigest as appSourceBundleDigest,
+  validateGitPath as appValidateGitPath,
+} from "@api-migrator/app/runner-internal";
+import {
+  gitBlobOid as runnerGitBlobOid,
+  gitObjectFormatFromOid as runnerGitObjectFormatFromOid,
+  gitTreeOid as runnerGitTreeOid,
+  validateGitPath as runnerValidateGitPath,
+} from "../src/git-tree.js";
+import {
   createSourceBundle,
   extractSourceBundle,
   parseSourceBundle,
@@ -24,6 +40,90 @@ import {
 } from "../src/source-bundle.js";
 
 const MANIFEST = "{\"name\":\"Inngest v4\",\"package\":{\"from\":\"^3.0.0\",\"name\":\"inngest\",\"to\":\"^4.0.0\"},\"peerFloors\":[],\"provider\":\"inngest\",\"transformSet\":\"inngest-v3-to-v4\"}";
+const PRE_MOVE_BUNDLE_DIGEST = "sha256:5102540cebad4bd00115093c5f85deb85d67f70202d63961a64be632ffa08159";
+const PRE_MOVE_BUNDLE_BASE64 = "QVBJLU1JR1JBVE9SLVNPVVJDRS1CVU5ETEUAVjEKAAACpHsiYmFzZSI6eyJicmFuY2giOiJtYWluIiwib2JqZWN0Rm9ybWF0Ijoic2hhMSIsInNoYSI6ImI1ZmFjMjJlYmM0MmY4OWJiMjgyNWIwYjNkYjI0MThlMTdjYTFkMWQiLCJ0cmVlU2hhIjoiNjMwOGU3MDY1NzJmODE0ZmI1MGI5Mzc1Y2U5ZjEwNzg5N2ZmYjFiMyJ9LCJlbnRyaWVzRGlnZXN0Ijoic2hhMjU2OjE2OWU5NjczMGQ0YmQwYWVjNTZmNThkYWI4ZTAxNmNiN2NiMzIxNGM3M2I1NzJhY2ZiZDU1MGU0NzNhODZmMTciLCJlbnRyeUNvdW50IjozLCJtYW5pZmVzdCI6eyJieXRlTGVuZ3RoIjoxNTEsImNhbm9uaWNhbEpzb24iOiJ7XCJuYW1lXCI6XCJJbm5nZXN0IHY0XCIsXCJwYWNrYWdlXCI6e1wiZnJvbVwiOlwiXjMuMC4wXCIsXCJuYW1lXCI6XCJpbm5nZXN0XCIsXCJ0b1wiOlwiXjQuMC4wXCJ9LFwicGVlckZsb29yc1wiOltdLFwicHJvdmlkZXJcIjpcImlubmdlc3RcIixcInRyYW5zZm9ybVNldFwiOlwiaW5uZ2VzdC12My10by12NFwifSIsImRpZ2VzdCI6InNoYTI1Njo5NDZhYzUyZDRlYzI1MmE1NjI5ZTU3MDcxMzIwYjE0ZDcyY2M4MGE3ODM5MWFmOTdhZmQzNzExODFkZjkyYTEwIn0sInJlcG9zaXRvcnkiOnsiaWQiOjEyMywib3duZXJJZCI6NDU2LCJzbHVnIjoiZXhhbXBsZS1vcmcvZXhhbXBsZS1yZXBvIn0sInNjaGVtYVZlcnNpb24iOjEsInRvdGFsRmlsZUJ5dGVzIjoyOH0AAAAEAAAAAAAAAAAGYS50c2FscGhhCgAAAAQAAAAAAAAAAAViLnRzYmV0YQoAAAAOAQAAAAAAAAARc2NyaXB0cy9ydW4uc2gjIS9iaW4vc2gKZXhpdCAwCgpBUEktTUlHUkFUT1ItU09VUkNFLUJVTkRMRS1FTkQAVjE=";
+
+test("pins the original source bundle bytes for the deterministic Git fixture", () => {
+  const fixture = repositoryFixture();
+  try {
+    const record = createSourceBundle(fixture.input);
+    assert.equal(record.digest, PRE_MOVE_BUNDLE_DIGEST);
+    assert.equal(record.bytes.toString("base64"), PRE_MOVE_BUNDLE_BASE64);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("fixture ignores hostile inherited Git signing configuration", () => {
+  const keys = [
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_VALUE_1",
+  ] as const;
+  const previous = keys.map((key) => process.env[key]);
+  let fixture: ReturnType<typeof repositoryFixture> | undefined;
+  Object.assign(process.env, {
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "commit.gpgSign",
+    GIT_CONFIG_VALUE_0: "true",
+    GIT_CONFIG_KEY_1: "gpg.program",
+    GIT_CONFIG_VALUE_1: "/definitely-not-a-gpg-program",
+  });
+  try {
+    fixture = repositoryFixture();
+    const record = createSourceBundle(fixture.input);
+    assert.equal(record.digest, PRE_MOVE_BUNDLE_DIGEST);
+    assert.equal(record.bytes.toString("base64"), PRE_MOVE_BUNDLE_BASE64);
+  } finally {
+    if (fixture) rmSync(fixture.root, { recursive: true, force: true });
+    keys.forEach((key, index) => {
+      const value = previous[index];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    });
+  }
+});
+
+test("app and runner source bundle surfaces preserve bytes, extraction, and Git identities", () => {
+  const fixture = repositoryFixture();
+  const extractionParent = realpathSync(mkdtempSync(join(tmpdir(), "api-migrator-source-compat-")));
+  try {
+    const appRecord = createAppSourceBundle(fixture.input);
+    const runnerRecord = createSourceBundle(fixture.input);
+    assert.equal(appRecord.digest, PRE_MOVE_BUNDLE_DIGEST);
+    assert.equal(appRecord.bytes.toString("base64"), PRE_MOVE_BUNDLE_BASE64);
+    assert.equal(runnerRecord.digest, appRecord.digest);
+    assert(runnerRecord.bytes.equals(appRecord.bytes));
+    assert.equal(appSourceBundleDigest(runnerRecord.bytes), sourceBundleDigest(appRecord.bytes));
+
+    const appParsed = parseAppSourceBundle(runnerRecord.bytes);
+    const runnerParsed = parseSourceBundle(appRecord.bytes);
+    assert.deepEqual(appParsed, runnerParsed);
+    assert.equal(appGitObjectFormatFromOid(appParsed.header.base.sha), "sha1");
+    assert.equal(runnerGitObjectFormatFromOid(runnerParsed.header.base.sha), "sha1");
+    assert.equal(appGitTreeOid(appParsed.entries, "sha1"), fixture.input.base.treeSha);
+    assert.equal(runnerGitTreeOid(runnerParsed.entries, "sha1"), fixture.input.base.treeSha);
+    assert.equal(appGitBlobOid(Buffer.from("alpha\n"), "sha1"), runnerGitBlobOid(Buffer.from("alpha\n"), "sha1"));
+    assert.equal(appValidateGitPath("scripts/run.sh"), runnerValidateGitPath("scripts/run.sh"));
+
+    const appDestination = join(extractionParent, "app");
+    const runnerDestination = join(extractionParent, "runner");
+    extractAppSourceBundle(appParsed, appDestination);
+    extractSourceBundle(runnerParsed, runnerDestination);
+    for (const path of ["a.ts", "b.ts", "scripts/run.sh"]) {
+      assert(readFileSync(join(appDestination, path)).equals(readFileSync(join(runnerDestination, path))));
+      assert.equal(
+        lstatSync(join(appDestination, path)).mode & 0o777,
+        lstatSync(join(runnerDestination, path)).mode & 0o777
+      );
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+    rmSync(extractionParent, { recursive: true, force: true });
+  }
+});
 
 test("builds, parses, and privately extracts an exact tracked source bundle", () => {
   const fixture = repositoryFixture();
@@ -216,9 +316,22 @@ function lstatIfExists(path: string): boolean {
 }
 
 function git(cwd: string, args: readonly string[]): string {
-  return execFileSync("git", args, {
+  return execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      PATH: process.env.PATH,
+      GIT_AUTHOR_NAME: "Runner Test",
+      GIT_AUTHOR_EMAIL: "runner@example.invalid",
+      GIT_AUTHOR_DATE: "2025-01-02T03:04:05Z",
+      GIT_COMMITTER_NAME: "Runner Test",
+      GIT_COMMITTER_EMAIL: "runner@example.invalid",
+      GIT_COMMITTER_DATE: "2025-01-02T03:04:05Z",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_TERMINAL_PROMPT: "0",
+      LC_ALL: "C",
+    },
   }).trim();
 }

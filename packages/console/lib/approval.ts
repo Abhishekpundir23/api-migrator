@@ -1,9 +1,16 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { parseStoredManifest } from "@api-migrator/app";
+import {
+  canonicalGitHubRepositorySlug,
+  validateLocalPreviewExecution,
+  type LocalPreviewExecution,
+} from "@api-migrator/app/preview-evidence";
 import { HttpInputError, normalizeRepoSlugs } from "./request";
 
-const PREVIEW_RECEIPT_PREFIX = "preview-v1";
-const PREVIEW_RECEIPT_DOMAIN = "api-migrator:console-preview-receipt:v1\0";
+const PREVIEW_RECEIPT_V1_PREFIX = "preview-v1";
+const PREVIEW_RECEIPT_V1_DOMAIN = "api-migrator:console-preview-receipt:v1\0";
+const PREVIEW_RECEIPT_V2_PREFIX = "preview-v2";
+const PREVIEW_RECEIPT_V2_DOMAIN = "api-migrator:console-preview-receipt:v2\0";
 const OWNER_CHALLENGE_RECEIPT_PREFIX = "owner-challenge-v1";
 const OWNER_CHALLENGE_RECEIPT_DOMAIN = "api-migrator:console-owner-challenge-receipt:v1\0";
 const OPERATOR_APPROVAL_PREFIX = "operator-v2";
@@ -24,7 +31,7 @@ export interface ReviewedPreview {
   previewCompletedAt: number;
 }
 
-export interface PreviewReceipt {
+export interface PreviewReceiptV1 {
   version: 1;
   kind: "preview_receipt";
   campaignId: string;
@@ -32,7 +39,21 @@ export interface PreviewReceipt {
   repository: ReviewedPreview;
   expiresAt: number;
   nonce: string;
+  execution?: never;
 }
+
+export interface PreviewReceiptV2 {
+  version: 2;
+  kind: "preview_receipt";
+  campaignId: string;
+  manifestDigest: string;
+  repository: ReviewedPreview;
+  execution: LocalPreviewExecution;
+  expiresAt: number;
+  nonce: string;
+}
+
+export type PreviewReceipt = PreviewReceiptV1 | PreviewReceiptV2;
 
 /**
  * Server-authenticated bridge between one exact preview receipt and the exact
@@ -105,22 +126,37 @@ export function createPreviewReceipt(input: {
   campaignId: string;
   manifestJson: string;
   repository: ReviewedPreview;
+  execution?: unknown;
   now?: number;
   secret?: string;
 }): { previewReceipt: string; expiresAt: number; repository: ReviewedPreview; manifestDigest: string } {
   const repository = validateReviewedPreview(input.repository);
   const now = validNow(input.now);
-  const payload: PreviewReceipt = {
-    version: 1,
-    kind: "preview_receipt",
-    campaignId: validCampaignId(input.campaignId),
-    manifestDigest: digestManifest(input.manifestJson),
-    repository,
-    expiresAt: now + TOKEN_TTL_MS,
-    nonce: randomBytes(16).toString("base64url"),
-  };
+  const campaignId = validCampaignId(input.campaignId);
+  const manifestDigest = digestManifest(input.manifestJson);
+  const nonce = randomBytes(16).toString("base64url");
+  const payload: PreviewReceipt = input.execution === undefined
+    ? {
+        version: 1,
+        kind: "preview_receipt",
+        campaignId,
+        manifestDigest,
+        repository,
+        expiresAt: checkedExpiry(now, now),
+        nonce,
+      }
+    : createLocalPreviewReceiptPayload({
+        campaignId,
+        manifestDigest,
+        repository,
+        execution: input.execution,
+        now,
+        nonce,
+      });
+  const prefix = payload.version === 2 ? PREVIEW_RECEIPT_V2_PREFIX : PREVIEW_RECEIPT_V1_PREFIX;
+  const domain = payload.version === 2 ? PREVIEW_RECEIPT_V2_DOMAIN : PREVIEW_RECEIPT_V1_DOMAIN;
   return {
-    previewReceipt: encodeToken(PREVIEW_RECEIPT_PREFIX, PREVIEW_RECEIPT_DOMAIN, payload, input.secret),
+    previewReceipt: encodeToken(prefix, domain, payload, input.secret),
     expiresAt: payload.expiresAt,
     repository,
     manifestDigest: payload.manifestDigest,
@@ -134,34 +170,15 @@ export function verifyPreviewReceipt(input: {
   now?: number;
   secret?: string;
 }): PreviewReceipt {
+  const version = previewReceiptTokenVersion(input.previewReceipt);
   const raw = decodeToken(
     input.previewReceipt,
     "previewReceipt",
-    PREVIEW_RECEIPT_PREFIX,
-    PREVIEW_RECEIPT_DOMAIN,
+    version === 2 ? PREVIEW_RECEIPT_V2_PREFIX : PREVIEW_RECEIPT_V1_PREFIX,
+    version === 2 ? PREVIEW_RECEIPT_V2_DOMAIN : PREVIEW_RECEIPT_V1_DOMAIN,
     input.secret
   );
-  assertExactKeys(raw, [
-    "version",
-    "kind",
-    "campaignId",
-    "manifestDigest",
-    "repository",
-    "expiresAt",
-    "nonce",
-  ]);
-  if (raw.version !== 1 || raw.kind !== "preview_receipt") {
-    throw new HttpInputError("invalid preview receipt");
-  }
-  const payload: PreviewReceipt = {
-    version: 1,
-    kind: "preview_receipt",
-    campaignId: validCampaignId(raw.campaignId),
-    manifestDigest: validDigest(raw.manifestDigest, "manifest digest"),
-    repository: validateReviewedPreview(raw.repository),
-    expiresAt: validTimestamp(raw.expiresAt, "preview receipt expiry"),
-    nonce: validNonce(raw.nonce),
-  };
+  const payload = version === 2 ? parsePreviewReceiptV2(raw) : parsePreviewReceiptV1(raw);
   if (
     payload.campaignId !== input.campaignId ||
     payload.manifestDigest !== digestManifest(input.manifestJson)
@@ -169,6 +186,9 @@ export function verifyPreviewReceipt(input: {
     throw new HttpInputError("preview receipt does not match this campaign");
   }
   const now = validNow(input.now);
+  if (payload.version === 2) {
+    validateLocalReceiptBindings(payload, now);
+  }
   if (payload.expiresAt <= now) {
     throw new HttpInputError("preview receipt expired; run a new preview", 409);
   }
@@ -199,6 +219,9 @@ export function createOwnerChallengeReceipt(input: {
 } {
   const now = validNow(input.now);
   const preview = verifyPreviewReceipt({ ...input, now });
+  if (preview.version !== 1) {
+    throw new HttpInputError("local preview receipt cannot prepare an owner challenge", 409);
+  }
   const ownerChallengeDigest = validDigest(input.ownerChallengeDigest, "owner challenge digest");
   const expiresAt = validTimestamp(input.challengeExpiresAt, "owner challenge expiry");
   if (expiresAt <= now) {
@@ -293,6 +316,9 @@ export function verifyOwnerChallengeReceipt(input: {
     now,
     secret: input.secret,
   });
+  if (preview.version !== 1) {
+    throw new HttpInputError("local preview receipt cannot verify an owner challenge", 409);
+  }
   if (
     payload.previewReceiptDigest !== sha256(input.previewReceipt as string) ||
     canonicalJson(payload.repository) !== canonicalJson(preview.repository) ||
@@ -433,6 +459,130 @@ export function verifyOperatorApprovalToken(input: {
 /** Mark a final operator publication approval used after the run lock is held. */
 export function consumeOperatorApprovalToken(token: string, expiresAt: number, now = Date.now()): void {
   consumeOneShot(consumedOperatorApprovals, token, expiresAt, now, "operator approval");
+}
+
+function createLocalPreviewReceiptPayload(input: {
+  campaignId: string;
+  manifestDigest: string;
+  repository: ReviewedPreview;
+  execution: unknown;
+  now: number;
+  nonce: string;
+}): PreviewReceiptV2 {
+  const execution = localPreviewExecution(input.execution);
+  const payload: PreviewReceiptV2 = {
+    version: 2,
+    kind: "preview_receipt",
+    campaignId: input.campaignId,
+    manifestDigest: input.manifestDigest,
+    repository: input.repository,
+    execution,
+    expiresAt: checkedExpiry(input.repository.previewCompletedAt, input.now),
+    nonce: input.nonce,
+  };
+  validateLocalReceiptBindings(payload, input.now);
+  if (payload.expiresAt <= input.now) {
+    throw new HttpInputError("preview receipt expired; run a new preview", 409);
+  }
+  return payload;
+}
+
+function parsePreviewReceiptV1(raw: Record<string, unknown>): PreviewReceiptV1 {
+  assertExactKeys(raw, [
+    "version",
+    "kind",
+    "campaignId",
+    "manifestDigest",
+    "repository",
+    "expiresAt",
+    "nonce",
+  ]);
+  if (raw.version !== 1 || raw.kind !== "preview_receipt") {
+    throw new HttpInputError("invalid preview receipt");
+  }
+  return {
+    version: 1,
+    kind: "preview_receipt",
+    campaignId: validCampaignId(raw.campaignId),
+    manifestDigest: validDigest(raw.manifestDigest, "manifest digest"),
+    repository: validateReviewedPreview(raw.repository),
+    expiresAt: validTimestamp(raw.expiresAt, "preview receipt expiry"),
+    nonce: validNonce(raw.nonce),
+  };
+}
+
+function parsePreviewReceiptV2(raw: Record<string, unknown>): PreviewReceiptV2 {
+  assertExactKeys(raw, [
+    "version",
+    "kind",
+    "campaignId",
+    "manifestDigest",
+    "repository",
+    "execution",
+    "expiresAt",
+    "nonce",
+  ]);
+  if (raw.version !== 2 || raw.kind !== "preview_receipt") {
+    throw new HttpInputError("invalid preview receipt");
+  }
+  return {
+    version: 2,
+    kind: "preview_receipt",
+    campaignId: validCampaignId(raw.campaignId),
+    manifestDigest: validDigest(raw.manifestDigest, "manifest digest"),
+    repository: validateReviewedPreview(raw.repository),
+    execution: localPreviewExecution(raw.execution),
+    expiresAt: validTimestamp(raw.expiresAt, "preview receipt expiry"),
+    nonce: validNonce(raw.nonce),
+  };
+}
+
+function validateLocalReceiptBindings(payload: PreviewReceiptV2, now: number): void {
+  const completion = payload.repository.previewCompletedAt;
+  if (completion > now) {
+    throw new HttpInputError("preview completion time is in the future");
+  }
+  const maximumExpiry = checkedExpiry(completion, now);
+  if (payload.expiresAt <= completion || payload.expiresAt > maximumExpiry) {
+    throw new HttpInputError("invalid local preview receipt lifetime");
+  }
+  if (payload.execution.source) {
+    if (
+      canonicalGitHubRepositorySlug(payload.execution.source.repository.slug) !==
+      canonicalGitHubRepositorySlug(payload.repository.slug)
+    ) {
+      throw new HttpInputError("preview source repository does not match receipt");
+    }
+    if (payload.execution.source.manifestDigest !== payload.manifestDigest) {
+      throw new HttpInputError("preview source manifest does not match receipt");
+    }
+  }
+}
+
+function checkedExpiry(completedAt: number, now: number): number {
+  if (completedAt > now) {
+    throw new HttpInputError("preview completion time is in the future");
+  }
+  const expiresAt = completedAt + TOKEN_TTL_MS;
+  if (!Number.isSafeInteger(expiresAt)) {
+    throw new HttpInputError("invalid preview receipt expiry");
+  }
+  return expiresAt;
+}
+
+function localPreviewExecution(value: unknown): LocalPreviewExecution {
+  try {
+    return validateLocalPreviewExecution(value);
+  } catch {
+    throw new HttpInputError("invalid local preview execution");
+  }
+}
+
+function previewReceiptTokenVersion(token: unknown): 1 | 2 {
+  if (typeof token !== "string") throw new HttpInputError("previewReceipt required");
+  if (token.startsWith(`${PREVIEW_RECEIPT_V1_PREFIX}.`)) return 1;
+  if (token.startsWith(`${PREVIEW_RECEIPT_V2_PREFIX}.`)) return 2;
+  throw new HttpInputError("invalid preview receipt");
 }
 
 function validateReviewedPreview(value: unknown): ReviewedPreview {

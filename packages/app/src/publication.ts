@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Manifest, MigrationReport } from "@api-migrator/engine";
 import type { OwnerAuthorizationReceipt } from "./owner-authorization.js";
+import { validateLocalPreviewExecution } from "./preview-evidence.js";
+import type { AppMigrationReport } from "./report.js";
 import { stableStringify } from "./repository.js";
 import { redactText } from "./security.js";
 
@@ -91,7 +93,7 @@ export interface PublicationAttemptAudit {
   publicationBlockers: PublicationBlocker[];
   approvedBy: string;
   overrideUnsafe: false;
-  report: MigrationReport;
+  report: AppMigrationReport;
 }
 
 /** Structured failure that deliberately carries no raw subprocess/API data. */
@@ -163,7 +165,7 @@ export function createPreflightId(input: {
   candidateTreeSha: string;
   artifactDigest: string;
   manifest: Manifest;
-  report: MigrationReport;
+  report: AppMigrationReport;
 }): string {
   // Command output is intentionally excluded: package managers can print
   // timings and other non-deterministic text even when the result is identical.
@@ -178,6 +180,9 @@ export function createPreflightId(input: {
       },
     ])
   );
+  const previewExecution = input.report.previewExecution === undefined
+    ? undefined
+    : validateLocalPreviewExecution(input.report.previewExecution);
   const stableInput = {
     slug: input.slug,
     baseBranch: input.baseBranch,
@@ -210,6 +215,7 @@ export function createPreflightId(input: {
         checks,
       },
       summary: input.report.summary,
+      ...(previewExecution === undefined ? {} : { previewExecution }),
     },
   };
   const digest = createHash("sha256").update(stableStringify(stableInput)).digest("hex");

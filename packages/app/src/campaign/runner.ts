@@ -7,8 +7,9 @@ import {
   getCampaign,
   type MigrationRunStatus,
 } from "@api-migrator/db";
-import { Manifest, type MigrationReport } from "@api-migrator/engine";
+import { Manifest } from "@api-migrator/engine";
 import { migrateRepo, type MigrateRepoResult } from "../github.js";
+import type { AppMigrationReport } from "../report.js";
 import {
   PublicationAttemptError,
   type PublicationOutcome,
@@ -34,7 +35,7 @@ export interface CampaignRepoResult {
   status: MigrationRunStatus;
   prUrl: string | null;
   preflightId?: string;
-  report?: MigrationReport;
+  report?: AppMigrationReport;
   publication?: PublicationOutcome;
   error?: string;
 }

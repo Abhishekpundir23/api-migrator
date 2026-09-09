@@ -90,17 +90,26 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
 
 function StoredRunEvidence({ run }: { run: HistoricalRunInput }) {
   const evidence = buildHistoricalRunEvidence(run);
-  if (!evidence.hasIdentity && evidence.blockerEvidence === "legacy") {
-    return <span className="muted">Exact identity not recorded</span>;
-  }
   return (
     <details className="history-evidence">
       <summary>
         {evidence.artifactDigest
-          ? `Artifact ${shortAuditValue(evidence.artifactDigest)}`
-          : "Partial audit evidence"}
+          ? `Artifact ${shortAuditValue(evidence.artifactDigest)} · ${evidence.source.label}`
+          : `Source: ${evidence.source.label}`}
         {evidence.blockers.length > 0 ? ` · ${evidence.blockers.length} blocker${evidence.blockers.length === 1 ? "" : "s"}` : ""}
       </summary>
+      <div className={`source-evidence ${evidence.source.status}`}>
+        <p><strong>{evidence.source.label}</strong></p>
+        {evidence.source.reason ? <p className="muted">{evidence.source.reason}</p> : null}
+        {evidence.source.status === "captured" ? (
+          <dl>
+            <AuditValue label="Source archive digest" value={evidence.source.sourceArchiveDigest} />
+            <AuditValue label="Base tree" value={evidence.source.baseTreeSha} />
+            <AuditValue label="Repository ID" value={String(evidence.source.repositoryId)} />
+            <AuditValue label="Owner ID" value={String(evidence.source.ownerId)} />
+          </dl>
+        ) : null}
+      </div>
       <dl>
         <AuditValue label="Artifact fingerprint" value={evidence.artifactDigest} />
         <AuditValue label="Base branch" value={evidence.baseBranch} />

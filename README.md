@@ -70,6 +70,8 @@ an unknown, blocked preview. Serverless configuration rewriting is not supported
 
 SQLite is for local pilot state. Foreign keys are enabled, migrations are idempotent, and the console stores structured reports and run metadata. Source trees are processed in disposable working directories rather than stored in the database.
 
+Local preview reports also retain a bounded source-identity record derived before repository code runs. When capture succeeds, the console shows the source-archive digest, base tree, and GitHub repository/owner IDs under the explicit label `Local preview — not independently attested`; an unavailable capture records only a fixed reason, malformed metadata is shown as invalid/unavailable, and older reports are marked `Not recorded (legacy)`. A source-bound `preview-v2` receipt describes that local input but is not a runner attestation or publication capability, and it is rejected by the owner-challenge bridge. All post-preview actions remain unavailable until the separately reviewed verified-runner provider is deployed.
+
 The package root also exposes a fail-closed pre-publication runner plan and
 signed-attestation verifier. The accompanying
 [runner image and Linux contracts](ops/publication-runner/README.md) are

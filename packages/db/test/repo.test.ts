@@ -71,6 +71,19 @@ test("database enforces relationships and atomically refreshes repository metada
     const ready = updateRun(run.id, {
       status: "preview_ready",
       summary: { applied: 2, review: 0, changedFiles: 1, introducedErrors: 0, verified: true },
+      report: {
+        manifest: { name: "Migration", provider: "inngest" },
+        previewExecution: {
+          schemaVersion: 1,
+          kind: "local-preview",
+          source: {
+            repository: { slug: "example/customer", id: 123, ownerId: 456 },
+            base: { branch: "main", sha: "b".repeat(40), treeSha: "c".repeat(40) },
+            manifestDigest: `sha256:${"d".repeat(64)}`,
+            sourceArchiveDigest: `sha256:${"e".repeat(64)}`,
+          },
+        },
+      },
       publicationMode: "preview",
       preflightId: "preflight-0123456789",
       artifactDigest: "a".repeat(64),
@@ -88,6 +101,19 @@ test("database enforces relationships and atomically refreshes repository metada
     assert.equal(ready.baseBranch, "main");
     assert.equal(ready.headSha, "c".repeat(40));
     assert.equal(ready.publicationBlockers, "[]");
+    assert.deepEqual(JSON.parse(getRun(run.id)!.report!), {
+      manifest: { name: "Migration", provider: "inngest" },
+      previewExecution: {
+        schemaVersion: 1,
+        kind: "local-preview",
+        source: {
+          repository: { slug: "example/customer", id: 123, ownerId: 456 },
+          base: { branch: "main", sha: "b".repeat(40), treeSha: "c".repeat(40) },
+          manifestDigest: `sha256:${"d".repeat(64)}`,
+          sourceArchiveDigest: `sha256:${"e".repeat(64)}`,
+        },
+      },
+    });
 
     const rows = listRunsWithReposForCampaign(campaign.id);
     assert.equal(rows.length, 1);

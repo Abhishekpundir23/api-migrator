@@ -535,6 +535,19 @@ function PreviewEvidenceCard({ result }: { result: ResultItem }) {
         <span className={`badge ${evidence.status}`}>{friendlyStatus(evidence.status)}</span>
       </header>
 
+      <div className={`evidence-section source-evidence ${evidence.source.status}`}>
+        <strong>{evidence.source.label}</strong>
+        {evidence.source.reason ? <p className="muted">{evidence.source.reason}</p> : null}
+        {evidence.source.status === "captured" ? (
+          <div className="evidence-grid">
+            <EvidenceValue label="Source archive digest" value={evidence.source.sourceArchiveDigest} important />
+            <EvidenceValue label="Base tree" value={evidence.source.baseTreeSha} important />
+            <EvidenceValue label="Repository ID" value={String(evidence.source.repositoryId)} />
+            <EvidenceValue label="Owner ID" value={String(evidence.source.ownerId)} />
+          </div>
+        ) : null}
+      </div>
+
       <div className="evidence-grid">
         <EvidenceValue label="Operator-declared deployment (not independently verified)" value={evidence.deploymentKind} />
         <EvidenceValue label="Preflight ID" value={evidence.identity.preflightId} important />

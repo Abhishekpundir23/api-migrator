@@ -99,5 +99,13 @@ export {
   normalizeArtifactPath,
   type VerifiedArtifact,
 } from "./artifact.js";
-export { sanitizeMigrationReport } from "./report.js";
+export {
+  sanitizeMigrationReport,
+  type AppMigrationReport,
+} from "./report.js";
+export {
+  validateLocalPreviewExecution,
+  type PreviewSourceIdentity,
+  type LocalPreviewExecution,
+} from "./preview-evidence.js";
 export { redactText, safeErrorMessage, sanitizedExecutionEnv } from "./security.js";

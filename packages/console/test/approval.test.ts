@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
+import type { LocalPreviewExecution } from "@api-migrator/app/preview-evidence";
 import {
   consumeOperatorApprovalToken,
   createOwnerChallengeReceipt,
@@ -28,6 +30,37 @@ const REVIEWED: ReviewedPreview = {
   candidateTreeSha: "c".repeat(40),
   previewCompletedAt: 1_700_000_000_000,
 };
+const EXECUTION: LocalPreviewExecution = {
+  schemaVersion: 1,
+  kind: "local-preview",
+  source: {
+    repository: { slug: REVIEWED.slug, id: 101, ownerId: 202 },
+    base: {
+      branch: "main",
+      sha: "d".repeat(40),
+      treeSha: "e".repeat(40),
+    },
+    manifestDigest: digestManifest(MANIFEST),
+    sourceArchiveDigest: `sha256:${"f".repeat(64)}`,
+  },
+};
+
+function signToken(prefix: string, domain: string, payload: unknown): string {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", SECRET)
+    .update(domain)
+    .update(encoded)
+    .digest("base64url");
+  return `${prefix}.${encoded}.${signature}`;
+}
+
+function decodePayload(token: string): Record<string, unknown> {
+  return JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString("utf8"));
+}
+
+function sha256(value: string): string {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
 
 function preview(now = REVIEWED.previewCompletedAt) {
   return createPreviewReceipt({
@@ -128,6 +161,349 @@ test("preview receipt is HMAC-bound to one exact preview but cannot authorize pu
       secret: SECRET,
     }),
     /invalid operator approval token/
+  );
+});
+
+test("local preview evidence emits a strict v2 receipt bounded to completion time", () => {
+  const receipt = createPreviewReceipt({
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository: REVIEWED,
+    execution: EXECUTION,
+    now: REVIEWED.previewCompletedAt + 5_000,
+    secret: SECRET,
+  });
+  assert.match(receipt.previewReceipt, /^preview-v2\./);
+  assert.equal(receipt.expiresAt, REVIEWED.previewCompletedAt + 10 * 60 * 1_000);
+
+  const verified = verifyPreviewReceipt({
+    previewReceipt: receipt.previewReceipt,
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    now: REVIEWED.previewCompletedAt + 5_001,
+    secret: SECRET,
+  });
+  assert.equal(verified.version, 2);
+  assert.deepEqual(verified.execution, EXECUTION);
+  const unavailable = createPreviewReceipt({
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository: REVIEWED,
+    execution: {
+      schemaVersion: 1,
+      kind: "local-preview",
+      source: null,
+      unavailableReason: "source_bundle_unavailable",
+    },
+    now: REVIEWED.previewCompletedAt + 5_000,
+    secret: SECRET,
+  });
+  assert.equal(verifyPreviewReceipt({
+    previewReceipt: unavailable.previewReceipt,
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    now: REVIEWED.previewCompletedAt + 5_001,
+    secret: SECRET,
+  }).execution?.source, null);
+  assert.throws(
+    () => createOwnerChallengeReceipt({
+      previewReceipt: receipt.previewReceipt,
+      campaignId: CAMPAIGN_ID,
+      manifestJson: MANIFEST,
+      ownerChallengeDigest: OWNER_CHALLENGE_DIGEST,
+      challengeExpiresAt: REVIEWED.previewCompletedAt + 60_000,
+      now: REVIEWED.previewCompletedAt + 5_001,
+      secret: SECRET,
+    }),
+    /local preview receipt cannot prepare an owner challenge/
+  );
+});
+
+test("v2 receipt binds canonical source identity across GitHub slug case variants", () => {
+  const repository = { ...REVIEWED, slug: "Owner/Repo" };
+  const receipt = createPreviewReceipt({
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository,
+    execution: EXECUTION,
+    now: REVIEWED.previewCompletedAt + 1,
+    secret: SECRET,
+  });
+
+  const verified = verifyPreviewReceipt({
+    previewReceipt: receipt.previewReceipt,
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    now: REVIEWED.previewCompletedAt + 2,
+    secret: SECRET,
+  });
+  assert.equal(verified.version, 2);
+  assert.equal(verified.repository.slug, "Owner/Repo");
+  assert.equal(verified.execution?.source?.repository.slug, "owner/repo");
+
+  assert.throws(
+    () => createPreviewReceipt({
+      campaignId: CAMPAIGN_ID,
+      manifestJson: MANIFEST,
+      repository,
+      execution: {
+        ...EXECUTION,
+        source: {
+          ...EXECUTION.source!,
+          repository: { ...EXECUTION.source!.repository, slug: "owner/other" },
+        },
+      },
+      now: REVIEWED.previewCompletedAt + 1,
+      secret: SECRET,
+    }),
+    /source repository does not match/
+  );
+});
+
+test("a correctly signed owner challenge cannot bridge or consume a v2 local receipt", () => {
+  const local = createPreviewReceipt({
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository: REVIEWED,
+    execution: EXECUTION,
+    now: REVIEWED.previewCompletedAt + 1,
+    secret: SECRET,
+  });
+  const ownerChallengeReceipt = signToken(
+    "owner-challenge-v1",
+    "api-migrator:console-owner-challenge-receipt:v1\0",
+    {
+      version: 1,
+      kind: "owner_challenge_receipt",
+      campaignId: CAMPAIGN_ID,
+      manifestDigest: digestManifest(MANIFEST),
+      repository: REVIEWED,
+      previewReceiptDigest: sha256(local.previewReceipt),
+      ownerChallengeDigest: OWNER_CHALLENGE_DIGEST,
+      expiresAt: REVIEWED.previewCompletedAt + 5 * 60 * 1_000,
+      nonce: "correctly_signed_challenge_nonce",
+    }
+  );
+  const bridge = {
+    ownerChallengeReceipt,
+    previewReceipt: local.previewReceipt,
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    now: REVIEWED.previewCompletedAt + 2,
+    secret: SECRET,
+  };
+
+  assert.throws(
+    () => verifyOwnerChallengeReceipt(bridge),
+    /local preview receipt cannot verify an owner challenge/
+  );
+  assert.throws(
+    () => prepareOperatorApproval({
+      ...bridge,
+      ownerAuthorizationEnvelope: ENVELOPE,
+    }),
+    /local preview receipt cannot verify an owner challenge/
+  );
+  assert.equal(verifyPreviewReceipt({
+    previewReceipt: local.previewReceipt,
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    now: REVIEWED.previewCompletedAt + 3,
+    secret: SECRET,
+  }).version, 2);
+});
+
+test("v2 creation rejects future completion and cross-bound source identity", () => {
+  const base = {
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository: REVIEWED,
+    now: REVIEWED.previewCompletedAt + 1,
+    secret: SECRET,
+  };
+  assert.throws(
+    () => createPreviewReceipt({
+      ...base,
+      now: REVIEWED.previewCompletedAt - 1,
+      execution: EXECUTION,
+    }),
+    /future/
+  );
+  assert.throws(
+    () => createPreviewReceipt({
+      ...base,
+      now: REVIEWED.previewCompletedAt + 10 * 60 * 1_000,
+      execution: EXECUTION,
+    }),
+    /expired/
+  );
+  assert.throws(
+    () => createPreviewReceipt({
+      ...base,
+      execution: {
+        ...EXECUTION,
+        source: { ...EXECUTION.source!, repository: { ...EXECUTION.source!.repository, slug: "owner/other" } },
+      },
+    }),
+    /source repository does not match/
+  );
+  assert.throws(
+    () => createPreviewReceipt({
+      ...base,
+      execution: {
+        ...EXECUTION,
+        source: { ...EXECUTION.source!, manifestDigest: `sha256:${"0".repeat(64)}` },
+      },
+    }),
+    /source manifest does not match/
+  );
+});
+
+test("v2 HMAC and semantic verification bind source, base, IDs, manifest, and output", () => {
+  const receipt = createPreviewReceipt({
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository: REVIEWED,
+    execution: EXECUTION,
+    now: REVIEWED.previewCompletedAt + 1,
+    secret: SECRET,
+  });
+  const original = decodePayload(receipt.previewReceipt);
+  const mutations = [
+    (payload: any) => { payload.execution.source.sourceArchiveDigest = `sha256:${"0".repeat(64)}`; },
+    (payload: any) => { payload.execution.source.repository.slug = "owner/other"; },
+    (payload: any) => { payload.execution.source.base.branch = "other"; },
+    (payload: any) => { payload.execution.source.base.sha = "0".repeat(40); },
+    (payload: any) => { payload.execution.source.base.treeSha = "0".repeat(40); },
+    (payload: any) => { payload.execution.source.repository.id = 999; },
+    (payload: any) => { payload.execution.source.repository.ownerId = 999; },
+    (payload: any) => { payload.execution.source.manifestDigest = `sha256:${"0".repeat(64)}`; },
+    (payload: any) => { payload.repository.artifactDigest = "0".repeat(64); },
+    (payload: any) => { payload.repository.preflightId = `pf_${"0".repeat(64)}`; },
+    (payload: any) => { payload.repository.candidateTreeSha = "0".repeat(40); },
+    (payload: any) => { payload.repository.previewCompletedAt += 1; },
+  ];
+  for (const mutate of mutations) {
+    const payload = structuredClone(original);
+    mutate(payload);
+    const tampered = `preview-v2.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${receipt.previewReceipt.split(".")[2]}`;
+    assert.throws(
+      () => verifyPreviewReceipt({
+        previewReceipt: tampered,
+        campaignId: CAMPAIGN_ID,
+        manifestJson: MANIFEST,
+        now: REVIEWED.previewCompletedAt + 2,
+        secret: SECRET,
+      }),
+      /invalid preview receipt/
+    );
+  }
+
+  assert.throws(
+    () => verifyPreviewReceipt({
+      previewReceipt: receipt.previewReceipt,
+      campaignId: "different-campaign",
+      manifestJson: MANIFEST,
+      now: REVIEWED.previewCompletedAt + 2,
+      secret: SECRET,
+    }),
+    /does not match this campaign/
+  );
+  const deployed = JSON.stringify({ ...JSON.parse(MANIFEST), deployment: { kind: "long-running" } });
+  assert.throws(
+    () => verifyPreviewReceipt({
+      previewReceipt: receipt.previewReceipt,
+      campaignId: CAMPAIGN_ID,
+      manifestJson: deployed,
+      now: REVIEWED.previewCompletedAt + 2,
+      secret: SECRET,
+    }),
+    /does not match this campaign/
+  );
+});
+
+test("signed malformed, promoted, future, and overlong v2 receipts fail closed", () => {
+  const validReceipt = createPreviewReceipt({
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository: REVIEWED,
+    execution: EXECUTION,
+    now: REVIEWED.previewCompletedAt + 1,
+    secret: SECRET,
+  });
+  const valid = decodePayload(validReceipt.previewReceipt) as any;
+  const invalidPayloads = [
+    { ...valid, expiresAt: REVIEWED.previewCompletedAt },
+    { ...valid, expiresAt: REVIEWED.previewCompletedAt + 10 * 60 * 1_000 + 1 },
+    { ...valid, repository: { ...valid.repository, previewCompletedAt: REVIEWED.previewCompletedAt + 60_000 } },
+    { ...valid, execution: { ...valid.execution, extra: true } },
+    { ...valid, execution: { schemaVersion: 1, kind: "verified-runner", source: valid.execution.source } },
+    {
+      ...valid,
+      execution: {
+        ...valid.execution,
+        source: {
+          ...valid.execution.source,
+          repository: { ...valid.execution.source.repository, slug: "owner/other" },
+        },
+      },
+    },
+    {
+      ...valid,
+      execution: {
+        ...valid.execution,
+        source: { ...valid.execution.source, manifestDigest: `sha256:${"0".repeat(64)}` },
+      },
+    },
+  ];
+  for (const payload of invalidPayloads) {
+    const token = signToken(
+      "preview-v2",
+      "api-migrator:console-preview-receipt:v2\0",
+      payload
+    );
+    assert.throws(
+      () => verifyPreviewReceipt({
+        previewReceipt: token,
+        campaignId: CAMPAIGN_ID,
+        manifestJson: MANIFEST,
+        now: REVIEWED.previewCompletedAt + 1,
+        secret: SECRET,
+      }),
+      /invalid|future|lifetime|local preview|does not match/i
+    );
+  }
+
+  const injectedV1 = signToken(
+    "preview-v1",
+    "api-migrator:console-preview-receipt:v1\0",
+    { ...valid, version: 1 }
+  );
+  assert.throws(
+    () => verifyPreviewReceipt({
+      previewReceipt: injectedV1,
+      campaignId: CAMPAIGN_ID,
+      manifestJson: MANIFEST,
+      now: REVIEWED.previewCompletedAt + 1,
+      secret: SECRET,
+    }),
+    /invalid signed token payload/
+  );
+
+  const reservedV3 = signToken(
+    "preview-v3",
+    "api-migrator:console-preview-receipt:v3\0",
+    { ...valid, version: 3, execution: { schemaVersion: 1, kind: "verified-runner" } }
+  );
+  assert.throws(
+    () => verifyPreviewReceipt({
+      previewReceipt: reservedV3,
+      campaignId: CAMPAIGN_ID,
+      manifestJson: MANIFEST,
+      now: REVIEWED.previewCompletedAt + 1,
+      secret: SECRET,
+    }),
+    /invalid preview receipt/
   );
 });
 

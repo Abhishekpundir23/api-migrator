@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../prepare-runtime-root.mjs");
+const WORKSPACE = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 test("runtime closure keeps the dependency version resolved from the requiring package", () => {
   const root = mkdtempSync(join(tmpdir(), "api-migrator-runtime-root-test-"));
@@ -23,7 +24,8 @@ test("runtime closure keeps the dependency version resolved from the requiring p
     }
     for (const name of [
       "artifact", "canonical-json", "publication-runner", "publication",
-      "report", "repository", "runner-internal", "security",
+      "preview-evidence", "report", "repository", "repository-validation",
+      "runner-git-tree", "runner-internal", "runner-source-bundle", "security",
     ]) {
       writeFile(join(workspace, "packages", "app", "dist", `${name}.js`), "export {};\n");
     }
@@ -77,6 +79,48 @@ test("runtime closure keeps the dependency version resolved from the requiring p
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("real built runtime root loads the runner entrypoint and canonical app exports without privileged modules", async () => {
+  const testRoot = mkdtempSync(join(tmpdir(), "api-migrator-real-runtime-root-test-"));
+  const output = join(testRoot, "output");
+  try {
+    execFileSync(process.execPath, [SCRIPT, WORKSPACE, output], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const runtimeRoot = join(output, "opt", "api-migrator");
+    const runnerCli = join(runtimeRoot, "packages", "runner", "dist", "cli.js");
+    const executed = spawnSync(process.execPath, [runnerCli], {
+      cwd: runtimeRoot,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "" },
+    });
+    assert.equal(executed.status, 1);
+    assert.match(executed.stderr, /^runner_failed=Runner phase must be prepare, install, migrate, or verify\n$/);
+    assert.doesNotMatch(executed.stderr, /ERR_MODULE_NOT_FOUND/);
+
+    const runner = await import(pathToFileURL(join(runtimeRoot, "packages/runner/dist/index.js")).href);
+    const canonical = await import(pathToFileURL(join(runtimeRoot, "packages/app/dist/runner-internal.js")).href);
+    const bytes = Buffer.from("runtime-root", "utf8");
+    const expectedBundleDigest = "sha256:14d09151a3f3305a6f2f5ed58383df841b0060dfe4bfbc12acdc0215e4207c95";
+    assert.equal(runner.sourceBundleDigest(bytes), expectedBundleDigest);
+    assert.equal(canonical.sourceBundleDigest(bytes), expectedBundleDigest);
+    assert.equal(runner.gitBlobOid(bytes, "sha1"), "0e128b9d52b2e2943eee0815d961d94d3aad83d4");
+    assert.equal(canonical.gitBlobOid(bytes, "sha1"), "0e128b9d52b2e2943eee0815d961d94d3aad83d4");
+
+    for (const privilegedPath of [
+      "packages/app/dist/auth.js",
+      "packages/app/dist/github.js",
+      "packages/app/dist/owner-authorization.js",
+      "packages/app/dist/campaign",
+      "node_modules/@api-migrator/db",
+      "node_modules/@octokit",
+    ]) {
+      assert.equal(existsSync(join(runtimeRoot, privilegedPath)), false, privilegedPath);
+    }
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
   }
 });
 
