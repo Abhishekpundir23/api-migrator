@@ -814,7 +814,7 @@ function validateInputs(value: unknown): PublicationRunnerPlan["inputs"] {
   };
 }
 
-function validateRunnerOutput(value: unknown): PublicationRunnerOutput {
+export function validateRunnerOutput(value: unknown): PublicationRunnerOutput {
   const root = record(value, "runner reviewed output");
   exactKeys(root, ["preflightId", "artifactDigest", "candidateTreeSha"], "runner reviewed output");
   const preflightId = boundedString(root.preflightId, "runner preflight id", 67);
@@ -919,7 +919,7 @@ function validateDestination(
   };
 }
 
-function canonicalIpLiteral(value: string): string {
+export function canonicalIpLiteral(value: string): string {
   if (isIP(value) === 4) return value.split(".").map((part) => String(Number(part))).join(".");
   if (isIP(value) !== 6) return "";
   try {
@@ -932,7 +932,7 @@ function canonicalIpLiteral(value: string): string {
   }
 }
 
-function isGlobalUnicastLiteral(value: string): boolean {
+export function isGlobalUnicastLiteral(value: string): boolean {
   if (isIP(value) === 4) {
     const [first, second, third] = value.split(".").map(Number) as [number, number, number];
     return !(
@@ -1034,7 +1034,7 @@ function validatePlanRecord(value: PublicationRunnerPlanRecord): PublicationRunn
   return validated;
 }
 
-function validateAttestationTrust(value: RunnerAttestationTrust): RunnerAttestationTrust & {
+export function validateAttestationTrust(value: RunnerAttestationTrust): RunnerAttestationTrust & {
   publicKey: KeyObject;
 } {
   const root = record(value, "runner attestation trust");
