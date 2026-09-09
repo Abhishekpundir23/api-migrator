@@ -101,6 +101,10 @@ export function createRunnerEvidenceTransport(request: typeof https.request) {
           response = res;
           void readEnvelope(res, deadline).then(resolve, reject);
         });
+        // Native socket/parser attachment is deferred until the next tick.
+        // Preserve every raw header for policy checks; maxHeaderSize still
+        // bounds their bytes even when there are many tiny header fields.
+        req.maxHeadersCount = 0;
         req.on("error", reject);
         req.on("information", () => reject(new RunnerEvidenceError("evidence_invalid")));
         for (const event of ["upgrade", "connect"] as const) {

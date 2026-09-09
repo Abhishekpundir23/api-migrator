@@ -145,6 +145,30 @@ for (const [name, bytes, code] of framingCases) test(`raw TLS rejects ${name}`, 
   await exchange(await rawTlsEvidenceFixture((socket) => socket.end(bytes)), code);
 });
 
+for (const delivery of ["single write", "fragmented writes"] as const) {
+  for (const [name, hiddenHeader] of [
+    ["forbidden encoding", "Content-Encoding: gzip"],
+    ["conflicting content type", "Content-Type: text/plain"],
+  ] as const) {
+    test(`raw TLS rejects ${name} beyond the default header-count limit (${delivery})`, async () => {
+      const prefix = Buffer.from("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n" + "X:\r\n".repeat(1_100));
+      const suffix = Buffer.from(`${hiddenHeader}\r\nConnection: close\r\n\r\n{}`);
+      assert.ok(prefix.length + suffix.length < 16 * 1024, "regression must fit within the production byte cap");
+      const fixture = await rawTlsEvidenceFixture((socket) => {
+        if (delivery === "single write") socket.end(Buffer.concat([prefix, suffix]));
+        else {
+          socket.write(prefix.subarray(0, 2_048));
+          setImmediate(() => {
+            socket.write(prefix.subarray(2_048));
+            setImmediate(() => socket.end(suffix));
+          });
+        }
+      });
+      await exchange(fixture, "evidence_invalid");
+    });
+  }
+}
+
 for (const type of ["application/json", "Application/JSON ; Charset=UTF-8", "application/json;\tcharset=utf-8"]) {
   test(`accepted content type: ${type}`, async () => {
     await exchange(await rawTlsEvidenceFixture((socket) => socket.end(wire(`Content-Type: ${type}\r\nContent-Length: 2`))));
