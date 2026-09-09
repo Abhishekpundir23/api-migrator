@@ -33,8 +33,12 @@ type LocalPreviewExecution = {
 );
 ```
 
-Slugs and branch names use the existing repository contracts; IDs are positive
-safe integers; Git OIDs are lowercase 40/64 hex and both OIDs use the same
+Slugs and branch names use the existing repository contracts. GitHub source
+identity canonicalizes valid repository slugs to lowercase, and source/receipt/
+display bindings compare that canonical identity; branch names remain
+case-sensitive and are preserved exactly. The general input validator and
+legacy v1 receipt format do not change. IDs are positive safe integers;
+Git OIDs are lowercase 40/64 hex and both OIDs use the same
 format; digests are `sha256:` plus 64 lowercase hex. Reject unknown fields,
 wrong versions/kinds and malformed discriminants. Validation returns a detached
 copy. Missing legacy metadata remains missing, not an inferred local or

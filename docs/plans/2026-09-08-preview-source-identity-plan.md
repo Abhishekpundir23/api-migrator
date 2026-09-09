@@ -68,7 +68,7 @@ be weakened to make the image pass.
 
 ## Controller acceptance and handoff
 
-- [ ] Review each task (spec and quality), then whole-branch review with concrete findings resolved.
+- [x] Review each task (spec and quality), then whole-branch review with concrete findings resolved.
 - [x] Run fresh `npm run ci` and actual runner image build, verify and phase integration.
 - [x] Use a disposable local console DB and browser to inspect captured, unavailable and legacy history/provenance and verify unavailable API behavior. Do not run campaigns against professional repositories.
 - [x] Update documentation with completed first slice vs remaining protected service/deployment gates and verification evidence. No completion percentage or billing claim.
@@ -76,15 +76,20 @@ be weakened to make the image pass.
 
 ## Verification record — 2026-09-09
 
-Implementation source head: `1261caf`. All three task reviews and their scoped
-fix reviews passed. Whole-branch review and GitHub handoff are subsequent gates.
+Implementation source head: `f579655`. All three task reviews and their scoped
+fix reviews passed. The whole-branch review found two P2 issues; the final fix
+canonicalizes GitHub repository identity and makes the route test's replay
+controls valid at handler time. The single final scoped re-review confirmed
+both findings addressed with no new Critical/Important breakage. GitHub handoff
+is the subsequent gate; its live head and checks are recorded on the PR, not
+claimed by this pre-push source snapshot.
 
 `API_MIGRATOR_DOCKER_TEST=1 npm run ci` passed on macOS with host Node 26.5.0:
 
 | Suite | Passed | Failed / skipped |
 | --- | ---: | ---: |
-| App | 112 | 0 / 0 |
-| Console | 41 | 0 / 0 |
+| App | 113 | 0 / 0 |
+| Console | 42 | 0 / 0 |
 | Database | 26 | 0 / 0 |
 | Engine, including real Docker verification | 137 | 0 / 0 |
 | Runner | 21 | 0 / 0 |
@@ -92,7 +97,7 @@ fix reviews passed. Whole-branch review and GitHub handoff are subsequent gates.
 | Gateway | 16 | 0 / 0 |
 | Deployment contracts | 149 | 0 / 0 |
 | Runtime image assembly | 2 | 0 / 0 |
-| Total | 530 | 0 / 0 |
+| Total | 532 | 0 / 0 |
 
 Package builds, all workspace typechecks, shell checks, pilot example validation
 and production console build also passed. The pre-existing Next/Turbopack NFT
@@ -100,11 +105,11 @@ trace warning remains; build output is not warning-free.
 
 `runner:image:build`, `runner:image:verify` and `runner:image:integration` passed
 for the actual pinned Node 22 image (Node 22.23.2). Verified image identity:
-`sha256:d2bfa872655bbfc037dbb9d7c974fd8ca935920f5d6b0bfcbb55591dac8e6895`.
+`sha256:c472426067ec288e8caa6d569dbc402b63453d009420b1c5fedc40ffb2d3df90`.
 All four phases ran successfully with the full Inngest transform fixture:
 
-- Plan: `sha256:30c61e6c0c272b25c2437a2b575a9645442bd7c0e2335bc174d27c4fb538f3ca`
-- Evidence: `sha256:100c11d98fa3ebf9d0fd53a9d681196bdb855a04a9988bbf96bce88ad4c93d3a`
+- Plan: `sha256:5eede36899700b9872ad5a1ff2920b858a841190e2547fb0e191211ac76d77ec`
+- Evidence: `sha256:c026df949c21928eda27f8d3afec1de997ca33f709be429fe23323970e5da807`
 - Artifact: `sha256:b68fd1359e25c24bdee267e0a55460fe884dde5a6b93484cda96beca50dca08b`
 
 Docker Desktop's credential helper stalled public image lookup. A temporary
@@ -114,20 +119,26 @@ functional integration test, with `securityDrill: false`, not an independent
 execution attestation or authorization to activate a host.
 
 Rendered Chromium QA used a disposable SQLite database and localhost production
-server at 1440x1050 and 390x844. Captured, unavailable, legacy and invalid history
-states rendered correctly; the fresh-preview renderer fixture displayed source
+server at 1440x1050 and 390x844, using the mixed-case repository label
+`Abhishekpundir23/API-Migrator` with canonical lowercase source identity.
+Captured, unavailable, legacy and invalid history states rendered correctly;
+the fresh-preview renderer fixture displayed source
 identity, and editing the repository cleared prior preview state. There was no
 document-level mobile overflow or browser console/page error. Twelve real HTTP
 post-preview requests returned 503 with no new runs. The separate automated
 route test executes 18 real POST-handler cases and checks receipt/approval and
-lock non-consumption. The fresh browser response is a renderer fixture, not a
+lock non-consumption with current-time controls and a consumed-token replay
+negative control. The fresh browser response is a renderer fixture, not a
 real migration or attestation.
 
 An intermittent Next server `aborted`/`ECONNRESET` diagnostic was observed during
 QA navigation/refresh. Browser request events identify canceled local `_rsc`
 page-data fetches, not failed migration API calls; the server remained alive and
-all assertions passed. Its baseline origin is not established, so it is retained
-as a final-review observation rather than described as resolved.
+all assertions passed. Its baseline origin is not established. The final
+whole-branch reviewer triaged this observation and the NFT warning as
+non-blocking; neither is described as resolved. A bounded baseline comparison
+of the navigation diagnostic remains follow-up work, not a framework refactor
+in this slice.
 
 No cloud resources, signing provider, professional repository access or
 publication capability were enabled. The protected service, independent trust
