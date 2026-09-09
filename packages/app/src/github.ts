@@ -8,7 +8,6 @@ import {
   Manifest,
   runMigration,
   reportToMarkdown,
-  type MigrationReport,
   type RunMigrationOptions,
 } from "@api-migrator/engine";
 import {
@@ -50,6 +49,8 @@ import {
   type GitHubRepository,
 } from "./repository.js";
 import { sanitizeMigrationReport } from "./report.js";
+import type { AppMigrationReport } from "./report.js";
+import { captureLocalPreviewExecution } from "./preview-source.js";
 import {
   buildExpectedOwnerAuthorizationBindings,
   readOwnerPublicationPolicy,
@@ -96,7 +97,7 @@ export interface MigrateRepoInput {
 }
 
 export interface MigrateRepoResult {
-  report: MigrationReport;
+  report: AppMigrationReport;
   prUrl: string | null;
   changed: boolean;
   preflightId: string;
@@ -218,6 +219,19 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
 
     const baseSha = gitExec(["rev-parse", "HEAD"], repoPath, cleanEnv).trim();
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseSha)) throw new Error("Git returned an invalid base commit id");
+    const baseTreeSha = gitExec(["rev-parse", "HEAD^{tree}"], repoPath, cleanEnv).trim();
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseTreeSha)) {
+      throw new Error("Git returned an invalid base tree id");
+    }
+    const previewExecution = await captureLocalPreviewExecution({
+      checkoutPath: repoPath,
+      repositorySlug: repository.slug,
+      baseBranch,
+      baseSha,
+      treeSha: baseTreeSha,
+      manifestJson,
+      auth,
+    });
 
     // Repository-controlled compilers/tests/lint never see the live clone or
     // its .git directory. The resulting tree is inspected before transfer.
@@ -249,7 +263,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     const changed = artifact.files.length > 0;
     // Everything leaving the engine uses the safe boundary copy. Artifact
     // inspection intentionally retains the engine's exact existing semantics.
-    const report = sanitizeMigrationReport(engineReport);
+    const report = sanitizeMigrationReport({ ...engineReport, previewExecution });
     const blockers = publicationBlockers(report);
 
     // Compute the exact candidate tree during preview as well as publication.

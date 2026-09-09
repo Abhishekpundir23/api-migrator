@@ -7,6 +7,10 @@ import type {
   TypeError,
   VerificationChecks,
 } from "@api-migrator/engine";
+import {
+  validateLocalPreviewExecution,
+  type LocalPreviewExecution,
+} from "./preview-evidence.js";
 import { redactText } from "./security.js";
 
 const MAX_PATH = 4_096;
@@ -18,12 +22,18 @@ const MAX_SCANNED_FILES = 10_000;
 const MAX_ENTRIES = 10_000;
 const MAX_ERRORS = 2_000;
 
+export interface AppMigrationReport extends MigrationReport {
+  previewExecution?: LocalPreviewExecution;
+}
+
 /**
  * Remove raw subprocess output and raw compiler lines before a report can be
  * returned, persisted, rendered into a PR, or passed to an API response.
  * Structured status and diagnostic fields remain available to operators.
  */
-export function sanitizeMigrationReport(report: MigrationReport): MigrationReport {
+export function sanitizeMigrationReport(
+  report: MigrationReport & { previewExecution?: unknown }
+): AppMigrationReport {
   return {
     manifest: {
       name: bounded(report.manifest.name, MAX_LABEL),
@@ -53,6 +63,9 @@ export function sanitizeMigrationReport(report: MigrationReport): MigrationRepor
       checks: sanitizeChecks(report.verification.checks),
     },
     summary: { ...report.summary },
+    ...(report.previewExecution === undefined
+      ? {}
+      : { previewExecution: validateLocalPreviewExecution(report.previewExecution) }),
   };
 }
 

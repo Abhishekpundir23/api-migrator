@@ -171,6 +171,7 @@ test("preflight ids bind repository, base commit, manifest, and report", () => {
   };
   const first = createPreflightId(input);
   assert.match(first, /^pf_[a-f0-9]{64}$/);
+  assert.equal(first, "pf_4f9a911be01acde6ab155c5aa0baabd5512d586e0566c2bbfc5fc3419a6b1fc1");
   assert.equal(first, createPreflightId(input));
   const declaredIds = ["long-running", "serverless"].map((kind) => createPreflightId({
     ...input, manifest: { ...manifest, deployment: { kind } } as Manifest,
@@ -192,6 +193,47 @@ test("preflight ids bind repository, base commit, manifest, and report", () => {
     reason: "Node 18",
   };
   assert.notEqual(first, createPreflightId({ ...input, report: changedRuntime }));
+});
+
+test("preflight ids bind valid local preview source identity and explicit unavailability", () => {
+  const baseInput = {
+    slug: "owner/repo",
+    baseBranch: "main",
+    baseSha: "a".repeat(40),
+    targetBranch: "codex/api-migrator/inngest-preview-source",
+    candidateTreeSha: "b".repeat(40),
+    artifactDigest: "c".repeat(64),
+    manifest,
+  };
+  const captured = {
+    schemaVersion: 1,
+    kind: "local-preview",
+    source: {
+      repository: { slug: "owner/repo", id: 123, ownerId: 456 },
+      base: { branch: "main", sha: "a".repeat(40), treeSha: "b".repeat(40) },
+      manifestDigest: `sha256:${"d".repeat(64)}`,
+      sourceArchiveDigest: `sha256:${"e".repeat(64)}`,
+    },
+  } as const;
+  const id = (previewExecution: unknown) => createPreflightId({
+    ...baseInput,
+    report: { ...report(), previewExecution } as never,
+  });
+  const first = id(captured);
+  const mutations = [
+    { ...captured, source: { ...captured.source, repository: { ...captured.source.repository, slug: "owner/other" } } },
+    { ...captured, source: { ...captured.source, repository: { ...captured.source.repository, id: 124 } } },
+    { ...captured, source: { ...captured.source, repository: { ...captured.source.repository, ownerId: 457 } } },
+    { ...captured, source: { ...captured.source, base: { ...captured.source.base, branch: "release/v4" } } },
+    { ...captured, source: { ...captured.source, base: { ...captured.source.base, sha: "f".repeat(40) } } },
+    { ...captured, source: { ...captured.source, base: { ...captured.source.base, treeSha: "0".repeat(40) } } },
+    { ...captured, source: { ...captured.source, manifestDigest: `sha256:${"1".repeat(64)}` } },
+    { ...captured, source: { ...captured.source, sourceArchiveDigest: `sha256:${"2".repeat(64)}` } },
+    { schemaVersion: 1, kind: "local-preview", source: null, unavailableReason: "repository_identity_unavailable" },
+    { schemaVersion: 1, kind: "local-preview", source: null, unavailableReason: "source_bundle_unavailable" },
+  ];
+  assert.equal(new Set([first, ...mutations.map(id)]).size, mutations.length + 1);
+  assert.throws(() => id({ ...captured, kind: "verified-runner" }), /local preview/i);
 });
 
 test("publish approval must match the exact preview and no blocker is overrideable", () => {

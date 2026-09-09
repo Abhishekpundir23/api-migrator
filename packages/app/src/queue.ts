@@ -7,6 +7,7 @@
  */
 
 import { migrateRepo, type MigrateRepoInput, type MigrateRepoResult } from "./github.js";
+import type { AppMigrationReport } from "./report.js";
 import { safeErrorMessage } from "./security.js";
 
 export interface MigrationJob extends Omit<
@@ -22,7 +23,7 @@ export type MigrationJobResult =
   | (MigrateRepoResult & { id: string })
   | {
       id: string;
-      report: import("@api-migrator/engine").MigrationReport;
+      report: AppMigrationReport;
       prUrl: null;
       changed: false;
       error: string;
@@ -84,7 +85,7 @@ export async function runCampaignJobs(
   return results;
 }
 
-function emptyReport(manifest: MigrationJob["manifest"]): import("@api-migrator/engine").MigrationReport {
+function emptyReport(manifest: MigrationJob["manifest"]): AppMigrationReport {
   const skippedCheck = {
     status: "skipped" as const,
     command: null,
