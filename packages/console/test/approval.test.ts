@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
 import type { LocalPreviewExecution } from "@api-migrator/app/preview-evidence";
 import {
@@ -56,6 +56,10 @@ function signToken(prefix: string, domain: string, payload: unknown): string {
 
 function decodePayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString("utf8"));
+}
+
+function sha256(value: string): string {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
 
 function preview(now = REVIEWED.previewCompletedAt) {
@@ -213,6 +217,59 @@ test("local preview evidence emits a strict v2 receipt bounded to completion tim
     }),
     /local preview receipt cannot prepare an owner challenge/
   );
+});
+
+test("a correctly signed owner challenge cannot bridge or consume a v2 local receipt", () => {
+  const local = createPreviewReceipt({
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository: REVIEWED,
+    execution: EXECUTION,
+    now: REVIEWED.previewCompletedAt + 1,
+    secret: SECRET,
+  });
+  const ownerChallengeReceipt = signToken(
+    "owner-challenge-v1",
+    "api-migrator:console-owner-challenge-receipt:v1\0",
+    {
+      version: 1,
+      kind: "owner_challenge_receipt",
+      campaignId: CAMPAIGN_ID,
+      manifestDigest: digestManifest(MANIFEST),
+      repository: REVIEWED,
+      previewReceiptDigest: sha256(local.previewReceipt),
+      ownerChallengeDigest: OWNER_CHALLENGE_DIGEST,
+      expiresAt: REVIEWED.previewCompletedAt + 5 * 60 * 1_000,
+      nonce: "correctly_signed_challenge_nonce",
+    }
+  );
+  const bridge = {
+    ownerChallengeReceipt,
+    previewReceipt: local.previewReceipt,
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    now: REVIEWED.previewCompletedAt + 2,
+    secret: SECRET,
+  };
+
+  assert.throws(
+    () => verifyOwnerChallengeReceipt(bridge),
+    /local preview receipt cannot verify an owner challenge/
+  );
+  assert.throws(
+    () => prepareOperatorApproval({
+      ...bridge,
+      ownerAuthorizationEnvelope: ENVELOPE,
+    }),
+    /local preview receipt cannot verify an owner challenge/
+  );
+  assert.equal(verifyPreviewReceipt({
+    previewReceipt: local.previewReceipt,
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    now: REVIEWED.previewCompletedAt + 3,
+    secret: SECRET,
+  }).version, 2);
 });
 
 test("v2 creation rejects future completion and cross-bound source identity", () => {

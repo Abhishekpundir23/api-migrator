@@ -315,6 +315,9 @@ export function verifyOwnerChallengeReceipt(input: {
     now,
     secret: input.secret,
   });
+  if (preview.version !== 1) {
+    throw new HttpInputError("local preview receipt cannot verify an owner challenge", 409);
+  }
   if (
     payload.previewReceiptDigest !== sha256(input.previewReceipt as string) ||
     canonicalJson(payload.repository) !== canonicalJson(preview.repository) ||

@@ -22,9 +22,13 @@ const runnerAppModules = [
   "canonical-json.js",
   "publication-runner.js",
   "publication.js",
+  "preview-evidence.js",
   "report.js",
   "repository.js",
+  "repository-validation.js",
+  "runner-git-tree.js",
   "runner-internal.js",
+  "runner-source-bundle.js",
   "security.js",
 ];
 mkdirSync(runtimePackages, { recursive: true, mode: 0o755 });
