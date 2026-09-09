@@ -7,6 +7,7 @@ export interface RunnerEvidenceClock {
 
 export interface RunnerEvidenceDeadline {
   readonly signal: AbortSignal;
+  /** Validate the shared budget and return its current wall-clock timestamp. */
   check(): number;
   cap(expiresAt: number): void;
   run<T>(
@@ -80,7 +81,7 @@ export function createRunnerEvidenceDeadline(
     if (closed || controller.signal.aborted) throw expire();
     const remaining = remainingAt(clock.wallNow(), clock.monotonicNow());
     arm(remaining);
-    return remaining;
+    return lastWall;
   };
 
   arm(remainingAt(startWall, startMonotonic));

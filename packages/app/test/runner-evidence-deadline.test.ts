@@ -42,7 +42,7 @@ test("the monotonic ten-second ceiling expires even when wall time does not adva
     wall + 60_000,
   );
   try {
-    assert.equal(budget.check(), 10_000);
+    assert.equal(budget.check(), 1_000);
     monotonic += 10_000;
     assert.throws(() => budget.check(), assertExpired);
     assert.equal(budget.signal.aborted, true);
@@ -59,7 +59,7 @@ test("a one-millisecond wall-clock rollback expires the shared deadline", () => 
     wall + 5_000,
   );
   try {
-    assert.equal(budget.check(), 5_000);
+    assert.equal(budget.check(), 1_000);
     wall -= 1;
     monotonic += 1;
     assert.throws(() => budget.check(), assertExpired);
@@ -115,7 +115,7 @@ test("preview, plan, key, and retained caps only shorten and prevent final succe
     budget.cap(keyExpiry);
     budget.cap(retainedExpiry);
     budget.cap(wall + 9_000);
-    assert.equal(budget.check(), 6_000);
+    assert.equal(budget.check(), 1_000);
 
     for (const stage of ["registry-open", "registry-read", "https-open"]) {
       assert.equal(await budget.run(async () => {
@@ -237,4 +237,16 @@ test("cap replacement and close leave no deadline timer active", () => {
   budget.close();
   budget.close();
   assert.equal(activeTimeouts(), before);
+});
+
+test("check returns the validated wall timestamp for finish-time trust selection", () => {
+  let wall = 2_000_000_000_000;
+  let monotonic = 0;
+  const budget = createRunnerEvidenceDeadline({ wallNow: () => wall, monotonicNow: () => monotonic }, wall + 10_000);
+  try {
+    assert.equal(budget.check(), 2_000_000_000_000);
+    wall += 7;
+    monotonic += 7;
+    assert.equal(budget.check(), 2_000_000_000_007);
+  } finally { budget.close(); }
 });
