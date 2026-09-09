@@ -1,8 +1,7 @@
 # Protected runner evidence: software-only acquisition design
 
-Status: software-only scope approved in chat; this written specification awaits
-user review before implementation planning. No runtime changes are implemented
-by this document.
+Status: written specification approved in chat on 2026-09-09. Implementation
+planning is authorized; no runtime changes are implemented by this document.
 
 Baseline: merged PR #16, `c1a6a6ea78de177ae6ceda07bcda1551f5c18948`.
 Working branch: `codex/protected-runner-evidence`.
@@ -145,6 +144,12 @@ Construction requires an explicit, strictly validated server-only configuration:
 - `registryDirectory`: absolute canonical path to a protected directory outside
   the application checkout and all migration workspaces.
 
+Implementation clarification: the internal factory also requires a server-owned
+workspace-exclusion policy to enforce the final rule. Always include the
+application checkout independently of that policy. The caller must supply all
+migration workspace roots; do not infer them from evidence, browser fields, or
+an environment-variable override. This policy is not a new console setting.
+
 Construction does not perform I/O and is not automatically invoked by module
 import. Missing or invalid configuration fails closed. No new `.env` activation
 flag or route-level configuration fields are added. No live values are selected
@@ -236,9 +241,9 @@ user or administrator. No rollback-proof registry history is claimed here.
 Read/select once before transport, then read/select again after receiving the
 envelope. Key identity, scope, and validity fields must remain identical; a
 revocation or concurrent change to the selected entry fails this acquisition.
-Use that fresh
-selection with the existing verifier and the finish-time clock. Never reuse a
-cached registry, public-key decision, or verified capability on the next call.
+Use that fresh selection with the existing verifier and the finish-time clock.
+Never reuse a cached registry, public-key decision, or verified capability on
+the next call.
 
 Atomic registry replacement between acquisitions is supported when the parent
 remains protected. Removing a key, revoking it, changing its fingerprint/scope,
@@ -295,8 +300,8 @@ installation checks.
 3. Mutate every context/identity dimension independently: campaign/run, plan/job,
    repository slug/IDs, branch/commit/tree, manifest/source digest, all output
    fields, completion/expiry, payload/envelope digest, key ID/fingerprint/trust
-   digest. Reject
-   mismatches; retain canonical GitHub casing and case-sensitive branch behavior.
+   digest. Reject mismatches; retain canonical GitHub casing and case-sensitive
+   branch behavior.
 4. A valid replacement signature/job cannot silently replace retained evidence.
    Local/legacy/future-shaped receipts and container self-reports are rejected.
 5. Revocation, removal, expiry, changed scope/fingerprint/validity, malformed
