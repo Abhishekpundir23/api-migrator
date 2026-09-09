@@ -108,6 +108,27 @@ export interface MigrateRepoResult {
   error?: string;
 }
 
+/**
+ * Server-internal seam for exercising the complete anonymous preview
+ * orchestration without network cloning or repository-controlled processes.
+ * It is rejected before callbacks on every privileged path.
+ */
+export interface PreviewMigrateRepoDependencies {
+  cloneRepository(input: {
+    destinationPath: string;
+    environment: NodeJS.ProcessEnv;
+  }): void;
+  captureExecution: typeof captureLocalPreviewExecution;
+  copyRepository: typeof copyGitFreeTree;
+  runMigration: typeof runMigration;
+}
+
+export function createPreviewMigrateRepoDependencies(
+  dependencies: PreviewMigrateRepoDependencies
+): Readonly<PreviewMigrateRepoDependencies> {
+  return Object.freeze({ ...dependencies });
+}
+
 class CreatedPullRequestMismatchError extends Error {
   override readonly name = "CreatedPullRequestMismatchError";
 
@@ -128,7 +149,10 @@ export function publicationRequiresAuthentication(request: PublicationRequest): 
  * Generate an isolated preview or, after exact operator approval, reconcile a
  * migration branch and pull request. Nothing is ever automatically merged.
  */
-export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoResult> {
+export async function migrateRepo(
+  input: MigrateRepoInput,
+  previewDependencies?: Readonly<PreviewMigrateRepoDependencies>
+): Promise<MigrateRepoResult> {
   const repository = parseRepositorySlug(input.slug);
   const manifestJson = exactManifestJson(input.manifest, input.manifestJson);
   const publication = validatePublicationRequest(input.publication);
@@ -137,6 +161,12 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     : validateOwnerChallengePreparationRequest(input.ownerChallenge);
   if (ownerChallenge !== null && publication.mode !== "preview") {
     throw new Error("Owner challenge preparation is mutually exclusive with publication");
+  }
+  if (
+    previewDependencies !== undefined &&
+    (publication.mode !== "preview" || ownerChallenge !== null || input.runnerAttestation !== undefined)
+  ) {
+    throw new Error("Preview-only migration dependencies are unavailable on privileged execution paths");
   }
   // Challenge preparation is an App-bound owner ceremony. Reject gh-cli
   // before resolving any credential, querying GitHub, or cloning a repository;
@@ -182,6 +212,13 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       const askPassPath = createAskPassScript(workdir);
       gitEnv = gitAuthenticationEnv(auth.token, askPassPath, cleanEnv);
       gitExec(githubCloneArgs(repository, baseBranch), workdir, gitEnv, [auth.token]);
+    } else if (previewDependencies !== undefined) {
+      previewDependencies.cloneRepository({
+        destinationPath: repoPath,
+        environment: cleanEnv,
+      });
+      baseBranch = requestedBase ?? gitExec(["symbolic-ref", "--quiet", "--short", "HEAD"], repoPath, cleanEnv).trim();
+      validateBranchName(baseBranch);
     } else {
       let anonymousCloneError: unknown;
       try {
@@ -223,7 +260,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseTreeSha)) {
       throw new Error("Git returned an invalid base tree id");
     }
-    const previewExecution = await captureLocalPreviewExecution({
+    const previewExecution = await (previewDependencies?.captureExecution ?? captureLocalPreviewExecution)({
       checkoutPath: repoPath,
       repositorySlug: repository.slug,
       baseBranch,
@@ -236,7 +273,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
     // Repository-controlled compilers/tests/lint never see the live clone or
     // its .git directory. The resulting tree is inspected before transfer.
     const proposedPath = join(workdir, "verified-tree");
-    copyGitFreeTree(repoPath, proposedPath);
+    (previewDependencies?.copyRepository ?? copyGitFreeTree)(repoPath, proposedPath);
 
     const verify = {
       install: true,
@@ -246,7 +283,7 @@ export async function migrateRepo(input: MigrateRepoInput): Promise<MigrateRepoR
       runner: "docker",
       env: repositoryEnv,
     } satisfies NonNullable<RunMigrationOptions["verify"]>;
-    const { report: engineReport } = await runMigration(input.manifest, proposedPath, {
+    const { report: engineReport } = await (previewDependencies?.runMigration ?? runMigration)(input.manifest, proposedPath, {
       writeChanges: true,
       skipVerify: false,
       verify,
