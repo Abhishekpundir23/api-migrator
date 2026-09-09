@@ -280,6 +280,7 @@ export function validateRunnerEvidenceConfiguration(
 }
 
 export function runnerEvidenceDigest(value: unknown): string {
+  assertDataDescriptors(value, new Set<object>());
   return `sha256:${createHash("sha256").update(canonicalJson(value), "utf8").digest("hex")}`;
 }
 
@@ -383,9 +384,11 @@ function canonicalServiceOrigin(value: unknown): string {
   const match = /^https:\/\/([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)\/?$/.exec(origin);
   if (!match) throw new Error("Runner evidence service origin is invalid");
   const host = match[1]!;
+  const parsedHost = new URL(origin).hostname;
   if (
     Buffer.byteLength(host, "ascii") > 253 ||
-    isIP(host) !== 0 ||
+    parsedHost !== host ||
+    isIP(parsedHost) !== 0 ||
     host.split(".").some((label) =>
       label.length === 0 ||
       label.length > 63 ||

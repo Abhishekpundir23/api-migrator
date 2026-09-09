@@ -236,7 +236,8 @@ test("configuration rejects URL tricks, noncanonical or reserved addresses, and 
     "http://runner.example.com", "https://Runner.example.com", "https://runnér.example.com",
     "https://%72unner.example.com", "https://runner.example.com:443", "https://runner.example.com/path",
     "https://runner.example.com?x", "https://runner.example.com#x", "https://user@runner.example.com",
-    "https://127.0.0.1", "https://*.example.com", "https://runner.example.com.",
+    "https://127.0.0.1", "https://127.1", "https://2130706433", "https://0x7f000001",
+    "https://*.example.com", "https://runner.example.com.",
   ]) {
     assert.throws(
       () => validateRunnerEvidenceConfiguration({ ...base, serviceOrigin: origin }, policy),
@@ -308,4 +309,19 @@ test("digest and failure results are canonical and frozen", () => {
   const failure = runnerEvidenceFailure("identity_changed");
   assert.deepEqual(failure, { ok: false, code: "identity_changed" });
   assert(Object.isFrozen(failure));
+});
+
+test("digest rejects top-level and nested array getters without invoking them", () => {
+  for (const nested of [false, true]) {
+    let reads = 0;
+    const values = [1];
+    Object.defineProperty(values, "0", {
+      enumerable: true,
+      configurable: true,
+      get() { reads += 1; return 1; },
+    });
+    const input = nested ? { values } : values;
+    assert.throws(() => runnerEvidenceDigest(input));
+    assert.equal(reads, 0, nested ? "nested getter" : "top-level getter");
+  }
 });
