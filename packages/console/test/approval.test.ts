@@ -219,6 +219,47 @@ test("local preview evidence emits a strict v2 receipt bounded to completion tim
   );
 });
 
+test("v2 receipt binds canonical source identity across GitHub slug case variants", () => {
+  const repository = { ...REVIEWED, slug: "Owner/Repo" };
+  const receipt = createPreviewReceipt({
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    repository,
+    execution: EXECUTION,
+    now: REVIEWED.previewCompletedAt + 1,
+    secret: SECRET,
+  });
+
+  const verified = verifyPreviewReceipt({
+    previewReceipt: receipt.previewReceipt,
+    campaignId: CAMPAIGN_ID,
+    manifestJson: MANIFEST,
+    now: REVIEWED.previewCompletedAt + 2,
+    secret: SECRET,
+  });
+  assert.equal(verified.version, 2);
+  assert.equal(verified.repository.slug, "Owner/Repo");
+  assert.equal(verified.execution?.source?.repository.slug, "owner/repo");
+
+  assert.throws(
+    () => createPreviewReceipt({
+      campaignId: CAMPAIGN_ID,
+      manifestJson: MANIFEST,
+      repository,
+      execution: {
+        ...EXECUTION,
+        source: {
+          ...EXECUTION.source!,
+          repository: { ...EXECUTION.source!.repository, slug: "owner/other" },
+        },
+      },
+      now: REVIEWED.previewCompletedAt + 1,
+      secret: SECRET,
+    }),
+    /source repository does not match/
+  );
+});
+
 test("a correctly signed owner challenge cannot bridge or consume a v2 local receipt", () => {
   const local = createPreviewReceipt({
     campaignId: CAMPAIGN_ID,

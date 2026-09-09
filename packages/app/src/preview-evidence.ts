@@ -1,7 +1,9 @@
 import {
+  canonicalGitHubRepositorySlug,
   validateRepositoryBranch,
-  validateRepositorySlug,
 } from "./repository-validation.js";
+
+export { canonicalGitHubRepositorySlug } from "./repository-validation.js";
 
 export interface PreviewSourceIdentity {
   repository: { slug: string; id: number; ownerId: number };
@@ -56,7 +58,7 @@ export function validateLocalPreviewExecution(value: unknown): LocalPreviewExecu
 
   const repository = record(source.repository, "local preview repository");
   exactKeys(repository, ["id", "ownerId", "slug"], "local preview repository");
-  const slug = validateRepositorySlug(repository.slug).slug;
+  const slug = canonicalGitHubRepositorySlug(repository.slug);
   const id = positiveSafeInteger(repository.id, "repository id");
   const ownerId = positiveSafeInteger(repository.ownerId, "repository owner id");
 

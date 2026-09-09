@@ -19,6 +19,7 @@ import {
   createPreviewReceipt,
   digestManifest,
   prepareOperatorApproval,
+  verifyOperatorApprovalToken,
   verifyPreviewReceipt,
 } from "../lib/approval";
 import { DEFAULT_INNGEST_MANIFEST_JSON } from "../lib/default-manifest";
@@ -27,13 +28,14 @@ import { withOperatorApprovalRunLock, withRunLock } from "../lib/run-lock";
 
 const SECRET = "route-test-secret-0123456789abcdef0123456789abcdef";
 const ENVELOPE = '{"version":1,"signed":"owner"}';
-const NOW = 1_700_000_000_000;
+const realDateNow = Date.now;
+const NOW = Date.now();
 const REVIEWED = {
   slug: "owner/repo",
   preflightId: `pf_${"a".repeat(64)}`,
   artifactDigest: "b".repeat(64),
   candidateTreeSha: "c".repeat(40),
-  previewCompletedAt: NOW,
+  previewCompletedAt: NOW - 60_000,
 };
 const EXECUTION: LocalPreviewExecution = {
   schemaVersion: 1,
@@ -50,6 +52,7 @@ let directory = "";
 let campaignId = "";
 
 before(() => {
+  Date.now = () => NOW;
   directory = mkdtempSync(join(tmpdir(), "api-migrator-console-route-"));
   process.env.API_MIGRATOR_DB_PATH = join(directory, "console.db");
   process.env.OPERATOR_APPROVAL_SECRET = SECRET;
@@ -65,6 +68,7 @@ before(() => {
 });
 
 after(() => {
+  Date.now = realDateNow;
   closeDb();
   if (directory.includes("api-migrator-console-route-")) {
     rmSync(directory, { recursive: true, force: true });
@@ -92,8 +96,11 @@ function legacyPreview(offset: number) {
   return createPreviewReceipt({
     campaignId,
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    repository: { ...REVIEWED, previewCompletedAt: NOW + offset },
-    now: NOW + offset,
+    repository: {
+      ...REVIEWED,
+      previewCompletedAt: REVIEWED.previewCompletedAt + offset,
+    },
+    now: NOW,
     secret: SECRET,
   });
 }
@@ -106,8 +113,8 @@ test("actual POST keeps every post-preview action closed for legacy, local, forg
     campaignId,
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
     ownerChallengeDigest: `sha256:${"1".repeat(64)}`,
-    challengeExpiresAt: NOW + 10_000 + 5 * 60 * 1_000,
-    now: NOW + 10_001,
+    challengeExpiresAt: NOW + 5 * 60 * 1_000,
+    now: NOW,
     secret: SECRET,
   });
   const publishPreview = legacyPreview(20_000);
@@ -116,8 +123,8 @@ test("actual POST keeps every post-preview action closed for legacy, local, forg
     campaignId,
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
     ownerChallengeDigest: `sha256:${"2".repeat(64)}`,
-    challengeExpiresAt: NOW + 20_000 + 5 * 60 * 1_000,
-    now: NOW + 20_001,
+    challengeExpiresAt: NOW + 5 * 60 * 1_000,
+    now: NOW,
     secret: SECRET,
   });
   const publishApproval = prepareOperatorApproval({
@@ -126,15 +133,18 @@ test("actual POST keeps every post-preview action closed for legacy, local, forg
     ownerAuthorizationEnvelope: ENVELOPE,
     campaignId,
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: NOW + 20_002,
+    now: NOW,
     secret: SECRET,
   });
   const localPreview = createPreviewReceipt({
     campaignId,
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    repository: { ...REVIEWED, previewCompletedAt: NOW + 30_000 },
+    repository: {
+      ...REVIEWED,
+      previewCompletedAt: REVIEWED.previewCompletedAt + 30_000,
+    },
     execution: EXECUTION,
-    now: NOW + 30_001,
+    now: NOW,
     secret: SECRET,
   });
   assert.match(localPreview.previewReceipt, /^preview-v2\./);
@@ -185,14 +195,14 @@ test("actual POST keeps every post-preview action closed for legacy, local, forg
     previewReceipt: ownerPreview.previewReceipt,
     campaignId,
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: NOW + 1,
+    now: Date.now(),
     secret: SECRET,
   });
   verifyPreviewReceipt({
     previewReceipt: localPreview.previewReceipt,
     campaignId,
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: NOW + 30_002,
+    now: Date.now(),
     secret: SECRET,
   });
   const preparedAfterRejection = prepareOperatorApproval({
@@ -201,10 +211,19 @@ test("actual POST keeps every post-preview action closed for legacy, local, forg
     ownerAuthorizationEnvelope: ENVELOPE,
     campaignId,
     manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
-    now: NOW + 10_002,
+    now: Date.now(),
     secret: SECRET,
   });
   assert.match(preparedAfterRejection.operatorApprovalToken, /^operator-v2\./);
+  verifyOperatorApprovalToken({
+    operatorApprovalToken: publishApproval.operatorApprovalToken,
+    ownerAuthorizationEnvelope: ENVELOPE,
+    confirmation: publishApproval.confirmationPhrase,
+    campaignId,
+    manifestJson: DEFAULT_INNGEST_MANIFEST_JSON,
+    now: Date.now(),
+    secret: SECRET,
+  });
   assert.equal(
     await withOperatorApprovalRunLock(
       publishApproval.operatorApprovalToken,
@@ -212,5 +231,13 @@ test("actual POST keeps every post-preview action closed for legacy, local, forg
       async () => "approval available"
     ),
     "approval available"
+  );
+  await assert.rejects(
+    () => withOperatorApprovalRunLock(
+      publishApproval.operatorApprovalToken,
+      publishApproval.expiresAt,
+      async () => "replayed approval"
+    ),
+    /operator approval was already used/
   );
 });

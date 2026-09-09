@@ -1,4 +1,7 @@
-import { validateLocalPreviewExecution } from "@api-migrator/app/preview-evidence";
+import {
+  canonicalGitHubRepositorySlug,
+  validateLocalPreviewExecution,
+} from "@api-migrator/app/preview-evidence";
 
 export interface PreviewSourceEvidenceView {
   status: "captured" | "unavailable" | "legacy" | "invalid";
@@ -48,7 +51,8 @@ export function buildPreviewSourceEvidence(
     }
     if (
       expectedRepositorySlug !== undefined &&
-      execution.source.repository.slug !== expectedRepositorySlug
+      canonicalGitHubRepositorySlug(execution.source.repository.slug) !==
+        canonicalGitHubRepositorySlug(expectedRepositorySlug)
     ) {
       throw new Error("source repository does not match the displayed run");
     }

@@ -266,6 +266,11 @@ test("fresh preview source evidence distinguishes captured, unavailable, legacy,
     status: "preview_ready",
     report: { previewExecution: CAPTURED_EXECUTION },
   }).source.status, "invalid");
+  assert.equal(buildPreviewEvidence({
+    slug: "Owner/Repo",
+    status: "preview_ready",
+    report: { previewExecution: CAPTURED_EXECUTION },
+  }).source.status, "captured");
 });
 
 test("historical run evidence preserves exact identity and structured blockers safely", () => {
@@ -330,6 +335,10 @@ test("historical source evidence parses bounded report JSON into four safe state
     repoSlug: "owner/other",
     report: JSON.stringify({ previewExecution: CAPTURED_EXECUTION }),
   }).source.status, "invalid");
+  assert.equal(buildHistoricalRunEvidence({
+    repoSlug: "Owner/Repo",
+    report: JSON.stringify({ previewExecution: CAPTURED_EXECUTION }),
+  }).source.status, "captured");
   assert.equal(
     buildHistoricalRunEvidence({ report: `{"padding":"${"x".repeat(1_048_577)}"}` }).source.status,
     "invalid"

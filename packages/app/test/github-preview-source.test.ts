@@ -116,7 +116,7 @@ function cloneFixture(source: string, destinationPath: string, environment: Node
   );
 }
 
-test("migrateRepo captures the clean source before copy and migration and returns sanitized evidence", async () => {
+test("migrateRepo captures the same canonical source identity for GitHub slug case variants", async () => {
   const source = repositoryFixture();
   const events: string[] = [];
   try {
@@ -151,18 +151,27 @@ test("migrateRepo captures the clean source before copy and migration and return
       },
     });
 
-    const result = await migrateRepo({
-      slug: "owner/repo",
-      manifest,
-      manifestJson,
-      baseBranch: "main",
-      publication: { mode: "preview" },
-    }, dependencies);
+    const results = [];
+    for (const slug of ["owner/repo", "Owner/Repo"]) {
+      results.push(await migrateRepo({
+        slug,
+        manifest,
+        manifestJson,
+        baseBranch: "main",
+        publication: { mode: "preview" },
+      }, dependencies));
+    }
 
-    assert.deepEqual(events, ["clone", "capture", "copy", "migration"]);
-    assert.equal(result.changed, false);
-    assert.equal(result.publication.status, "no_changes");
-    assert.deepEqual(result.report.previewExecution, {
+    assert.deepEqual(events, [
+      "clone", "capture", "copy", "migration",
+      "clone", "capture", "copy", "migration",
+    ]);
+    for (const result of results) {
+      assert.equal(result.changed, false);
+      assert.equal(result.publication.status, "no_changes");
+    }
+    assert.deepEqual(results[0]!.report.previewExecution, results[1]!.report.previewExecution);
+    assert.deepEqual(results[1]!.report.previewExecution, {
       schemaVersion: 1,
       kind: "local-preview",
       source: {
@@ -172,7 +181,7 @@ test("migrateRepo captures the clean source before copy and migration and return
         sourceArchiveDigest: EXPECTED_SOURCE_DIGEST,
       },
     });
-    assert.equal(result.report.verification.checks.install.output, "");
+    assert.equal(results[1]!.report.verification.checks.install.output, "");
   } finally {
     rmSync(source, { recursive: true, force: true });
   }

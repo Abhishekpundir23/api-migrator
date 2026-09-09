@@ -25,6 +25,11 @@ export function validateRepositorySlug(value: unknown): ValidatedRepositorySlug 
   return { owner, repo, slug: `${owner}/${repo}` };
 }
 
+/** Canonical identity for GitHub repositories, whose owner/name are case-insensitive. */
+export function canonicalGitHubRepositorySlug(value: unknown): string {
+  return validateRepositorySlug(value).slug.toLowerCase();
+}
+
 export function validateRepositoryBranch(value: unknown): string {
   if (
     typeof value !== "string" ||

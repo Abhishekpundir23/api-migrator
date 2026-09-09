@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { parseStoredManifest } from "@api-migrator/app";
 import {
+  canonicalGitHubRepositorySlug,
   validateLocalPreviewExecution,
   type LocalPreviewExecution,
 } from "@api-migrator/app/preview-evidence";
@@ -546,7 +547,10 @@ function validateLocalReceiptBindings(payload: PreviewReceiptV2, now: number): v
     throw new HttpInputError("invalid local preview receipt lifetime");
   }
   if (payload.execution.source) {
-    if (payload.execution.source.repository.slug !== payload.repository.slug) {
+    if (
+      canonicalGitHubRepositorySlug(payload.execution.source.repository.slug) !==
+      canonicalGitHubRepositorySlug(payload.repository.slug)
+    ) {
       throw new HttpInputError("preview source repository does not match receipt");
     }
     if (payload.execution.source.manifestDigest !== payload.manifestDigest) {

@@ -4,7 +4,10 @@ import {
   type LocalPreviewExecution,
   validateLocalPreviewExecution,
 } from "./preview-evidence.js";
-import { validateRepositorySlug } from "./repository-validation.js";
+import {
+  canonicalGitHubRepositorySlug,
+  validateRepositorySlug,
+} from "./repository-validation.js";
 import { createSourceBundle } from "./runner-source-bundle.js";
 
 interface RepositoryMetadataClient {
@@ -57,6 +60,7 @@ export async function captureLocalPreviewExecution(
   dependencies?: CaptureDependencies
 ): Promise<LocalPreviewExecution> {
   const repository = validateRepositorySlug(input.repositorySlug);
+  const canonicalRepositorySlug = canonicalGitHubRepositorySlug(repository.slug);
   const repositoryClient = dependencies?.repositoryClient ?? input.auth?.octokit ?? new Octokit();
 
   let repositoryIdentity: { slug: string; id: number; ownerId: number };
@@ -71,14 +75,14 @@ export async function captureLocalPreviewExecution(
     const ownerId = response.data.owner?.id;
     if (
       typeof fullName !== "string" ||
-      fullName.toLowerCase() !== repository.slug.toLowerCase() ||
+      canonicalGitHubRepositorySlug(fullName) !== canonicalRepositorySlug ||
       !isPositiveSafeInteger(id) ||
       !isPositiveSafeInteger(ownerId) ||
-      !matchesPinnedAppIdentity(input.auth, repository.slug, id, ownerId)
+      !matchesPinnedAppIdentity(input.auth, canonicalRepositorySlug, id, ownerId)
     ) {
       return detached(REPOSITORY_IDENTITY_UNAVAILABLE);
     }
-    repositoryIdentity = { slug: repository.slug, id, ownerId };
+    repositoryIdentity = { slug: canonicalRepositorySlug, id, ownerId };
   } catch {
     return detached(REPOSITORY_IDENTITY_UNAVAILABLE);
   }

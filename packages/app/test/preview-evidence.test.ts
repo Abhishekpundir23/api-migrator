@@ -48,6 +48,17 @@ test("validates captured and explicitly unavailable local preview evidence as de
   }
 });
 
+test("canonicalizes GitHub repository case without changing case-sensitive branch identity", () => {
+  const mixedCase = structuredClone(captured);
+  (mixedCase.source.repository as { slug: string }).slug = "Owner/Repo";
+  (mixedCase.source.base as { branch: string }).branch = "Release/V4";
+
+  const result = validateLocalPreviewExecution(mixedCase);
+
+  assert.equal(result.source?.repository.slug, "owner/repo");
+  assert.equal(result.source?.base.branch, "Release/V4");
+});
+
 test("rejects malformed versions, kinds, discriminants, identities, and unknown fields", () => {
   const mutations: unknown[] = [
     null,
