@@ -162,6 +162,37 @@ the preflight-generated signing request must not be signed or populated into a
 runner attestation, and the candidate production units remain blocked; that
 request exists only to make the future schema boundary testable.
 
+### DNS preflight diagnostics
+
+Every DNS acquisition writes one `*-dns-resolution-diagnostics.txt` JSON file
+under the scenario's `evidence/` directory, including on preflight failure. The
+existing bounded diagnostic upload retains it even when no scenario report was
+produced. It is non-authorizing diagnostic data, not a passed scenario or runner
+attestation. A failed preflight and the aggregate still fail.
+
+The record is capped at 100 attempt entries and 64 KiB. It records monotonic
+start/completion offsets and query durations, answer and unique-address counts,
+minimum/maximum TTL, distinct-TTL count, a SHA-256 digest of the sorted unique
+address set, and fixed outcome codes. Malformed/unavailable answers have null
+TTL and identity fields. Runtime metadata contains Node/c-ares versions and the
+native resolver-server count (null when unavailable or using a test resolver); raw DNS server
+addresses, answer addresses, environment values, and exception text are omitted.
+These digests are for comparing answer sets, not secrecy or authorization.
+
+An attempt can be `ttl_below_minimum` while the final outcome is
+`ttl_floor_exhausted`; the final retry sleep is not an additional query. Offsets
+and total elapsed time describe DNS acquisition, excluding diagnostic file I/O.
+The synchronous write does not refresh the answer's observation timestamp; plan
+construction afterward still checks its remaining lifetime. A failed required
+write blocks successful acquisition, and a write failure during acquisition
+failure preserves the original sanitized DNS error.
+
+The 65-second DNS floor, 60-second minimum plan lifetime, 90-second query/retry
+budget, five-second retry interval, default resolver selection, and expiry caps
+are unchanged. Diagnostic capture does not fix intermittent upstream DNS
+freshness failures. Inspect an instrumented hosted run before choosing a
+functional retry or resolver change.
+
 ## Static checks
 
 These commands do not provision or activate a host:

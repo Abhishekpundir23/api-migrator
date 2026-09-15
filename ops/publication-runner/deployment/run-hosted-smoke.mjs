@@ -52,6 +52,9 @@ const PLAN_MIN_MS = 60_000;
 const DNS_PLAN_CREATION_BUDGET_MS = 5_000;
 const DNS_MIN_TTL_SECONDS = (PLAN_MIN_MS + DNS_PLAN_CREATION_BUDGET_MS) / 1000;
 const DNS_REFRESH_WAIT_MAX_MS = 90_000;
+const DNS_RETRY_INTERVAL_MS = 5_000;
+const DNS_MAX_ATTEMPTS = 100;
+const DNS_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
 const DNS_RESOLUTION_TIMEOUT = Symbol("hosted smoke DNS resolution timeout");
 const HOSTED_SMOKE_RUNNER_ACCOUNT = "api-migrator-smoke-runner";
 const HOSTED_SMOKE_GATEWAY_ACCOUNT = "api-migrator-smoke-gateway";
@@ -149,28 +152,61 @@ export async function resolveHostedNpmOrigin(options = {}) {
   const sleep = options.sleep ?? ((milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
   const setTimer = options.setTimer ?? setTimeout;
   const clearTimer = options.clearTimer ?? clearTimeout;
+  // A trusted, synchronous sink. No raw response data or exception text enters it.
+  const writeDiagnostics = options.writeDiagnostics;
+  const entries = [];
+  let startedAt = null;
+  let lastElapsed = null;
+  let activeAttempt = null;
+  let currentAnswerCount = null;
+  let outcome = "internal_error";
+  let acquisitionFailed = false;
+  let attempts = 0;
+  let lowestObservedTtlSeconds = null;
+  let highestObservedTtlSeconds = null;
+  let lastAnswerCount = 0;
   const readElapsedNow = () => {
     const value = elapsedNow();
     if (typeof value !== "number" || !Number.isFinite(value)) {
       throw new Error("hosted smoke npm DNS elapsed clock is invalid");
     }
+    lastElapsed = value;
     return value;
   };
-  const startedAt = readElapsedNow();
-  const deadline = startedAt + DNS_REFRESH_WAIT_MAX_MS;
-  let attempts = 0;
-  let lowestObservedTtlSeconds = null;
-  let highestObservedTtlSeconds = null;
-  let lastAnswerCount = 0;
+  const milliseconds = (end, start) => end === null || start === null
+    ? null : Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(end - start)));
+  const completeAttempt = (attemptOutcome, details = {}) => {
+    if (activeAttempt === null) return;
+    if (entries.length >= DNS_MAX_ATTEMPTS) throw new Error("hosted smoke DNS diagnostic entry limit exceeded");
+    entries.push({
+      attempt: attempts,
+      startedAfterMs: milliseconds(activeAttempt, startedAt),
+      completedAfterMs: milliseconds(lastElapsed, startedAt),
+      queryDurationMs: milliseconds(lastElapsed, activeAttempt),
+      outcome: attemptOutcome,
+      answerCount: currentAnswerCount,
+      uniqueAddressCount: null,
+      minimumTtlSeconds: null,
+      maximumTtlSeconds: null,
+      distinctTtlCount: null,
+      addressSetDigest: null,
+      ...details,
+    });
+    activeAttempt = null;
+  };
 
-  const diagnosticError = (reason, completedAt) => new Error(
-    "hosted smoke npm DNS resolution failed (" +
-    `reason=${reason}, attempts=${attempts}, elapsedMs=${Math.max(0, Math.ceil(completedAt - startedAt))}, ` +
-    `requiredMinimumTtlSeconds=${DNS_MIN_TTL_SECONDS}, ` +
-    `lowestObservedTtlSeconds=${lowestObservedTtlSeconds ?? "none"}, ` +
-    `highestObservedTtlSeconds=${highestObservedTtlSeconds ?? "none"}, ` +
-    `lastAnswerCount=${lastAnswerCount})`
-  );
+  const diagnosticError = (reason, completedAt) => {
+    outcome = reason;
+    completeAttempt(reason);
+    return new Error(
+      "hosted smoke npm DNS resolution failed (" +
+      `reason=${reason}, attempts=${attempts}, elapsedMs=${Math.max(0, Math.ceil(completedAt - startedAt))}, ` +
+      `requiredMinimumTtlSeconds=${DNS_MIN_TTL_SECONDS}, ` +
+      `lowestObservedTtlSeconds=${lowestObservedTtlSeconds ?? "none"}, ` +
+      `highestObservedTtlSeconds=${highestObservedTtlSeconds ?? "none"}, ` +
+      `lastAnswerCount=${lastAnswerCount})`
+    );
+  };
 
   const resolveWithin = async (remainingMs) => {
     let timer;
@@ -194,84 +230,143 @@ export async function resolveHostedNpmOrigin(options = {}) {
     }
   };
 
-  while (true) {
-    const attemptStartedAt = readElapsedNow();
-    if (attempts > 0 && attemptStartedAt >= deadline) {
-      throw diagnosticError("ttl_floor_exhausted", attemptStartedAt);
-    }
-    attempts += 1;
-    let answer;
-    try {
-      answer = await resolveWithin(deadline - attemptStartedAt);
-    } catch (error) {
+  try {
+    startedAt = readElapsedNow();
+    const deadline = startedAt + DNS_REFRESH_WAIT_MAX_MS;
+    while (true) {
+      const attemptStartedAt = readElapsedNow();
+      if (attempts > 0 && attemptStartedAt >= deadline) {
+        throw diagnosticError("ttl_floor_exhausted", attemptStartedAt);
+      }
+      attempts += 1;
+      activeAttempt = attemptStartedAt;
+      currentAnswerCount = null;
+      let answer;
+      try {
+        answer = await resolveWithin(deadline - attemptStartedAt);
+      } catch (error) {
+        const completedAt = readElapsedNow();
+        if (error === DNS_RESOLUTION_TIMEOUT || completedAt >= deadline) {
+          throw diagnosticError("resolver_timeout", completedAt);
+        }
+        throw diagnosticError("resolver_error", completedAt);
+      }
       const completedAt = readElapsedNow();
-      if (error === DNS_RESOLUTION_TIMEOUT || completedAt >= deadline) {
+      const observedAt = now();
+      try {
+        lastAnswerCount = Array.isArray(answer) ? answer.length : 0;
+      } catch {
+        lastAnswerCount = 0;
+      }
+      currentAnswerCount = Number.isSafeInteger(lastAnswerCount) && lastAnswerCount >= 0 ? lastAnswerCount : null;
+      if (completedAt >= deadline) {
         throw diagnosticError("resolver_timeout", completedAt);
       }
-      throw diagnosticError("resolver_error", completedAt);
-    }
-    const completedAt = readElapsedNow();
-    const observedAt = now();
-    try {
-      lastAnswerCount = Array.isArray(answer) ? answer.length : 0;
-    } catch {
-      lastAnswerCount = 0;
-    }
-    if (completedAt >= deadline) {
-      throw diagnosticError("resolver_timeout", completedAt);
-    }
-    let validArrayShape = false;
-    try {
-      validArrayShape = Array.isArray(answer) && answer.length >= 1 && answer.length <= 32;
-    } catch {
-      validArrayShape = false;
-    }
-    if (!validArrayShape) {
-      throw diagnosticError("missing_or_excessive_answer", completedAt);
-    }
-    const records = [];
-    let invalidRecord = false;
-    try {
-      for (let index = 0; index < lastAnswerCount; index += 1) {
-        const item = Object.getOwnPropertyDescriptor(answer, String(index));
-        const record = item && "value" in item ? item.value : null;
-        if (record === null || typeof record !== "object" || Array.isArray(record)) {
-          invalidRecord = true;
-          break;
-        }
-        const addressProperty = Object.getOwnPropertyDescriptor(record, "address");
-        const ttlProperty = Object.getOwnPropertyDescriptor(record, "ttl");
-        const address = addressProperty && "value" in addressProperty ? addressProperty.value : null;
-        const ttl = ttlProperty && "value" in ttlProperty ? ttlProperty.value : null;
-        if (typeof address !== "string" || isIP(address) !== 4 ||
-            typeof ttl !== "number" || !Number.isSafeInteger(ttl) || ttl < 0) {
-          invalidRecord = true;
-          break;
-        }
-        records.push({ address, ttl });
+      let validArrayShape = false;
+      try {
+        validArrayShape = Array.isArray(answer) && answer.length >= 1 && answer.length <= 32;
+      } catch {
+        validArrayShape = false;
       }
-    } catch {
-      invalidRecord = true;
+      if (!validArrayShape) {
+        throw diagnosticError("missing_or_excessive_answer", completedAt);
+      }
+      const records = [];
+      let invalidRecord = false;
+      try {
+        for (let index = 0; index < lastAnswerCount; index += 1) {
+          const item = Object.getOwnPropertyDescriptor(answer, String(index));
+          const record = item && "value" in item ? item.value : null;
+          if (record === null || typeof record !== "object" || Array.isArray(record)) {
+            invalidRecord = true;
+            break;
+          }
+          const addressProperty = Object.getOwnPropertyDescriptor(record, "address");
+          const ttlProperty = Object.getOwnPropertyDescriptor(record, "ttl");
+          const address = addressProperty && "value" in addressProperty ? addressProperty.value : null;
+          const ttl = ttlProperty && "value" in ttlProperty ? ttlProperty.value : null;
+          if (typeof address !== "string" || isIP(address) !== 4 ||
+              typeof ttl !== "number" || !Number.isSafeInteger(ttl) || ttl < 0) {
+            invalidRecord = true;
+            break;
+          }
+          records.push({ address, ttl });
+        }
+      } catch {
+        invalidRecord = true;
+      }
+      if (invalidRecord || records.length !== lastAnswerCount) {
+        throw diagnosticError("invalid_answer", completedAt);
+      }
+      const addresses = [...new Set(records.map(({ address }) => address))].sort();
+      const minimumTtlSeconds = Math.min(...records.map(({ ttl }) => ttl));
+      lowestObservedTtlSeconds = lowestObservedTtlSeconds === null
+        ? minimumTtlSeconds
+        : Math.min(lowestObservedTtlSeconds, minimumTtlSeconds);
+      highestObservedTtlSeconds = highestObservedTtlSeconds === null
+        ? minimumTtlSeconds
+        : Math.max(highestObservedTtlSeconds, minimumTtlSeconds);
+      const accepted = addresses.length >= 1 && addresses.length <= 32 && minimumTtlSeconds >= DNS_MIN_TTL_SECONDS;
+      completeAttempt(accepted ? "accepted" : "ttl_below_minimum", {
+        uniqueAddressCount: addresses.length,
+        minimumTtlSeconds,
+        maximumTtlSeconds: Math.max(...records.map(({ ttl }) => ttl)),
+        distinctTtlCount: new Set(records.map(({ ttl }) => ttl)).size,
+        addressSetDigest: sha256Bytes(Buffer.from(canonicalJson(addresses), "utf8")),
+      });
+      if (accepted) {
+        outcome = "accepted";
+        return Object.freeze({ addresses, minimumTtlSeconds, observedAt, attempts });
+      }
+      const remainingMs = deadline - completedAt;
+      if (remainingMs <= 0 || attempts >= DNS_MAX_ATTEMPTS) {
+        throw diagnosticError("ttl_floor_exhausted", completedAt);
+      }
+      await sleep(Math.min(DNS_RETRY_INTERVAL_MS, remainingMs));
     }
-    if (invalidRecord || records.length !== lastAnswerCount) {
-      throw diagnosticError("invalid_answer", completedAt);
+  } catch (error) {
+    acquisitionFailed = true;
+    throw error;
+  } finally {
+    if (writeDiagnostics !== undefined) {
+      try {
+        completeAttempt(outcome);
+        let resolverServerCount = null;
+        try {
+          const count = nativeResolver?.getServers().length;
+          if (Number.isSafeInteger(count) && count >= 0 && count <= 32) resolverServerCount = count;
+        } catch {
+          // Optional provenance must not suppress the acquisition diagnostic.
+        }
+        const bytes = canonicalJson({
+          schemaVersion: 1,
+          kind: "api_migrator_hosted_dns_diagnostics",
+          runtime: {
+            node: process.versions.node,
+            cares: process.versions.ares ?? null,
+            resolverServerCount,
+          },
+          requiredMinimumTtlSeconds: DNS_MIN_TTL_SECONDS,
+          budgetMs: DNS_REFRESH_WAIT_MAX_MS,
+          retryIntervalMs: DNS_RETRY_INTERVAL_MS,
+          attempts,
+          elapsedMs: milliseconds(lastElapsed, startedAt),
+          outcome,
+          entries,
+          releaseEvidenceEligible: false,
+          activationBlocked: true,
+          externalSigningEligible: false,
+          authorizationStatus: "non_authorizing_github_hosted_smoke_only",
+        });
+        if (Buffer.byteLength(bytes, "utf8") > DNS_DIAGNOSTIC_MAX_BYTES) {
+          throw new Error("hosted smoke DNS diagnostic byte limit exceeded");
+        }
+        writeDiagnostics(bytes);
+      } catch {
+        // Preserve the original sanitized acquisition failure, never its sink's error text.
+        if (!acquisitionFailed) throw new Error("hosted smoke DNS diagnostic persistence failed");
+      }
     }
-    const addresses = [...new Set(records.map(({ address }) => address))].sort();
-    const minimumTtlSeconds = Math.min(...records.map(({ ttl }) => ttl));
-    lowestObservedTtlSeconds = lowestObservedTtlSeconds === null
-      ? minimumTtlSeconds
-      : Math.min(lowestObservedTtlSeconds, minimumTtlSeconds);
-    highestObservedTtlSeconds = highestObservedTtlSeconds === null
-      ? minimumTtlSeconds
-      : Math.max(highestObservedTtlSeconds, minimumTtlSeconds);
-    if (addresses.length >= 1 && addresses.length <= 32 && minimumTtlSeconds >= DNS_MIN_TTL_SECONDS) {
-      return Object.freeze({ addresses, minimumTtlSeconds, observedAt, attempts });
-    }
-    const remainingMs = deadline - completedAt;
-    if (remainingMs <= 0 || attempts >= 100) {
-      throw diagnosticError("ttl_floor_exhausted", completedAt);
-    }
-    await sleep(Math.min(5_000, remainingMs));
   }
 }
 
@@ -575,7 +670,9 @@ function createRootRuntime(resources) {
 }
 
 async function renderHostedGateway(resources, toolBindings, evidence) {
-  const resolution = await resolveHostedNpmOrigin();
+  const resolution = await resolveHostedNpmOrigin({
+    writeDiagnostics: (bytes) => { evidence.write("dns-resolution-diagnostics", bytes); },
+  });
   const { addresses, minimumTtlSeconds, observedAt: resolutionObservedAt } = resolution;
   const createdAt = Date.now();
   const { resolutionExpiresAt, expiresAt } = hostedNpmPlanWindow({
