@@ -1,6 +1,6 @@
 # Runner job record verification — 2026-09-19
 
-Status: whole-branch review identified the successful-review CAS race and missing intent assertions described in the final-review addendum below. The combined fix is implemented; its scoped re-review remains pending. This is not deployed protected custody, a security drill, or pilot completion. Original Task 5 evidence is preserved below as historical evidence, not represented as testing the later fix.
+Status: local implementation and independent review are complete. The whole-branch review's successful-review CAS race and missing intent assertions were fixed and accepted in the scoped re-review; no new Critical/Important breakage was found. The non-blocking NFT diagnostic remains explicitly deferred. This is not deployed protected custody, a security drill, or pilot completion. Original Task 5 evidence is preserved below as historical evidence, not represented as testing the later fix.
 
 ## Original Task 5 tested state
 
@@ -132,7 +132,7 @@ The complete text is in `/tmp/runner-job-task5-ci.1Zuh1F`. These source paths ar
 
 ## Remaining gates and limits
 
-- The original Task 5 handoff preceded independent review. The race and intent-coverage findings are addressed by the combined fix below; the NFT diagnostic remains explicitly deferred. Scoped re-review of the fix remains required and is not claimed complete.
+- The original Task 5 handoff preceded independent review. Task reviews, whole-branch review and the scoped fix re-review are now complete. The race and intent-coverage findings are addressed by the combined fix below; the NFT diagnostic remains explicitly deferred. Integration and deployment remain separate decisions.
 - Store recovery was exercised locally on macOS. SIGKILL recovery with SQLite FULL/fullfsync and file/directory synchronization is not a physical power-loss durability proof or a portability certification.
 - Hashes detect inconsistent records, not a malicious same-UID coherent rewrite. A coherent full snapshot restore remains outside the local trust boundary; it is not represented as a passing anti-rollback test. Trusted time during downtime and protected live custody remain unsolved deployment gates.
 - Failures after a committed write retain immutable historical metadata; no deletion, backup restore, resubmission, expiry extension, renewal, or automatic repair was added.
@@ -142,7 +142,7 @@ The complete text is in `/tmp/runner-job-task5-ci.1Zuh1F`. These source paths ar
 
 ## Final-review combined fix and current evidence
 
-Fix code and tests: **`ff86166d422cbbf034246bb0de49edf8bff3e7fe` — `Accept retained descendants after successful review CAS`**, based on `7abbe204fdcf197f1a3af0e7cff27ad555bd4c3b`. The later evidence commit changes only this document. No implementation, test, image input, lockfile, or dependency changed after the tested code commit. Scoped re-review of the fix remains pending.
+Fix code and tests: **`ff86166d422cbbf034246bb0de49edf8bff3e7fe` — `Accept retained descendants after successful review CAS`**, based on `7abbe204fdcf197f1a3af0e7cff27ad555bd4c3b`. The later evidence commit changes only this document. No implementation, test, image input, lockfile, or dependency changed after the tested code commit. Scoped re-review subsequently accepted both code/test fixes; see the final handoff below.
 
 ### Finding and bounded correction
 
@@ -187,3 +187,11 @@ Current captured logs (ephemeral local evidence):
 - `/tmp/runner-job-final-fix-image-integration.log`
 
 The code commit's author and committer were verified before and after commit as **`Abhishekpundir23 <74260202+Abhishekpundir23@users.noreply.github.com>`**. The same exact pre/post identity guards apply to disposable fixture commits. No amend, push, merge, external issue/task, progress-ledger edit, new dependency, build configuration change, or live service/store/account/cloud mutation occurred. All remaining gates and trust limits above continue to apply.
+
+## Final independent review and local handoff
+
+The whole-branch review covered the original complete change against `36bab9c85cd6c95bd0ac27ded0da0d3e44faa293`. The scoped re-review then covered `7abbe204fdcf197f1a3af0e7cff27ad555bd4c3b..e6ee133c7af4264d68c953257ca6bca04dc165bb`: the concurrent retained-descendant fix and independent intent assertions were both **ADDRESSED**, with no new breakage. The NFT warning was **not technically repaired** and remains the explicitly deferred, non-blocking diagnostic above. No unresolved Critical/Important finding remains from these reviews.
+
+The controller independently reran `API_MIGRATOR_DOCKER_TEST=1 npm run ci` under pinned Node v22.23.2 on `e6ee133c7af4264d68c953257ca6bca04dc165bb`: exit **0**, **953 passed**, **0 failed/skipped/cancelled**. Raw TAP subtotals were 475 + 42 + 65 + 137 + 21 + 26 + 16 + 169 + 2. Package builds, typechecks, shell checks, example validation and console build passed; the same NFT warning remained visible. Ephemeral log: `/tmp/runner-job-final-controller-ci.oLm4jW`.
+
+The controller also read the actual image integration result and independently inspected the current image ID, matching `sha256:94b7625318de8912c8a7c07e72d4295d98e1d400666299ff730db340934584d5 linux/arm64`. This final closeout changes documentation only. The branch remains local and unmerged, with publication blocked and all deployment/trust limits above unchanged. No cloud resources, professional accounts, GitHub App permissions or live stores were changed.

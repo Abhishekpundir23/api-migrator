@@ -2,8 +2,9 @@
 
 Status: written specification approved in chat on 2026-09-19; local implementation
 was subsequently authorized and executed. The [verification record](../../plans/2026-09-19-runner-job-record-verification.md)
-records actual validation results. Independent Task 5 and whole-branch review
-remain pending at that handoff. No service activation is authorized.
+records actual validation results and completed task, whole-branch and scoped fix
+reviews. The non-blocking NFT diagnostic remains deferred. No service activation
+is authorized.
 
 Baseline: merged PR #18, `36bab9c85cd6c95bd0ac27ded0da0d3e44faa293`.
 Predecessor: [protected runner evidence design](2026-09-09-protected-runner-evidence-design.md).

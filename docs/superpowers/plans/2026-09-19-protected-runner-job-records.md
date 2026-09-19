@@ -10,7 +10,7 @@
 
 **Spec:** [Approved local-first design](../specs/2026-09-19-protected-runner-job-record-design.md).
 
-Status: local implementation was authorized and executed with subagent-driven task reviews. The [verification record](../../plans/2026-09-19-runner-job-record-verification.md) records the tested implementation and actual results; independent Task 5 and whole-branch review remain pending at that handoff. This plan's checkboxes are the original execution checklist, not a live status ledger. Product baseline: `36bab9c85cd6c95bd0ac27ded0da0d3e44faa293`; design commit: `44ba21d8ab079698ef4533fc4bceae8d233dd10e`. No deployment, push, merge, or service activation is authorized.
+Status: local implementation, task reviews, whole-branch review and scoped fix re-review are complete. The [verification record](../../plans/2026-09-19-runner-job-record-verification.md) records the tested implementation, actual results and deferred non-blocking NFT diagnostic. This plan's checkboxes are the original execution checklist, not a live status ledger. Product baseline: `36bab9c85cd6c95bd0ac27ded0da0d3e44faa293`; design commit: `44ba21d8ab079698ef4533fc4bceae8d233dd10e`. No deployment, push, merge, or service activation is authorized.
 
 ## Global Constraints
 
