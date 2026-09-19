@@ -1,8 +1,8 @@
 # Runner job record verification — 2026-09-19
 
-Status: local implementation and the validation below completed. Independent Task 5 and whole-branch review remain pending at this handoff. This is not deployed protected custody, a security drill, or pilot completion.
+Status: whole-branch review identified the successful-review CAS race and missing intent assertions described in the final-review addendum below. The combined fix is implemented; its scoped re-review remains pending. This is not deployed protected custody, a security drill, or pilot completion. Original Task 5 evidence is preserved below as historical evidence, not represented as testing the later fix.
 
-## Tested state
+## Original Task 5 tested state
 
 - Code and tests: `3d007cf02d4d84d52793a2646f8a52acb89d207f` — `Verify runner job recovery and isolation`.
 - Task 5 base: `5a02dd59fc91737ab566d112ed56ea5e5bef2622`.
@@ -128,11 +128,11 @@ App Route:
   ./packages/console/app/api/campaigns/[id]/runs/route.ts
 ```
 
-The complete text is in `/tmp/runner-job-task5-ci.1Zuh1F`. These source paths are unchanged by Task 5, but the warning was **not reproduced on the baseline**, so it is not claimed to be proved pre-existing. The build completed successfully. No warning suppression or unrelated build change was added; independent review should triage it.
+The complete text is in `/tmp/runner-job-task5-ci.1Zuh1F`. These source paths are unchanged by Task 5, but the warning was **not reproduced on the baseline**, so it is not claimed to be proved pre-existing. The build completed successfully. Whole-branch review found no demonstrated local feature leak or runtime failure and recommended a separate focused diagnostic; the controller explicitly deferred that follow-up. No warning suppression or unrelated build/config change was added. Baseline provenance remains unestablished.
 
 ## Remaining gates and limits
 
-- Independent Task 5 review and the independent whole-branch review are still required; this report does not claim either is complete.
+- The original Task 5 handoff preceded independent review. The race and intent-coverage findings are addressed by the combined fix below; the NFT diagnostic remains explicitly deferred. Scoped re-review of the fix remains required and is not claimed complete.
 - Store recovery was exercised locally on macOS. SIGKILL recovery with SQLite FULL/fullfsync and file/directory synchronization is not a physical power-loss durability proof or a portability certification.
 - Hashes detect inconsistent records, not a malicious same-UID coherent rewrite. A coherent full snapshot restore remains outside the local trust boundary; it is not represented as a passing anti-rollback test. Trusted time during downtime and protected live custody remain unsolved deployment gates.
 - Failures after a committed write retain immutable historical metadata; no deletion, backup restore, resubmission, expiry extension, renewal, or automatic repair was added.
@@ -140,3 +140,50 @@ The complete text is in `/tmp/runner-job-task5-ci.1Zuh1F`. These source paths ar
 - The job feature does not execute/dispatch source, request credentials, sign externally, upload bundles, consume owner approval, initialize live stores, or mutate accounts/cloud/services. Only the already-existing, explicitly authorized image integration executes its disposable fixture.
 - No route/UI/CLI/activation switch, image allowlist, runtime dependency, lockfile, account permission, live custody, push, or merge changed. No fixture keys, bundles, databases, or real credentials are included in this report.
 
+## Final-review combined fix and current evidence
+
+Fix code and tests: **`ff86166d422cbbf034246bb0de49edf8bff3e7fe` — `Accept retained descendants after successful review CAS`**, based on `7abbe204fdcf197f1a3af0e7cff27ad555bd4c3b`. The later evidence commit changes only this document. No implementation, test, image input, lockfile, or dependency changed after the tested code commit. Scoped re-review of the fix remains pending.
+
+### Finding and bounded correction
+
+The review CAS commits before the adapter synchronizes and reads the result. A concurrent genuine acquisition can advance revision two to revision three before that readback. The successful-review path incorrectly required byte-identical revision two and reported `store_corrupt` for this legitimate descendant.
+
+The fix accepts only a strictly validated `evidence_retained` descendant with exactly matching immutable preparation fields and reviewed context. The existing original-expiry and durable time-observation checks still run before success. Changed fields/structural corruption remain rejected; retained expiry is never renewed; CAS-loss handling is unchanged.
+
+Four deterministic regressions use the real SQLite adapter and its after-commit hook. A bounded child opens the disposable store, acquires genuinely signed fixture evidence through the real verifier (two registry reads and one envelope fetch), commits revision three, and exits before the parent's readback. The cases cover an identical descendant, exact retained expiry, changed preparation, and changed review. Changed-field cases deliberately substitute a coherent reviewed fixture before genuine child verification; these are operation-relative rejection tests, not claims to prevent malicious same-UID rewrites. No fake successful verifier, fabricated retained identity, timing sleep, or production test export was introduced. All cases assert that the retained historical row remains byte-equivalent after parent success/failure.
+
+Valid egress and absolute-expiry variations now independently prove intent binding, alongside the existing image variation. Valid changed egress/expiry also produce preparation conflicts while preserving the original row and successful identical retry.
+
+### Fresh execution evidence
+
+Commands below used the same pinned Node **v22.23.2** PATH as above and Docker **29.6.1**. All exited **0** except the explicit TDD RED. Focused suites, package build and `npm test` ran against the exact code/test bytes then committed as `ff86166`; full CI and real image checks ran on that commit. Documentation edits only began during image integration.
+
+| Command | Current result |
+| --- | --- |
+| `node --import tsx --test --test-name-pattern='successful review CAS readback' packages/app/test/runner-job-review.test.ts` before production fix | RED: **4 tests, 2 passed, 2 failed**, no skips/cancellations; valid descendant incorrectly raised `store_corrupt`, expired descendant raised `store_corrupt` instead of `job_expired`; changed-field negatives passed |
+| `node --import tsx --test packages/app/test/runner-job-review.test.ts packages/app/test/runner-job-record-contract.test.ts packages/app/test/runner-job-preparation.test.ts` after fix | GREEN: **35/35**, no failures/skips/cancellations |
+| `npm run build:packages` | Four package builds passed |
+| `node --import tsx --test packages/app/test/runner-job-*.test.ts packages/db/test/runner-job-store.test.ts` | **117/117**, no failures/skips/cancellations |
+| `API_MIGRATOR_DOCKER_TEST=1 npm test` | **740/740**: app 475, console 42, DB 65, engine 137, runner 21; no failures/skips/cancellations |
+| `API_MIGRATOR_DOCKER_TEST=1 npm run ci` | **953/953**: workspace 740 + pilot 26 + gateway 16 + deployment 169 + image 2; package builds, workspace typechecks, shell checks, example validation and console production build passed; no failures/skips/cancellations |
+| `npm run runner:image:build` | Real local Docker image built |
+| `npm run runner:image:verify` | Real configuration and job-module/native-dependency absence checks passed |
+| `npm run runner:image:integration` | Real disposable prepare/install/migrate/verify fixture passed; `securityDrill: false` |
+| `git diff --check` | Passed before code commit and after evidence documentation edits |
+
+Both full workspace runs executed the Docker install/offline-typecheck test; none of the job-record tests was skipped. Counts were checked from current TAP summaries, not carried forward from Task 5. The console build emitted the same one nonfatal NFT warning and import trace quoted above. The image build emitted an npm update notice (`10.9.8 -> 12.0.2`); no update was performed. The explicitly deferred NFT diagnostic remains a follow-up, without baseline provenance or warning suppression.
+
+Verified tag: `api-migrator-runner:local`, platform `linux/arm64`, image ID **`sha256:94b7625318de8912c8a7c07e72d4295d98e1d400666299ff730db340934584d5`**.
+
+Real integration returned `phaseIntegration: passed`, `securityDrill: false`, plan digest `sha256:3b57dc3c7ee3fcf25ccfab4925e83e031a1e43a5eb2459370627897444f2bac0`, and evidence digest `sha256:ad123d5a8471f702115ce7bd822a001d209e4439aefa5198806ff1e6e91ee28d`. These identify only the disposable functional fixture, not attested live execution, publication permission, a security drill, or pilot completion.
+
+Current captured logs (ephemeral local evidence):
+
+- `/tmp/runner-job-final-fix-focused.log`
+- `/tmp/runner-job-final-fix-npm-test.log`
+- `/tmp/runner-job-final-fix-ci.log`
+- `/tmp/runner-job-final-fix-image-build.log`
+- `/tmp/runner-job-final-fix-image-verify.log`
+- `/tmp/runner-job-final-fix-image-integration.log`
+
+The code commit's author and committer were verified before and after commit as **`Abhishekpundir23 <74260202+Abhishekpundir23@users.noreply.github.com>`**. The same exact pre/post identity guards apply to disposable fixture commits. No amend, push, merge, external issue/task, progress-ledger edit, new dependency, build configuration change, or live service/store/account/cloud mutation occurred. All remaining gates and trust limits above continue to apply.
