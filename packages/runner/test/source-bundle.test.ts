@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { verifyFixtureIdentity } from "../../../scripts/test-git-identity.mjs";
 import {
   createSourceBundle as createAppSourceBundle,
   extractSourceBundle as extractAppSourceBundle,
@@ -40,8 +41,8 @@ import {
 } from "../src/source-bundle.js";
 
 const MANIFEST = "{\"name\":\"Inngest v4\",\"package\":{\"from\":\"^3.0.0\",\"name\":\"inngest\",\"to\":\"^4.0.0\"},\"peerFloors\":[],\"provider\":\"inngest\",\"transformSet\":\"inngest-v3-to-v4\"}";
-const PRE_MOVE_BUNDLE_DIGEST = "sha256:5102540cebad4bd00115093c5f85deb85d67f70202d63961a64be632ffa08159";
-const PRE_MOVE_BUNDLE_BASE64 = "QVBJLU1JR1JBVE9SLVNPVVJDRS1CVU5ETEUAVjEKAAACpHsiYmFzZSI6eyJicmFuY2giOiJtYWluIiwib2JqZWN0Rm9ybWF0Ijoic2hhMSIsInNoYSI6ImI1ZmFjMjJlYmM0MmY4OWJiMjgyNWIwYjNkYjI0MThlMTdjYTFkMWQiLCJ0cmVlU2hhIjoiNjMwOGU3MDY1NzJmODE0ZmI1MGI5Mzc1Y2U5ZjEwNzg5N2ZmYjFiMyJ9LCJlbnRyaWVzRGlnZXN0Ijoic2hhMjU2OjE2OWU5NjczMGQ0YmQwYWVjNTZmNThkYWI4ZTAxNmNiN2NiMzIxNGM3M2I1NzJhY2ZiZDU1MGU0NzNhODZmMTciLCJlbnRyeUNvdW50IjozLCJtYW5pZmVzdCI6eyJieXRlTGVuZ3RoIjoxNTEsImNhbm9uaWNhbEpzb24iOiJ7XCJuYW1lXCI6XCJJbm5nZXN0IHY0XCIsXCJwYWNrYWdlXCI6e1wiZnJvbVwiOlwiXjMuMC4wXCIsXCJuYW1lXCI6XCJpbm5nZXN0XCIsXCJ0b1wiOlwiXjQuMC4wXCJ9LFwicGVlckZsb29yc1wiOltdLFwicHJvdmlkZXJcIjpcImlubmdlc3RcIixcInRyYW5zZm9ybVNldFwiOlwiaW5uZ2VzdC12My10by12NFwifSIsImRpZ2VzdCI6InNoYTI1Njo5NDZhYzUyZDRlYzI1MmE1NjI5ZTU3MDcxMzIwYjE0ZDcyY2M4MGE3ODM5MWFmOTdhZmQzNzExODFkZjkyYTEwIn0sInJlcG9zaXRvcnkiOnsiaWQiOjEyMywib3duZXJJZCI6NDU2LCJzbHVnIjoiZXhhbXBsZS1vcmcvZXhhbXBsZS1yZXBvIn0sInNjaGVtYVZlcnNpb24iOjEsInRvdGFsRmlsZUJ5dGVzIjoyOH0AAAAEAAAAAAAAAAAGYS50c2FscGhhCgAAAAQAAAAAAAAAAAViLnRzYmV0YQoAAAAOAQAAAAAAAAARc2NyaXB0cy9ydW4uc2gjIS9iaW4vc2gKZXhpdCAwCgpBUEktTUlHUkFUT1ItU09VUkNFLUJVTkRMRS1FTkQAVjE=";
+const PRE_MOVE_BUNDLE_DIGEST = "sha256:26fb94f107ae533e154a5ed1f08c5f63e8feb33f98e9a9978941ca7237d4dc02";
+const PRE_MOVE_BUNDLE_BASE64 = "QVBJLU1JR1JBVE9SLVNPVVJDRS1CVU5ETEUAVjEKAAACpHsiYmFzZSI6eyJicmFuY2giOiJtYWluIiwib2JqZWN0Rm9ybWF0Ijoic2hhMSIsInNoYSI6IjQwNjQ0ODM1NTk1YjhjOTk1Y2VjZDA0OTA4ZDcxMWE5YjIwYjE3NjQiLCJ0cmVlU2hhIjoiNjMwOGU3MDY1NzJmODE0ZmI1MGI5Mzc1Y2U5ZjEwNzg5N2ZmYjFiMyJ9LCJlbnRyaWVzRGlnZXN0Ijoic2hhMjU2OjE2OWU5NjczMGQ0YmQwYWVjNTZmNThkYWI4ZTAxNmNiN2NiMzIxNGM3M2I1NzJhY2ZiZDU1MGU0NzNhODZmMTciLCJlbnRyeUNvdW50IjozLCJtYW5pZmVzdCI6eyJieXRlTGVuZ3RoIjoxNTEsImNhbm9uaWNhbEpzb24iOiJ7XCJuYW1lXCI6XCJJbm5nZXN0IHY0XCIsXCJwYWNrYWdlXCI6e1wiZnJvbVwiOlwiXjMuMC4wXCIsXCJuYW1lXCI6XCJpbm5nZXN0XCIsXCJ0b1wiOlwiXjQuMC4wXCJ9LFwicGVlckZsb29yc1wiOltdLFwicHJvdmlkZXJcIjpcImlubmdlc3RcIixcInRyYW5zZm9ybVNldFwiOlwiaW5uZ2VzdC12My10by12NFwifSIsImRpZ2VzdCI6InNoYTI1Njo5NDZhYzUyZDRlYzI1MmE1NjI5ZTU3MDcxMzIwYjE0ZDcyY2M4MGE3ODM5MWFmOTdhZmQzNzExODFkZjkyYTEwIn0sInJlcG9zaXRvcnkiOnsiaWQiOjEyMywib3duZXJJZCI6NDU2LCJzbHVnIjoiZXhhbXBsZS1vcmcvZXhhbXBsZS1yZXBvIn0sInNjaGVtYVZlcnNpb24iOjEsInRvdGFsRmlsZUJ5dGVzIjoyOH0AAAAEAAAAAAAAAAAGYS50c2FscGhhCgAAAAQAAAAAAAAAAAViLnRzYmV0YQoAAAAOAQAAAAAAAAARc2NyaXB0cy9ydW4uc2gjIS9iaW4vc2gKZXhpdCAwCgpBUEktTUlHUkFUT1ItU09VUkNFLUJVTkRMRS1FTkQAVjE=";
 
 test("pins the original source bundle bytes for the deterministic Git fixture", () => {
   const fixture = repositoryFixture();
@@ -273,8 +274,6 @@ test("binds the exact approved commit, tree, repository identity, and executable
 function repositoryFixture(): { root: string; input: CreateSourceBundleInput } {
   const root = mkdtempSync(join(tmpdir(), "api-migrator-source-repo-"));
   git(root, ["init", "--quiet", "--object-format=sha1"]);
-  git(root, ["config", "user.name", "Runner Test"]);
-  git(root, ["config", "user.email", "runner@example.invalid"]);
   writeFileSync(join(root, "a.ts"), "alpha\n");
   writeFileSync(join(root, "b.ts"), "beta\n");
   mkdirSync(join(root, "scripts"));
@@ -316,22 +315,27 @@ function lstatIfExists(path: string): boolean {
 }
 
 function git(cwd: string, args: readonly string[]): string {
-  return execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
+  const env = {
       PATH: process.env.PATH,
-      GIT_AUTHOR_NAME: "Runner Test",
-      GIT_AUTHOR_EMAIL: "runner@example.invalid",
+      GIT_AUTHOR_NAME: "Abhishekpundir23",
+      GIT_AUTHOR_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
       GIT_AUTHOR_DATE: "2025-01-02T03:04:05Z",
-      GIT_COMMITTER_NAME: "Runner Test",
-      GIT_COMMITTER_EMAIL: "runner@example.invalid",
+      GIT_COMMITTER_NAME: "Abhishekpundir23",
+      GIT_COMMITTER_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
       GIT_COMMITTER_DATE: "2025-01-02T03:04:05Z",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_TERMINAL_PROMPT: "0",
       LC_ALL: "C",
-    },
+  };
+  const committing = args[0] === "commit";
+  if (committing) verifyFixtureIdentity(cwd, env);
+  const output = execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
   }).trim();
+  if (committing) verifyFixtureIdentity(cwd, env, true);
+  return output;
 }

@@ -272,6 +272,26 @@ interface AttestationEnvelope {
 export function createPublicationRunnerPlan(
   input: CreatePublicationRunnerPlanInput
 ): PublicationRunnerPlanRecord {
+  const { createdAt, expiresAt, subject, inputs, imageDigest, destinations } =
+    normalizePublicationRunnerPlanInput(input);
+  const nonceDigest = sha256(randomBytes(32));
+  const jobId = deriveJobId({
+    nonceDigest, createdAt, expiresAt, subject, inputs, imageDigest, destinations,
+  });
+  return recordForPlan(buildPlan({
+    jobId, nonceDigest, createdAt, expiresAt, subject, inputs, imageDigest, destinations,
+  }));
+}
+
+/** Validate nonce-free plan inputs without allocating a random job identity. */
+export function normalizePublicationRunnerPlanInput(input: CreatePublicationRunnerPlanInput): {
+  createdAt: number;
+  expiresAt: number;
+  subject: PublicationRunnerPlan["subject"];
+  inputs: PublicationRunnerPlan["inputs"];
+  imageDigest: string;
+  destinations: RunnerEgressDestination[];
+} {
   const createdAt = timestamp(input.now ?? Date.now(), "plan creation time");
   const expiresAt = timestamp(input.expiresAt, "plan expiry");
   assertPlanLifetime(createdAt, expiresAt);
@@ -291,26 +311,7 @@ export function createPublicationRunnerPlan(
     createdAt,
     expiresAt
   );
-  const nonceDigest = sha256(randomBytes(32));
-  const jobId = deriveJobId({
-    nonceDigest,
-    createdAt,
-    expiresAt,
-    subject,
-    inputs,
-    imageDigest,
-    destinations,
-  });
-  return recordForPlan(buildPlan({
-    jobId,
-    nonceDigest,
-    createdAt,
-    expiresAt,
-    subject,
-    inputs,
-    imageDigest,
-    destinations,
-  }));
+  return { createdAt, expiresAt, subject, inputs, imageDigest, destinations };
 }
 
 /** Rebuild and freeze a plan, rejecting every unknown or weakened control. */

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { verifyFixtureIdentity } from "../../../scripts/test-git-identity.mjs";
 import type { AuthResult } from "../src/auth.js";
 import { captureLocalPreviewExecution } from "../src/preview-source.js";
 import {
@@ -14,22 +15,27 @@ import {
 const manifestJson = '{"name":"Migration","provider":"inngest"}';
 
 function git(path: string, args: string[]): string {
-  return execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
-    cwd: path,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
+  const env = {
       PATH: process.env.PATH,
-      GIT_AUTHOR_NAME: "Preview Source Test",
-      GIT_AUTHOR_EMAIL: "preview-source@example.invalid",
-      GIT_COMMITTER_NAME: "Preview Source Test",
-      GIT_COMMITTER_EMAIL: "preview-source@example.invalid",
+      GIT_AUTHOR_NAME: "Abhishekpundir23",
+      GIT_AUTHOR_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
+      GIT_COMMITTER_NAME: "Abhishekpundir23",
+      GIT_COMMITTER_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_TERMINAL_PROMPT: "0",
       LC_ALL: "C",
-    },
+  };
+  const committing = args[0] === "commit";
+  if (committing) verifyFixtureIdentity(path, env);
+  const output = execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
+    cwd: path,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
   }).trim();
+  if (committing) verifyFixtureIdentity(path, env, true);
+  return output;
 }
 
 function fixture(): { path: string; baseSha: string; treeSha: string } {

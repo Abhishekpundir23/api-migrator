@@ -13,6 +13,7 @@ import {
   type SourceBundleRecord,
 } from "../../src/runner-source-bundle.js";
 import type { RunnerEvidenceContext } from "../../src/runner-evidence-contract.js";
+import { verifyFixtureIdentity } from "../../../../scripts/test-git-identity.mjs";
 import {
   publicationRunnerAttestation,
   publicationRunnerPlanInput,
@@ -25,27 +26,33 @@ const MANIFEST_JSON = '{"name":"Runner evidence fixture","provider":"inngest"}';
 
 function git(path: string, args: string[], createdAt: number): string {
   const date = new Date(createdAt).toISOString();
-  return execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
-    cwd: path,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
+  const env = {
       PATH: process.env.PATH,
-      GIT_AUTHOR_NAME: "Runner Evidence Test",
-      GIT_AUTHOR_EMAIL: "runner-evidence@example.invalid",
+      GIT_AUTHOR_NAME: "Abhishekpundir23",
+      GIT_AUTHOR_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
       GIT_AUTHOR_DATE: date,
-      GIT_COMMITTER_NAME: "Runner Evidence Test",
-      GIT_COMMITTER_EMAIL: "runner-evidence@example.invalid",
+      GIT_COMMITTER_NAME: "Abhishekpundir23",
+      GIT_COMMITTER_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
       GIT_COMMITTER_DATE: date,
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_TERMINAL_PROMPT: "0",
       LC_ALL: "C",
-    },
+  };
+  const committing = args[0] === "commit";
+  if (committing) verifyFixtureIdentity(path, env);
+  const output = execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
+    cwd: path,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
   }).trim();
+  if (committing) verifyFixtureIdentity(path, env, true);
+  return output;
 }
 
 export function runnerEvidenceFixture(now: number): {
+  checkoutPath: string;
   context: RunnerEvidenceContext;
   bundle: SourceBundleRecord;
   trust: RunnerAttestationTrust;
@@ -105,6 +112,7 @@ export function runnerEvidenceFixture(now: number): {
       previewCompletedAt: now - 500,
     };
     return {
+      checkoutPath: path,
       context,
       bundle,
       trust,

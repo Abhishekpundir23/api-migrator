@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { verifyFixtureIdentity } from "../../../scripts/test-git-identity.mjs";
 import type { Manifest, MigrationReport } from "@api-migrator/engine";
 import { copyGitFreeTree } from "../src/artifact.js";
 import {
@@ -35,18 +36,18 @@ const manifest: Manifest = {
 };
 
 const manifestJson = "{\"name\":\"Inngest v3 to v4\",\"package\":{\"from\":\"^3\",\"name\":\"inngest\",\"to\":\"^4\"},\"peerFloors\":[],\"provider\":\"inngest\",\"runtime\":{\"node\":{\"dockerfile\":\"Dockerfile\",\"minimumMajor\":20,\"packageJson\":\"package.json\",\"profile\":\"node22-bookworm-slim-2026-07\"}},\"transformSet\":\"inngest-v3-to-v4\"}";
-const EXPECTED_BASE_SHA = "9f87a2bf157b7f199521a150ae18ebd051af158c";
+const EXPECTED_BASE_SHA = "72920f83f33b9706eaa0d643eae35f4e18b229e1";
 const EXPECTED_TREE_SHA = "48479afc6120f8440951aa958a052b651ffbd699";
 const EXPECTED_MANIFEST_DIGEST = "sha256:9d7bce547e77b82237978312f48b73a06d51ef410c634ad455b4d6e11f535bcf";
-const EXPECTED_SOURCE_DIGEST = "sha256:bc3e83d06bceb24f787ebc57ff4b685c810b9db1e8f7bb05ff3c1285f2d37ded";
+const EXPECTED_SOURCE_DIGEST = "sha256:8a8b925739e4c6bc33d9731f08d9bace28f7a1e6d360f07ce7a33cc8168ec6b7";
 
 const gitEnvironment = {
   PATH: process.env.PATH,
-  GIT_AUTHOR_NAME: "Preview Pipeline Test",
-  GIT_AUTHOR_EMAIL: "preview-pipeline@example.invalid",
+  GIT_AUTHOR_NAME: "Abhishekpundir23",
+  GIT_AUTHOR_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
   GIT_AUTHOR_DATE: "2025-01-02T03:04:05Z",
-  GIT_COMMITTER_NAME: "Preview Pipeline Test",
-  GIT_COMMITTER_EMAIL: "preview-pipeline@example.invalid",
+  GIT_COMMITTER_NAME: "Abhishekpundir23",
+  GIT_COMMITTER_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
   GIT_COMMITTER_DATE: "2025-01-02T03:04:05Z",
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
@@ -55,12 +56,16 @@ const gitEnvironment = {
 };
 
 function git(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv = gitEnvironment): string {
-  return execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
+  const committing = args[0] === "commit";
+  if (committing) verifyFixtureIdentity(cwd, env);
+  const output = execFileSync("git", ["-c", "commit.gpgSign=false", ...args], {
     cwd,
     env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+  if (committing) verifyFixtureIdentity(cwd, env, true);
+  return output;
 }
 
 function repositoryFixture(): string {

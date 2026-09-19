@@ -104,6 +104,38 @@ export function validateRunnerEvidenceContext(
       "source",
     ], "runner evidence context");
     const observedAt = timestamp(now, "runner evidence clock");
+    const context = parseRunnerEvidenceContextStructure(root, observedAt);
+    const { plan, previewCompletedAt } = context;
+    if (
+      observedAt >= plan.plan.job.expiresAt ||
+      observedAt >= previewCompletedAt + 10 * 60 * 1_000
+    ) {
+      throw new RunnerEvidenceError("expired");
+    }
+    assertPublicationRunnerPlanCurrent(plan, observedAt);
+    return context;
+  } catch (error) {
+    if (error instanceof RunnerEvidenceError) throw error;
+    throw new RunnerEvidenceError("expected_context_invalid");
+  }
+}
+
+/** Validate historical context without inventing a current clock. */
+export function validateRunnerEvidenceContextStructure(value: unknown): Readonly<RunnerEvidenceContext> {
+  try {
+    const root = detachedRecord(value, "runner evidence context");
+    exactKeys(root, [
+      "campaignId", "plan", "previewCompletedAt", "reviewedOutput", "runId", "source",
+    ], "runner evidence context");
+    return parseRunnerEvidenceContextStructure(root);
+  } catch {
+    throw new RunnerEvidenceError("expected_context_invalid");
+  }
+}
+
+function parseRunnerEvidenceContextStructure(
+  root: Record<string, unknown>, observedAt?: number
+): Readonly<RunnerEvidenceContext> {
     const campaignId = contextIdentifier(root.campaignId, "campaign id");
     const runId = contextIdentifier(root.runId, "run id");
 
@@ -127,8 +159,8 @@ export function validateRunnerEvidenceContext(
 
     if (
       previewCompletedAt < plan.plan.job.createdAt ||
-      previewCompletedAt > observedAt ||
-      observedAt < plan.plan.job.createdAt
+      (observedAt === undefined ? previewCompletedAt >= plan.plan.job.expiresAt :
+        previewCompletedAt > observedAt || observedAt < plan.plan.job.createdAt)
     ) {
       throw new Error("Runner evidence context timeline is invalid");
     }
@@ -143,13 +175,6 @@ export function validateRunnerEvidenceContext(
     ) {
       throw new Error("Runner evidence source does not match its plan");
     }
-    if (
-      observedAt >= plan.plan.job.expiresAt ||
-      observedAt >= previewCompletedAt + 10 * 60 * 1_000
-    ) {
-      throw new RunnerEvidenceError("expired");
-    }
-    assertPublicationRunnerPlanCurrent(plan, observedAt);
     return deepFreeze({
       campaignId,
       runId,
@@ -158,10 +183,6 @@ export function validateRunnerEvidenceContext(
       reviewedOutput,
       previewCompletedAt,
     });
-  } catch (error) {
-    if (error instanceof RunnerEvidenceError) throw error;
-    throw new RunnerEvidenceError("expected_context_invalid");
-  }
 }
 
 export function validateRetainedRunnerEvidenceIdentity(
@@ -284,13 +305,18 @@ export function runnerEvidenceDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(value), "utf8").digest("hex")}`;
 }
 
+/** Reject accessors and detach canonical data before any ordinary property read. */
+export function detachRunnerEvidenceData(value: unknown): unknown {
+  assertDataDescriptors(value, new Set<object>());
+  return JSON.parse(canonicalJson(value)) as unknown;
+}
+
 export function runnerEvidenceFailure<C extends RunnerEvidenceFailureCode>(code: C) {
   return Object.freeze({ ok: false as const, code });
 }
 
 function detachedRecord(value: unknown, label: string): Record<string, unknown> {
-  assertDataDescriptors(value, new Set<object>());
-  return record(JSON.parse(canonicalJson(value)) as unknown, label);
+  return record(detachRunnerEvidenceData(value), label);
 }
 
 function assertDataDescriptors(value: unknown, ancestors: Set<object>): void {

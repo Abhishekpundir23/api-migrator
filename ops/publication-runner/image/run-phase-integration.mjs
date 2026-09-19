@@ -18,6 +18,7 @@ import {
   createPublicationRunnerPlan,
 } from "../../../packages/app/dist/runner-internal.js";
 import { createSourceBundle } from "../../../packages/runner/dist/index.js";
+import { verifyFixtureIdentity } from "../../../scripts/test-git-identity.mjs";
 
 const image = process.argv[2];
 if (!image || !/^[A-Za-z0-9._/:@+-]+$/.test(image)) {
@@ -35,7 +36,6 @@ try {
   git(checkout, ["init", "--initial-branch=main"]);
   git(checkout, ["add", "--all"]);
   git(checkout, [
-    "-c", "user.name=Runner Integration", "-c", "user.email=runner@example.invalid",
     "commit", "--no-gpg-sign", "--message", "runner integration fixture",
   ]);
   const baseSha = git(checkout, ["rev-parse", "HEAD"]).trim();
@@ -294,12 +294,25 @@ function bind(source, target, readOnly) {
 }
 
 function git(cwd, args) {
-  return execFileSync("git", args, {
+  const env = {
+    PATH: process.env.PATH,
+    HOME: "/nonexistent",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Abhishekpundir23",
+    GIT_AUTHOR_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
+    GIT_COMMITTER_NAME: "Abhishekpundir23",
+    GIT_COMMITTER_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
+  };
+  const committing = args[0] === "commit";
+  if (committing) verifyFixtureIdentity(cwd, env);
+  const output = execFileSync("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1" },
+    env,
   });
+  if (committing) verifyFixtureIdentity(cwd, env, true);
+  return output;
 }
 
 function docker(args) {
