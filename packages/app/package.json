@@ -22,6 +22,10 @@
       "types": "./dist/runner-evidence-internal.d.ts",
       "default": "./dist/runner-evidence-internal.js"
     },
+    "./runner-job-record-internal": {
+      "types": "./dist/runner-job-record-internal.d.ts",
+      "default": "./dist/runner-job-record-internal.js"
+    },
     "./preview-evidence": {
       "types": "./dist/preview-evidence.d.ts",
       "default": "./dist/preview-evidence.js"
