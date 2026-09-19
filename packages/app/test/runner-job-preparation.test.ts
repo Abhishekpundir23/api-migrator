@@ -6,6 +6,7 @@ import { fixtureDigest } from "./helpers/publication-runner-fixture.js";
 import { createJobFixture } from "./helpers/runner-job-fixture.js";
 import { prepareRunnerJob } from "../src/runner-job-producer.js";
 import { inspectRunnerJob, validateStoredJob } from "../src/runner-job-service-core.js";
+import { setJobStoreTransactionTestHook } from "../../db/src/runner-job-store-sqlite.js";
 
 test("same expected job retries retain original identity and expiry without another row", (t) => {
   const f = createJobFixture();
@@ -107,16 +108,13 @@ test("expiry reached during preparation leaves no job row", (t) => {
 
 test("expiry first observed after durable insert preserves an immutable prepared row", (t) => {
   const f = createJobFixture();
-  t.after(() => f.close());
+  t.after(() => { setJobStoreTransactionTestHook(undefined); f.close(); });
   const createdAt = f.state.wall;
   const originalExpiry = f.input.expiresAt;
-  let calls = 0;
-  const clock = { ...f.clock, wallNow() {
-    calls++;
-    return calls >= 4 ? originalExpiry : createdAt;
-  } };
-  assert.throws(() => prepareRunnerJob(f.store, f.input, clock), { code: "job_expired" });
-  assert.equal(calls, 4);
+  setJobStoreTransactionTestHook((event) => {
+    if (event.operation === "insert" && event.point === "after_commit") f.state.wall = originalExpiry;
+  });
+  assert.throws(() => prepareRunnerJob(f.store, f.input, f.clock), { code: "job_expired" });
   const [row] = f.store.list();
   assert.ok(row);
   const committed = validateStoredJob(row, f.storeId);

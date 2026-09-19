@@ -354,3 +354,73 @@ test("service reopen reacquires real evidence each time and inspects expired imm
     } finally { historical.value.close(); }
   } finally { f.close(); }
 });
+
+for (const operation of ["prepare", "review"] as const) {
+  for (const retry of [false, true]) {
+    for (const boundary of ["expiry", "rollback"] as const) {
+      test(`service ${operation} ${retry ? "retry" : "fresh"} rejects ${boundary} during final observation and preserves history`, () => {
+        const f = createJobFixture();
+        try {
+          let read = false;
+          let committed = false;
+          const service = createRunnerJobServiceForTest({ directory: f.directory, expectedStoreId: f.storeId, evidence: null },
+            { migrationWorkspaceRoots: f.policy.migrationWorkspaceRoots }, { clock: f.clock, client: null,
+              openStore: (...args) => {
+                const store = f.access.open(...args);
+                return { ...store, read: (...key) => { read = true; return store.read(...key); } };
+              } });
+          if (!service.ok) throw new Error("construction failed");
+          const opened = service.value.open();
+          if (!opened.ok) throw new Error("open failed");
+          const session = opened.value;
+          try {
+            let key: { campaignId: string; runId: string; jobId: string } | undefined;
+            if (operation === "review" || retry) {
+              const prepared = session.prepare(f.input);
+              if (!prepared.ok) throw new Error("fixture preparation failed");
+              key = { campaignId: prepared.value.campaignId, runId: prepared.value.runId, jobId: prepared.value.jobId };
+            }
+            f.state.wall = f.sourceFixture.context.previewCompletedAt;
+            const completedAt = f.state.wall;
+            const output = f.sourceFixture.context.reviewedOutput;
+            if (operation === "review" && retry) {
+              assert.equal(session.recordReviewedOutput(key!, output, completedAt).ok, true);
+            }
+            const original = retry ? f.store.list()[0]!.canonicalRecord : undefined;
+            const observedAt = f.state.wall;
+            const expiresAt = operation === "prepare" ? f.input.expiresAt : completedAt + 600_000;
+            read = false;
+            let boundaryReached = false;
+            setJobStoreTransactionTestHook((event) => {
+              if (event.point !== "after_commit") return;
+              if (event.operation === (operation === "prepare" ? "insert" : "compare_and_swap")) committed = true;
+              // Idempotent paths have read their existing row; fresh paths have
+              // committed their new revision. Neither depends on clock-call counts.
+              if (event.operation === "observe_time" && (retry ? read : committed)) {
+                boundaryReached = true;
+                f.state.wall = boundary === "expiry" ? expiresAt : observedAt - 1;
+              }
+            });
+            const result = operation === "prepare" ? session.prepare(f.input) :
+              session.recordReviewedOutput(key!, output, completedAt);
+            assert.equal(boundaryReached, true);
+            assert.equal(result.ok, false);
+            assert.deepEqual(result, { ok: false, source: "job", code: boundary === "expiry" ? "job_expired" : "clock_rollback" });
+            const [history] = f.store.list();
+            assert.ok(history);
+            assert.equal(history.revision, operation === "prepare" ? 1 : 2);
+            if (original !== undefined) assert.equal(history.canonicalRecord, original);
+            const inspected = session.inspect({ campaignId: history.campaignId, runId: history.runId, jobId: history.jobId });
+            assert.equal(inspected.ok, true);
+            if (inspected.ok) {
+              assert.equal(encodeJobRecord(inspected.value), history.canonicalRecord);
+              assert.equal(inspected.value.plan.plan.job.expiresAt, f.input.expiresAt);
+              if (inspected.value.revision === 2) assert.equal(inspected.value.review.previewCompletedAt, completedAt);
+            }
+            assert.equal(f.store.list().length, 1);
+          } finally { session.close(); }
+        } finally { setJobStoreTransactionTestHook(undefined); f.close(); }
+      });
+    }
+  }
+}

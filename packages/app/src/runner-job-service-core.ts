@@ -96,9 +96,13 @@ function samePrepared(a: JobRecord, b: JobRecord): boolean {
       jobId: b.jobId, intentDigest: b.intentDigest, source: b.source, plan: b.plan });
 }
 
-function checkCurrent(store: JobStore, record: JobRecord, clock: JobClock): void {
+export function checkRunnerJobCurrent(store: JobStore, record: JobRecord, clock: JobClock): void {
+  const observedAt = currentTime(clock);
+  store.observeTime(observedAt);
+  // Durable observation can itself take time. Validate a fresh sample against
+  // both the persisted high-water mark and the record's original lifetime.
   const checkedAt = currentTime(clock);
-  store.observeTime(checkedAt);
+  if (checkedAt < observedAt) throw new RunnerJobError("clock_rollback");
   assertJobCurrent(record, checkedAt);
 }
 
@@ -120,11 +124,11 @@ export function recordRunnerJobReview(store: JobStore, key: unknown, output: unk
   const review = expectedReview(previous, selectedOutput, selectedTime, startedAt);
   if (previous.state !== "prepared") {
     if (canonicalJson(previous.review) !== canonicalJson(review)) throw new RunnerJobError("job_conflict");
-    checkCurrent(store, previous, clock);
+    checkRunnerJobCurrent(store, previous, clock);
     return previous;
   }
   const next = appendJobReview(previous, selectedOutput, selectedTime, startedAt);
-  checkCurrent(store, next, clock);
+  checkRunnerJobCurrent(store, next, clock);
   const nextRow = recordToStoredRow(next);
   const result = store.compareAndSwap(previousRow, nextRow);
   const row = result.committed ? result.row : store.read(selected.campaignId, selected.runId);
@@ -135,6 +139,6 @@ export function recordRunnerJobReview(store: JobStore, key: unknown, output: unk
   }
   if (!result.committed && (!samePrepared(previous, actual) || actual.state === "prepared" ||
     canonicalJson(actual.review) !== canonicalJson(review))) throw new RunnerJobError("job_conflict");
-  checkCurrent(store, actual, clock);
+  checkRunnerJobCurrent(store, actual, clock);
   return actual;
 }

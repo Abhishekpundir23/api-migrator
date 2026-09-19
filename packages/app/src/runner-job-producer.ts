@@ -6,12 +6,12 @@ import {
   type CreatePublicationRunnerPlanInput, type RunnerEgressDestination,
 } from "./publication-runner.js";
 import {
-  assertJobCurrent, makePreparedRecord, preparationIntent, RunnerJobError,
+  makePreparedRecord, preparationIntent, RunnerJobError,
   type JobRecord,
 } from "./runner-job-record-contract.js";
 import { detachRunnerEvidenceData } from "./runner-evidence-contract.js";
 import { createSourceBundle, parseSourceBundle } from "./runner-source-bundle.js";
-import { recordToStoredRow, validateStoredJob } from "./runner-job-service-core.js";
+import { checkRunnerJobCurrent, recordToStoredRow, validateStoredJob } from "./runner-job-service-core.js";
 
 export type JobClock = { wallNow(): number; monotonicNow(): number };
 export type PrepareJobInput = {
@@ -64,12 +64,6 @@ function now(clock: JobClock): number {
   }
 }
 
-function checkCurrent(store: JobStore, record: JobRecord, clock: JobClock): void {
-  const checkedAt = now(clock);
-  store.observeTime(checkedAt);
-  assertJobCurrent(record, checkedAt);
-}
-
 export function prepareRunnerJob(store: JobStore, value: unknown, clock: JobClock): Readonly<JobRecord> {
   const input = snapshotInput(value);
   store.observeTime(now(clock));
@@ -113,7 +107,7 @@ export function prepareRunnerJob(store: JobStore, value: unknown, clock: JobCloc
       campaignId: existing.campaignId, runId: existing.runId,
       source: existing.source, plan: existing.plan });
     if (canonicalJson(intent) !== canonicalJson(existingIntent)) throw new RunnerJobError("job_conflict");
-    checkCurrent(store, existing, clock);
+    checkRunnerJobCurrent(store, existing, clock);
     return existing;
   }
   let plan: ReturnType<typeof createPublicationRunnerPlan>;
@@ -121,7 +115,7 @@ export function prepareRunnerJob(store: JobStore, value: unknown, clock: JobCloc
   catch { throw new RunnerJobError("input_invalid"); }
   const candidate = makePreparedRecord({ storeId: store.storeId,
     campaignId: input.campaignId, runId: input.runId, source, plan });
-  checkCurrent(store, candidate, clock);
+  checkRunnerJobCurrent(store, candidate, clock);
   const result = store.insert(recordToStoredRow(candidate));
   const winner = validateStoredJob(result.row, store.storeId);
   const winnerIntent = preparationIntent({ storeId: winner.storeId,
@@ -130,6 +124,6 @@ export function prepareRunnerJob(store: JobStore, value: unknown, clock: JobCloc
   if (!result.inserted && canonicalJson(intent) !== canonicalJson(winnerIntent)) {
     throw new RunnerJobError("job_conflict");
   }
-  checkCurrent(store, winner, clock);
+  checkRunnerJobCurrent(store, winner, clock);
   return winner;
 }
