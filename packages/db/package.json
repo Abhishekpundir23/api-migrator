@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./runner-job-store-internal": {
+      "types": "./dist/runner-job-store-internal.d.ts",
+      "default": "./dist/runner-job-store-internal.js"
     }
   },
   "scripts": {
