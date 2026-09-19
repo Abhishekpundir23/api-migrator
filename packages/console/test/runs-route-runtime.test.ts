@@ -191,6 +191,8 @@ test("actual POST keeps every post-preview action closed for legacy, local, forg
         serviceAddresses: ["127.0.0.1"], registryDirectory: "/untrusted",
       },
       runnerCapabilityProviderAvailable: true,
+      runnerJob: { revision: 3, state: "evidence_retained", identity: { schemaVersion: 1 } },
+      runnerJobConfig: { directory: "/untrusted-job-store", expectedStoreId: "12345678-1234-4234-8234-123456789abc", evidence: null },
     });
     const shapedControls = [
       acquisitionControls,

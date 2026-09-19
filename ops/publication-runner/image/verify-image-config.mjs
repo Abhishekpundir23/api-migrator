@@ -33,6 +33,17 @@ run([
   "--read-only", "--network", "none", "--entrypoint", "/bin/sh", image, "-c",
   "test ! -e /opt/api-migrator/node_modules/@octokit && test ! -e /opt/api-migrator/node_modules/next",
 ]);
+run([
+  "--read-only", "--network", "none", "--entrypoint", "/usr/local/bin/node", image,
+  "-e", `const assert = require('node:assert/strict'); const { existsSync } = require('node:fs');
+    for (const name of ['runner-job-record-contract', 'runner-job-producer', 'runner-job-service-core',
+      'runner-job-evidence', 'runner-job-record', 'runner-job-record-internal']) {
+      assert.equal(existsSync('/opt/api-migrator/packages/app/dist/' + name + '.js'), false, name);
+    }
+    for (const name of ['better-sqlite3', '@api-migrator/db']) {
+      assert.equal(existsSync('/opt/api-migrator/node_modules/' + name), false, name);
+    }`,
+]);
 assert.match(
   run([
     "--read-only", "--network", "none", "--entrypoint", "/usr/local/bin/node", image,

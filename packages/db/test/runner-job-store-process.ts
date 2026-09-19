@@ -6,15 +6,21 @@ import type { StoredJobRow, StorePolicy } from "../src/runner-job-store-contract
 process.once("message", (message: {
   root: string; directory: string; policy: StorePolicy; storeId: string;
   point: "before_commit" | "after_commit"; row: StoredJobRow;
+  operation?: "initialize" | "prepare" | "observe_time"; now?: number;
 }) => {
   const access = createJobStoreTestAccess(message.root);
-  const store = access.open(message.directory, message.storeId, message.policy);
+  const operation = message.operation ?? "prepare";
+  const store = operation === "initialize" ? null : access.open(message.directory, message.storeId, message.policy);
   setJobStoreTransactionTestHook(({ point, operation }) => {
     if (point !== message.point) return;
-    process.send!({ event: point, operation });
+    process.send!({ event: point, operation: operation === "insert" ? "prepare" : operation });
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   });
-  try { store.insert(message.row); process.send!({ event: "result" }); }
-  finally { store.close(); }
+  try {
+    if (operation === "initialize") access.initialize(message.directory, message.policy);
+    else if (operation === "observe_time") store!.observeTime(message.now!);
+    else store!.insert(message.row);
+    process.send!({ event: "result", operation }, () => process.disconnect());
+  } finally { store?.close(); }
 });
-process.send!({ event: "ready" });
+process.send!({ event: "ready", operation: process.argv[2] ?? "prepare" });

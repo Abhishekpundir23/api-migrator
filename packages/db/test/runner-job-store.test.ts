@@ -18,13 +18,21 @@ function row(label: string): StoredJobRow {
 }
 function fixture(t: TestContext, initialize = true) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "runner-job-store-test-")));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const children: ChildProcess[] = [];
+  t.after(async () => {
+    for (const child of children) {
+      const exit = exited(child);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await exit;
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
   const directory = join(root, "store");
   mkdirSync(directory, { mode: 0o700 });
   const policy = { applicationCheckout: process.cwd(), migrationWorkspaceRoots: [join(root, "workspace")] };
   const access = createJobStoreTestAccess(root);
   const storeId = initialize ? access.initialize(directory, policy).storeId : randomUUID();
-  return { root, directory, policy, access, storeId, databasePath: join(directory, "runner-jobs.sqlite") };
+  return { root, directory, policy, access, storeId, children, databasePath: join(directory, "runner-jobs.sqlite") };
 }
 
 test("persists rows and time across handles without replacing existing keys", (t) => {
@@ -168,6 +176,7 @@ for (const point of ["before_commit", "after_commit"] as const) {
   test(`child interruption at ${point} leaves a complete old or new row`, { timeout: 10000 }, async (t) => {
     const f = fixture(t);
     const child = fork(new URL("./runner-job-store-process.ts", import.meta.url), [], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    f.children.push(child);
     t.after(async () => { const exit = exited(child); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exit; });
     await event(child, "ready");
     const barrier = event(child, point);
@@ -193,6 +202,63 @@ test("job identity conflicts and CAS preserve the actual winner", (t) => {
   assert.throws(() => b.compareAndSwap(next, { ...next, revision: 3, intentDigest: `sha256:${hash("other")}` }), { code: "input_invalid" });
   assert.throws(() => b.compareAndSwap(next, { ...next, revision: 2 }), { code: "input_invalid" });
 });
+
+test("a held rollback journal preserves committed reads and bounds a write contender", { timeout: 10000 }, async (t) => {
+  const f = fixture(t);
+  const store = f.access.open(f.directory, f.storeId, f.policy);
+  t.after(() => store.close());
+  const child = fork(new URL("./runner-job-store-process.ts", import.meta.url), [], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  f.children.push(child);
+  await event(child, "ready");
+  const barrier = event(child, "before_commit");
+  child.send({ root: f.root, directory: f.directory, policy: f.policy, storeId: f.storeId, point: "before_commit", row: row("held") });
+  await barrier;
+  assert.deepEqual(store.list(), []);
+  const startedAt = performance.now();
+  assert.throws(() => store.insert(row("contender")), { code: "store_unavailable", message: "store_unavailable" });
+  const elapsed = performance.now() - startedAt;
+  assert(elapsed <= 1250, `contender exceeded 250 ms busy budget plus 1000 ms scheduling allowance: ${elapsed}`);
+  assert.deepEqual(store.list(), []);
+  const exit = exited(child); child.kill("SIGKILL"); await exit;
+  assert.deepEqual(store.list(), []);
+});
+
+for (const operation of ["initialize", "observe_time"] as const) {
+  for (const point of ["before_commit", "after_commit"] as const) {
+    test(`${operation} interruption ${point} does not invent committed state`, { timeout: 10000 }, async (t) => {
+      const f = fixture(t, operation !== "initialize");
+      if (operation === "observe_time") {
+        const store = f.access.open(f.directory, f.storeId, f.policy);
+        store.observeTime(1000); store.close();
+      }
+      const child = fork(new URL("./runner-job-store-process.ts", import.meta.url), [operation], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"] });
+      f.children.push(child);
+      await event(child, "ready");
+      const barrier = event(child, point);
+      child.send({ root: f.root, directory: f.directory, policy: f.policy, storeId: f.storeId, point, operation, now: 2000 });
+      await barrier;
+      const exit = exited(child); child.kill("SIGKILL"); await exit;
+      if (operation === "initialize" && point === "before_commit") {
+        assert.throws(() => f.access.open(f.directory, f.storeId, f.policy), { code: "store_corrupt" });
+        assert.throws(() => f.access.initialize(f.directory, f.policy), { code: "store_unsafe" });
+        return;
+      }
+      // Read only the committed identity for interrupted initialization; no repair or reinitialization.
+      const native = new Database(f.databasePath, { readonly: true, fileMustExist: true });
+      const metadata = native.prepare("SELECT store_id, wall_high_water FROM job_store_meta").get() as { store_id: string; wall_high_water: number };
+      native.close();
+      assert.equal(metadata.wall_high_water, operation === "initialize" ? 0 : point === "before_commit" ? 1000 : 2000);
+      const store = f.access.open(f.directory, operation === "initialize" ? metadata.store_id : f.storeId, f.policy);
+      try {
+        assert.deepEqual(store.list(), []);
+        if (operation === "observe_time") {
+          assert.throws(() => store.observeTime(metadata.wall_high_water - 1), { code: "clock_rollback" });
+          assert.doesNotThrow(() => store.observeTime(metadata.wall_high_water));
+        }
+      } finally { store.close(); }
+    });
+  }
+}
 
 test("failure after commit does not erase a committed row or high-water mark", (t) => {
   const f = fixture(t);

@@ -115,13 +115,15 @@ test("real built runtime root loads the runner entrypoint and canonical app expo
       "packages/app/dist/owner-authorization.js",
       "packages/app/dist/campaign",
       "node_modules/@api-migrator/db",
+      "node_modules/better-sqlite3",
       "node_modules/@octokit",
     ]) {
       assert.equal(existsSync(join(runtimeRoot, privilegedPath)), false, privilegedPath);
     }
     for (const name of ["runner-evidence-contract", "runner-evidence-deadline",
       "runner-key-registry", "runner-evidence-transport", "runner-evidence-core",
-      "runner-evidence", "runner-evidence-internal"]) {
+      "runner-evidence", "runner-evidence-internal", "runner-job-record-contract", "runner-job-producer",
+      "runner-job-service-core", "runner-job-evidence", "runner-job-record", "runner-job-record-internal"]) {
       assert.equal(existsSync(join(runtimeRoot, "packages/app/dist", `${name}.js`)), false, name);
     }
     assert.equal(existsSync(join(runtimeRoot, "packages/app/test")), false);

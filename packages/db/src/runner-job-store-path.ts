@@ -73,7 +73,10 @@ export function validateFiles(directory: string): Stats {
   return regular(join(directory, DATABASE_BASENAME), MAX_DATABASE_BYTES);
 }
 function same(a: Stats, b: Stats): boolean {
-  return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode && a.nlink === b.nlink;
+  return sameIdentity(a, b) && a.nlink === b.nlink;
+}
+function sameIdentity(a: Stats, b: Stats): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode;
 }
 export function pinStore(directory: string, policy: StorePolicy, testRoot?: string) {
   validateDirectory(directory, policy, testRoot);
@@ -87,7 +90,9 @@ export function pinStore(directory: string, policy: StorePolicy, testRoot?: stri
     const check = () => {
       validateDirectory(directory, policy, testRoot);
       if (!same(database, validateFiles(directory)) || !same(database, fstatSync(fileFd!)) ||
-        !same(leaf, lstatSync(directory)) || !same(leaf, fstatSync(directoryFd!))) unsafe();
+        // APFS directory link counts change when SQLite creates its allowed
+        // rollback journal. File hardlink checks and the entry allowlist remain.
+        !sameIdentity(leaf, lstatSync(directory)) || !sameIdentity(leaf, fstatSync(directoryFd!))) unsafe();
     };
     check();
     return {
