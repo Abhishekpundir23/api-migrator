@@ -476,8 +476,11 @@ otherwise assert it is still current and return it without calling the random
 plan constructor. For new jobs create the plan, build revision 1, observe time
 again, assert current, and insert. If insertion finds a winner, validate it and
 compare exact intent, then return only the winner. If source validation detects
-a change or the plan expires during preparation, no new job row may be inserted. Keep the
-observed high-water mark even when preparation fails.
+a change or the plan expires before insertion, no new job row may be inserted. If
+expiry is first observed after a durable insert, return `job_expired` while
+preserving the immutable revision-1 row as historical state; do not delete or
+replace it, or return success. That expired row consumes one bounded slot. Keep
+the observed high-water mark even when preparation fails.
 
 - [ ] **Implement append-once review.** Snapshot and validate key/output/time
 before storage use. Read/validate the current record, check high-water and
