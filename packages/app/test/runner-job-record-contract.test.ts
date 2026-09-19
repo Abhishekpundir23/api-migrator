@@ -133,11 +133,18 @@ test("intent ignores nonce, creation time, and store ID but binds egress and exp
     source: f.context.source, plan: second,
   });
   assert.deepEqual(secondIntent, firstIntent);
-  const changed = createPublicationRunnerPlan({ ...input, imageDigest: fixtureDigest("different-image") });
-  assert.notDeepEqual(preparationIntent({
-    storeId: randomUUID(), campaignId: f.context.campaignId, runId: f.context.runId,
-    source: f.context.source, plan: changed,
-  }), firstIntent);
+  for (const [field, change] of [
+    ["image", { imageDigest: fixtureDigest("different-image") }],
+    ["egress", { migrationInstallEgress: input.migrationInstallEgress.map((destination) =>
+      ({ ...destination, addresses: ["104.16.2.35"] })) }],
+    ["absolute expiry", { expiresAt: input.expiresAt - 1_000 }],
+  ] as const) {
+    const changed = createPublicationRunnerPlan({ ...input, ...change });
+    assert.notDeepEqual(preparationIntent({
+      storeId: randomUUID(), campaignId: f.context.campaignId, runId: f.context.runId,
+      source: f.context.source, plan: changed,
+    }), firstIntent, field);
+  }
 });
 
 test("review and retained identity append once with exact idempotence and expiry", (t) => {

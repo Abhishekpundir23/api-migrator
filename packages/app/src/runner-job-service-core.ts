@@ -134,7 +134,11 @@ export function recordRunnerJobReview(store: JobStore, key: unknown, output: unk
   const row = result.committed ? result.row : store.read(selected.campaignId, selected.runId);
   if (!row) throw new RunnerJobError("store_corrupt");
   const actual = validateStoredJob(row, store.storeId);
-  if (result.committed && row.canonicalRecord !== nextRow.canonicalRecord) {
+  // Readback is outside the CAS transaction. A concurrent genuine acquisition
+  // may already have retained evidence, but must preserve this exact review.
+  if (result.committed && row.canonicalRecord !== nextRow.canonicalRecord &&
+    !(actual.state === "evidence_retained" && samePrepared(next, actual) &&
+      canonicalJson(actual.review) === canonicalJson(review))) {
     throw new RunnerJobError("store_corrupt");
   }
   if (!result.committed && (!samePrepared(previous, actual) || actual.state === "prepared" ||

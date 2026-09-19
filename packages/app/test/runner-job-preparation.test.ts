@@ -23,6 +23,21 @@ test("same expected job retries retain original identity and expiry without anot
   { code: "job_conflict" });
 });
 
+for (const field of ["egress", "absolute expiry"] as const) {
+  test(`valid changed ${field} conflicts without replacing preparation`, (t) => {
+    const f = createJobFixture();
+    t.after(() => f.close());
+    const prepared = prepareRunnerJob(f.store, f.input, f.clock);
+    const [originalRow] = f.store.list();
+    const changed = structuredClone(f.input);
+    if (field === "egress") changed.migrationInstallEgress[0]!.addresses = ["104.16.2.35"];
+    else changed.expiresAt -= 1_000;
+    assert.throws(() => prepareRunnerJob(f.store, changed, f.clock), { code: "job_conflict" });
+    assert.deepEqual(f.store.list(), [originalRow]);
+    assert.deepEqual(prepareRunnerJob(f.store, f.input, f.clock), prepared);
+  });
+}
+
 for (const [name, change] of [
   ["dirty source", (f: ReturnType<typeof createJobFixture>) => writeFileSync(join(f.input.checkoutPath, "index.ts"), "changed\n")],
   ["missing source", (f: ReturnType<typeof createJobFixture>) => rmSync(f.input.checkoutPath, { recursive: true, force: true })],
