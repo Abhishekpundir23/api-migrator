@@ -30,6 +30,7 @@ test("fixture guard rejects either wrong identity before a commit and verifies t
       ...goodEnv, [key]: "wrong@example.invalid",
     }), /fixture Git identity rejected/);
   }
+  verifyFixtureIdentity(repo, goodEnv);
   git(["commit", "--allow-empty", "--no-gpg-sign", "-m", "fixture"]);
   verifyFixtureIdentity(repo, goodEnv, true);
 });
