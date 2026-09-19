@@ -10,7 +10,7 @@
 
 **Spec:** [Approved local-first design](../specs/2026-09-19-protected-runner-job-record-design.md).
 
-Status: proposed implementation plan, awaiting user review and execution-method selection. This document does not implement its code examples. Product baseline: `36bab9c85cd6c95bd0ac27ded0da0d3e44faa293`; design commit: `44ba21d8ab079698ef4533fc4bceae8d233dd10e`.
+Status: local implementation was authorized and executed with subagent-driven task reviews. The [verification record](../../plans/2026-09-19-runner-job-record-verification.md) records the tested implementation and actual results; independent Task 5 and whole-branch review remain pending at that handoff. This plan's checkboxes are the original execution checklist, not a live status ledger. Product baseline: `36bab9c85cd6c95bd0ac27ded0da0d3e44faa293`; design commit: `44ba21d8ab079698ef4533fc4bceae8d233dd10e`. No deployment, push, merge, or service activation is authorized.
 
 ## Global Constraints
 
@@ -299,7 +299,7 @@ Here `row(label)` uses `campaign_${label}`, `run_${label}`, a job ID made by pre
 
 - [ ] **Implement path custody and bounded initialization/open.** Keep path code separate from SQL. Walk ancestor components with `lstat`; reject symlinks, relative/dot paths, NUL/control characters, unsafe writable ancestors, and workspace overlap. Ancestors may be root/current-user owned; the leaf directory/database must be current-user owned with exact 0700/0600 modes, no special mode bits, and a single link for regular files. Test-only location admission permits the canonical temporary ancestor but not unsafe descendants. Reject unsupported ownership APIs/platforms. Check exclusion policy in both directions so the store cannot contain a migration root. Use one fixed basename, `runner-jobs.sqlite`.
 
-Create the database file exclusively (`O_CREAT | O_EXCL | O_NOFOLLOW`, 0600) in the already validated empty directory. Pin device/inode/owner/mode/link-count during each open handle's lifetime, checking before operations, after SQLite open, and after durable sync. Validate journal files before SQLite can recover them; reject WAL/SHM, non-regular/linked journals, and weak modes. Do not repair unsafe paths or partially initialized directories. Do not claim an inode remembered only within a process prevents cross-restart snapshot restoration.
+Create the database file exclusively (`O_CREAT | O_EXCL | O_NOFOLLOW`, 0600) in the already validated empty directory. Pin device/inode/owner/mode and regular-file link count during each open handle's lifetime, checking before operations, after SQLite open, and after durable sync. Directory link counts may change when SQLite creates its allowed rollback journal; directory identity, ownership, modes, and the entry allowlist remain checked. Validate journal files before SQLite can recover them; reject WAL/SHM, non-regular/linked journals, and weak modes. Do not repair unsafe paths or partially initialized directories. Do not claim an inode remembered only within a process prevents cross-restart snapshot restoration.
 
 - [ ] **Create a fixed schema and settings.** The complete schema has two tables and SQLite's associated unique indexes; no app tables, triggers, or extra attached databases. Compare stored SQL/index metadata with expected definitions and run `integrity_check` before exposing a handle. Validate all row lengths, counts, revisions, keys and digest syntax. The app performs semantic decoding before it exposes its service.
 
@@ -893,6 +893,6 @@ one implementer handles every task, followed by an independent whole-branch
 review. Neither approach authorizes cloud deployment, GitHub App changes,
 publication, pushing, or merging this work.
 
-Next action: the user reviews this written plan and selects an execution
-method. Until then, do not create product code, install new dependencies,
-initialize stores, or run this plan's migration/image workload.
+Next action at the implementation handoff: independent Task 5 and whole-branch
+review of the tested local commits and verification record. Successful local
+tests do not authorize live stores, service activation, publication, push, or merge.

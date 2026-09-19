@@ -80,6 +80,16 @@ or independently observed and signed execution. External-source publication
 remains disabled until the L7 gateway lifecycle is provisioned, drilled, and
 attested and every remaining pilot gate is completed.
 
+The server-internal runner job service adds a local durable, corruption-checked
+record layer: it preserves the expected job, reviewed output, and first verified
+evidence identity across process restarts without returning publication authority.
+Its dedicated SQLite store is separate from campaign and owner-replay storage;
+the service is not wired to console routes or included in the credential-free
+runner image. This is locally tested on macOS, not deployed protected custody or
+pilot completion. Complete snapshot rollback, physical power-loss durability,
+trusted time during downtime, same-UID tampering, and live custody remain outside
+the demonstrated boundary. See the [verification record](docs/plans/2026-09-19-runner-job-record-verification.md).
+
 ## Local setup
 
 Requirements: Node.js 22+, npm, Git, Docker for isolated verification, and access to repositories you are authorized to test.

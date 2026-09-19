@@ -1,8 +1,9 @@
 # Protected runner job records: local-first design
 
-Status: written specification approved in chat on 2026-09-19. Implementation
-planning is authorized; code execution awaits review of the written plan and
-selection of its execution method. No service activation is authorized.
+Status: written specification approved in chat on 2026-09-19; local implementation
+was subsequently authorized and executed. The [verification record](../../plans/2026-09-19-runner-job-record-verification.md)
+records actual validation results. Independent Task 5 and whole-branch review
+remain pending at that handoff. No service activation is authorized.
 
 Baseline: merged PR #18, `36bab9c85cd6c95bd0ac27ded0da0d3e44faa293`.
 Predecessor: [protected runner evidence design](2026-09-09-protected-runner-evidence-design.md).
