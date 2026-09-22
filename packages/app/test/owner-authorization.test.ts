@@ -15,7 +15,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import test, { mock } from "node:test";
 import {
   OWNER_AUTHORIZATION_AUDIENCE,
   OWNER_AUTHORIZATION_MAX_TTL_MS,
@@ -707,6 +710,65 @@ test("registry is strict, owner-only, non-symlinked, unique, scoped, and time-bo
     writeRegistry(value.registryPath, duplicateRevocation);
     assert.throws(() => verifyFixture(value), /duplicate revoked/);
   } finally {
+    value.cleanup();
+  }
+});
+
+test("source and compiled verification reject workspace registries even through ancestor aliases or caller root overrides", async () => {
+  const value = fixture();
+  const workspace = fileURLToPath(new URL("../../..", import.meta.url));
+  const inside = mkdtempSync(join(workspace, "owner-registry-test-"));
+  const originalCwd = process.cwd();
+  const originalRoot = process.env.API_MIGRATOR_WORKSPACE_ROOT;
+  try {
+    const registryPath = join(inside, "keys.json");
+    writeRegistry(registryPath, value.registry);
+    const alias = join(value.directory, "workspace-alias");
+    symlinkSync(inside, alias, "dir");
+    process.chdir(value.directory);
+    process.env.API_MIGRATOR_WORKSPACE_ROOT = value.directory;
+    const compiled = await import("../dist/owner-authorization.js");
+    for (const verify of [verifyOwnerAuthorizationEnvelope, compiled.verifyOwnerAuthorizationEnvelope]) {
+      const options = {
+        registryPath: value.registryPath, expected: value.expected,
+        expectedChallengeDigest: value.payload.challengeDigest, now: NOW,
+      };
+      assert.ok(verify(value.envelope, options), "an external owner-only registry still verifies");
+      for (const path of [registryPath, join(alias, "keys.json")]) {
+        assert.throws(() => verify(value.envelope, { ...options, registryPath: path }),
+          /owner-only regular non-symlink file outside the workspace/);
+      }
+    }
+  } finally {
+    process.chdir(originalCwd);
+    if (originalRoot === undefined) delete process.env.API_MIGRATOR_WORKSPACE_ROOT;
+    else process.env.API_MIGRATOR_WORKSPACE_ROOT = originalRoot;
+    rmSync(inside, { recursive: true, force: true });
+    value.cleanup();
+  }
+});
+
+test("registry verification closes its real descriptor on success and after a permission rejection", () => {
+  const value = fixture();
+  const open = fs.openSync;
+  const opened: number[] = [];
+  const observer = mock.method(fs, "openSync", (path, flags, mode) => {
+    const descriptor = open(path, flags, mode);
+    opened.push(descriptor);
+    return descriptor;
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.ok(verifyFixture(value));
+    assert.equal(opened.length, 1);
+    assert.throws(() => fs.fstatSync(opened[0]!), { code: "EBADF" });
+    chmodSync(value.registryPath, 0o644);
+    assert.throws(() => verifyFixture(value), /owner-only/);
+    assert.equal(opened.length, 2);
+    assert.throws(() => fs.fstatSync(opened[1]!), { code: "EBADF" });
+  } finally {
+    observer.mock.restore();
+    syncBuiltinESMExports();
     value.cleanup();
   }
 });

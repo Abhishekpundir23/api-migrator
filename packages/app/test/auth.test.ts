@@ -1,10 +1,12 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
   REQUIRED_GITHUB_APP_PERMISSIONS,
   assertConfiguredInstallationId,
@@ -199,6 +201,34 @@ test("private-key files cannot be stored inside the trusted workspace", () => {
       /outside the workspace/
     );
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("private-key reads close the real descriptor on success and after a permission rejection", () => {
+  const directory = mkdtempSync(join(tmpdir(), "api-migrator-app-key-close-"));
+  const keyPath = join(directory, "app.pem");
+  writeFileSync(keyPath, generatedPrivateKey, { mode: 0o600 });
+  const env = { API_MIGRATOR_AUTH_MODE: "github-app", GH_APP_ID: "123", GH_APP_PRIVATE_KEY_PATH: keyPath };
+  const open = fs.openSync;
+  const opened: number[] = [];
+  const observer = mock.method(fs, "openSync", (path, flags, mode) => {
+    const descriptor = open(path, flags, mode);
+    opened.push(descriptor);
+    return descriptor;
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(readAuthConfig(env).mode, "github-app");
+    assert.equal(opened.length, 1);
+    assert.throws(() => fs.fstatSync(opened[0]!), { code: "EBADF" });
+    chmodSync(keyPath, 0o644);
+    assert.throws(() => readAuthConfig(env), /owner-only/);
+    assert.equal(opened.length, 2);
+    assert.throws(() => fs.fstatSync(opened[1]!), { code: "EBADF" });
+  } finally {
+    observer.mock.restore();
+    syncBuiltinESMExports();
     rmSync(directory, { recursive: true, force: true });
   }
 });

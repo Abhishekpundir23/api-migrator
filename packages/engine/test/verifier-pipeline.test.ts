@@ -856,6 +856,19 @@ test("successful test and lint processes fail verification if they mutate the re
   });
 });
 
+test("every custom package-manager config blocks installation before a runner command", async () => {
+  for (const config of [".npmrc", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs", ".pnpmfile.js", "bunfig.toml"]) {
+    await withRepo(async (repo) => {
+      writeFileSync(join(repo, config), "untrusted repository configuration\n");
+      const runner = new InspectingRunner();
+      const result = installDeps(repo, { runner, install: true });
+      assert.equal(result.ok, false, config);
+      assert.equal(result.reason, `custom package-manager configuration is not allowed: ${config}`);
+      assert.equal(runner.commands.length, 0, config);
+    });
+  }
+});
+
 test("networked installation rejects repository-controlled package configuration and dependency hosts", async () => {
   await withRepo(async (repo) => {
     writeFileSync(join(repo, ".npmrc"), "registry=https://packages.example.invalid/\n");

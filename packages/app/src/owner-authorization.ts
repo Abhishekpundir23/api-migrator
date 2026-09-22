@@ -829,8 +829,6 @@ function parseRegistryPublicKey(entry: OwnerAuthorizationRegistryKey): KeyObject
 
 function readOwnerOnlyFile(path: string): { canonicalPath: string; contents: string } {
   if (!isAbsolute(path)) reject("owner key registry path must be absolute");
-  let descriptor: number | null = null;
-  let result: { canonicalPath: string; contents: string } | undefined;
   try {
     const before = lstatSync(path);
     if (before.isSymbolicLink() || !before.isFile()) throw new Error("unsafe registry file");
@@ -845,33 +843,34 @@ function readOwnerOnlyFile(path: string): { canonicalPath: string; contents: str
     ) {
       throw new Error("registry inside workspace");
     }
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const after = fstatSync(descriptor);
-    if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino) {
-      throw new Error("registry changed while opening");
+    // Only an opened numeric descriptor reaches readFileSync. A nullable
+    // descriptor confuses build-time file tracing into including the workspace.
+    const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const after = fstatSync(descriptor);
+      if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino) {
+        throw new Error("registry changed while opening");
+      }
+      if (after.size <= 0 || after.size > MAX_REGISTRY_BYTES) throw new Error("registry size");
+      if (process.platform !== "win32" && (after.mode & 0o077) !== 0) {
+        throw new Error("registry permissions");
+      }
+      if (
+        process.platform !== "win32" &&
+        typeof process.getuid === "function" &&
+        after.uid !== process.getuid()
+      ) {
+        throw new Error("registry ownership");
+      }
+      return { canonicalPath, contents: readFileSync(descriptor, "utf8") };
+    } finally {
+      closeSync(descriptor);
     }
-    if (after.size <= 0 || after.size > MAX_REGISTRY_BYTES) throw new Error("registry size");
-    if (process.platform !== "win32" && (after.mode & 0o077) !== 0) {
-      throw new Error("registry permissions");
-    }
-    if (
-      process.platform !== "win32" &&
-      typeof process.getuid === "function" &&
-      after.uid !== process.getuid()
-    ) {
-      throw new Error("registry ownership");
-    }
-    result = { canonicalPath, contents: readFileSync(descriptor, "utf8") };
   } catch {
     // The single error below deliberately hides path, ownership, race, and
     // parsing distinctions from callers.
-  } finally {
-    if (descriptor !== null) closeSync(descriptor);
-  }
-  if (!result) {
     reject("owner key registry must be an owner-only regular non-symlink file outside the workspace");
   }
-  return result;
 }
 
 function resolveRegistryPath(value: string | undefined): string {

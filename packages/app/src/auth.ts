@@ -170,7 +170,6 @@ function readPrivateKeyFile(path: string): string {
     throw new Error("GH_APP_PRIVATE_KEY_PATH must be an absolute path");
   }
 
-  let descriptor: number | null = null;
   try {
     const canonicalPath = realpathSync.native(path);
     const canonicalWorkspace = realpathSync.native(WORKSPACE_ROOT);
@@ -183,28 +182,32 @@ function readPrivateKeyFile(path: string): string {
     ) {
       throw new Error("private-key file is inside the workspace");
     }
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const stats = fstatSync(descriptor);
-    if (!stats.isFile() || stats.size <= 0 || stats.size > MAX_PRIVATE_KEY_BYTES) {
-      throw new Error("invalid private-key file");
+    // Keep ownership scoped to a successful open; a nullable readFileSync
+    // argument is also misinterpreted as a path by build-time file tracing.
+    const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stats = fstatSync(descriptor);
+      if (!stats.isFile() || stats.size <= 0 || stats.size > MAX_PRIVATE_KEY_BYTES) {
+        throw new Error("invalid private-key file");
+      }
+      if (process.platform !== "win32" && (stats.mode & 0o077) !== 0) {
+        throw new Error("private-key file permissions are too broad");
+      }
+      if (
+        process.platform !== "win32" &&
+        typeof process.getuid === "function" &&
+        stats.uid !== process.getuid()
+      ) {
+        throw new Error("private-key file is not owned by the current user");
+      }
+      return validatePrivateKey(readFileSync(descriptor, "utf8"));
+    } finally {
+      closeSync(descriptor);
     }
-    if (process.platform !== "win32" && (stats.mode & 0o077) !== 0) {
-      throw new Error("private-key file permissions are too broad");
-    }
-    if (
-      process.platform !== "win32" &&
-      typeof process.getuid === "function" &&
-      stats.uid !== process.getuid()
-    ) {
-      throw new Error("private-key file is not owned by the current user");
-    }
-    return validatePrivateKey(readFileSync(descriptor, "utf8"));
   } catch {
     throw new Error(
       "GH_APP_PRIVATE_KEY_PATH must reference an owner-only, regular RSA private-key file outside the workspace"
     );
-  } finally {
-    if (descriptor !== null) closeSync(descriptor);
   }
 }
 

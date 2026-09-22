@@ -24,6 +24,7 @@
     "test": "npm run build:packages && npm run test:workspaces",
     "test:workspaces": "npm run test --workspaces --if-present",
     "test:pilot": "node --test scripts/validate-pilot-result.test.mjs",
+    "test:console-packaging": "node --test scripts/console-packaging.test.mjs",
     "test:ops": "npm run test:ops:shell && npm run test:ops:gateway && npm run test:ops:deployment && npm run test:ops:image",
     "test:ops:shell": "bash -n ops/publication-runner/run-credential-free-preview.sh && bash -n ops/publication-runner/deployment/cleanup-runner.sh",
     "test:ops:gateway": "node --test ops/publication-runner/gateway/test/*.test.mjs",
@@ -33,7 +34,7 @@
     "runner:image:verify": "node ops/publication-runner/image/verify-image-config.mjs api-migrator-runner:local",
     "runner:image:integration": "node ops/publication-runner/image/run-phase-integration.mjs api-migrator-runner:local",
     "pilot:validate": "node scripts/validate-pilot-result.mjs",
-    "ci": "npm run build:packages && npm run typecheck:workspaces && npm run test:workspaces && npm run test:pilot && npm run test:ops && npm run pilot:validate -- docs/pilot/pilot-result.example.json && npm run build:console"
+    "ci": "npm run build:packages && npm run typecheck:workspaces && npm run test:workspaces && npm run test:pilot && npm run test:ops && npm run pilot:validate -- docs/pilot/pilot-result.example.json && npm run build:console && npm run test:console-packaging"
   },
   "devDependencies": {
     "ajv": "8.20.0",

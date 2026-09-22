@@ -876,8 +876,11 @@ const DEPENDENCY_SECTIONS = ["dependencies", "devDependencies", "optionalDepende
  */
 function dependencyTrustFailure(repoPath: string, opts: VerifyOptions): string | null {
   try {
-    for (const name of PACKAGE_CONFIG_FILES) {
-      if (existsSync(join(repoPath, name))) return `custom package-manager configuration is not allowed: ${name}`;
+    // Keep the known filename scoped to the callback. Turbopack otherwise
+    // widens the loop's filesystem lookup into a whole-project asset trace.
+    const customConfig = PACKAGE_CONFIG_FILES.find((name) => existsSync(join(repoPath, name)));
+    if (customConfig !== undefined) {
+      return `custom package-manager configuration is not allowed: ${customConfig}`;
     }
     // npm and the other supported package managers accept split boolean
     // values, negated flags, abbreviations, single-dash long options, and
