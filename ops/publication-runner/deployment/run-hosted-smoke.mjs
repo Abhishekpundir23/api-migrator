@@ -22,6 +22,7 @@ import { arch, release } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { annotateFixtureFailure } from "./fixture-diagnostics.mjs";
 
 import {
   canonicalJson,
@@ -417,10 +418,12 @@ function runCommand(path, args, options = {}) {
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
   if (Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(stderr, "utf8") > MAX_COMMAND_OUTPUT_BYTES) {
-    throw new Error(`hosted smoke command output is excessive: ${basename(path)}`);
+    throw annotateFixtureFailure(new Error(`hosted smoke command output is excessive: ${basename(path)}`), { category: "output_limit" });
   }
   if (result.error || (!options.allowFailure && result.status !== 0)) {
-    throw new Error(`hosted smoke command failed: ${basename(path)} ${args.join(" ")} (${result.error?.message ?? stderr.trim() ?? result.status})`);
+    throw annotateFixtureFailure(new Error(`hosted smoke command failed: ${basename(path)} ${args.join(" ")} (${result.error?.message ?? stderr.trim() ?? result.status})`), {
+      category: result.error?.code === "ETIMEDOUT" ? "deadline" : result.error ? "spawn" : "subprocess_exit",
+      exitStatus: result.status, signal: result.signal, timedOut: result.error?.code === "ETIMEDOUT", commandBudgetMs: options.timeoutMs ?? 30000 });
   }
   return Object.freeze({ status: result.status ?? 1, stdout, stderr });
 }

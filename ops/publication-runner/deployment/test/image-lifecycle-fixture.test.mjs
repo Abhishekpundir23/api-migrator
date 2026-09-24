@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as fixture from "../run-image-lifecycle-fixture.mjs";
+import { atFixtureStage } from "../fixture-diagnostics.mjs";
 import { parseImageLifecycleFixtureCli, validateFixtureEnvironment,
   claimFixtureOutput, assertFixtureFresh, proveForcedFixtureRoute, createImageFixtureOperations, ExpectedInstallFailure,
 } from "../run-image-lifecycle-fixture.mjs";
@@ -97,9 +98,10 @@ function adapter(t, fault = {}) {
     gatewayV4: upstream, gatewayV6: 0, gatewayDownstreamV4: upstream,
     gatewayDownstreamV6: 0, gatewayReject: rejected, runnerReject: n });
   const native = {
-    installPolicy: () => events.push("policy"),
+    installPolicy: () => { events.push("policy"); if (fault.policy) throw new Error("SECRET policy stderr"); },
     startGateway: async () => { events.push("gateway"); if (fault.readiness) throw new Error("listener unavailable"); online = true; return { uid: fault.gatewayUid ? undefined : 12002, listeners: ["127.0.0.1", "::1"] }; },
     probe: (scenario) => { events.push(scenario); n += 1;
+      if (fault.probe && scenario === "correct_sni") throw new Error("SECRET probe stdout /private/source");
       if (scenario === "direct_bypass") elapsed = fault.afterProbesMs ?? 0;
       if (online && ["correct_sni", "correct_sni_ipv6", "direct_bypass"].includes(scenario)) upstream += 1;
       if (scenario === "non_npm") rejected += 1;
@@ -129,6 +131,7 @@ function adapter(t, fault = {}) {
       if (fault.install) throw new Error("real process boundary install failed");
       if (!fault.counter) { n += 10; upstream += 10; }
     }
+    if (fault.output && request.phase === "prepare") return "SECRET malformed output";
     return { prepare: `runner_phase=prepare status=passed prepared_state_digest=${image}\n`,
       install: `runner_phase=install status=passed prepared_state_digest=${image} install_state_digest=${image}\n`,
       migrate: `runner_phase=migrate status=passed dependency_state_digest=${image}\n`,
@@ -201,9 +204,14 @@ test("elapsed lifecycle identifies the refused phase and cleans up without launc
     assert.deepEqual(commands.map((command) => command.phase), ["prepare"]);
     assert.equal(events.at(-1), "cleanup");
     const diagnostic = fixture.formatFixtureFailure(failure);
+    assert.throws(() => atFixtureStage("setup.gateway", "protocol", () => { throw failure; }), (outer) => {
+      assert.equal(fixture.formatFixtureFailure(outer), diagnostic, "outer setup annotation must not hide the original aggregate failure");
+      return true;
+    });
     assert.match(diagnostic, /stage=install.launch/);
     assert.match(diagnostic, /planAgeMs=230000, planRemainingMs=70000, dnsRemainingMs=70000/);
     assert.match(diagnostic, /commandBudgetMs=45000, cleanupReserveMs=30000/);
+    assert.match(diagnostic, new RegExp(`cleanupFailed=${Boolean(cleanupError)}`));
     assert.doesNotMatch(diagnostic, /SECRET|private|credential|104\.16/);
     assert(Buffer.byteLength(diagnostic) <= 512);
   }
@@ -232,7 +240,7 @@ test("joined acquisition failure stays actionable through cleanup without raw di
   const diagnostic = fixture.formatFixtureFailure(new AggregateError([
     failure, new Error("SECRET source=/private/source token=credential"),
   ], "SECRET cleanup stderr"));
-  assert.equal(diagnostic, "fixture DNS admission failed (reason=ttl_floor_exhausted, attempts=18, elapsedMs=90000, requiredMinimumTtlSeconds=120)");
+  assert.match(diagnostic, /fixture DNS admission failed \(reason=ttl_floor_exhausted, attempts=18, elapsedMs=90000, requiredMinimumTtlSeconds=120/);
   for (const fault of [
     { resolver: async () => { throw new Error("SECRET credential 104.16.0.34"); } },
     { resolver: async () => [{ address: "104.16.0.34", ttl: 120 }],
@@ -252,5 +260,32 @@ test("CLI failure output uses the bounded formatter instead of arbitrary parser 
     "--SECRET=credential"], { encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "image lifecycle fixture failed: fixture execution failed\n");
+  assert.match(result.stderr, /^image lifecycle fixture failed: fixture execution failed \(stage=setup.cli, category=protocol, cleanupFailed=false\)\n$/);
+});
+
+test("host and phase validation failures retain their origin when cleanup also fails", async (t) => {
+  for (const [fault, stage, category, phases] of [
+    ["policy", "installPolicy", "host_operation", []],
+    ["readiness", "startGateway", "host_operation", ["prepare"]],
+    ["probe", "probe.correct_sni", "host_operation", ["prepare"]],
+    ["output", "prepare.validate", "protocol", ["prepare"]],
+  ]) {
+    for (const cleanupError of [undefined, new Error("SECRET cleanup token=credential")]) {
+      const { operations, events, commands } = adapter(t, { [fault]: true, cleanupError });
+      await assert.rejects(runFixtureLifecycle(operations), (error) => {
+        const diagnostic = fixture.formatFixtureFailure(error);
+        assert.match(diagnostic, new RegExp(`stage=${stage}, category=${category}`));
+        assert.match(diagnostic, new RegExp(`cleanupFailed=${Boolean(cleanupError)}`));
+        assert.doesNotMatch(diagnostic, /SECRET|private|credential|stderr|stdout/);
+        return true;
+      });
+      assert.deepEqual(commands.map((command) => command.phase), phases);
+      assert.equal(events.at(-1), "cleanup");
+    }
+  }
+  const onlyCleanup = adapter(t, { cleanup: true });
+  await assert.rejects(runFixtureLifecycle(onlyCleanup.operations), (error) => {
+    assert.match(fixture.formatFixtureFailure(error), /stage=cleanup, category=cleanup, cleanupFailed=true/);
+    return true;
+  });
 });

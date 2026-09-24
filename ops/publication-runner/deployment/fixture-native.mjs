@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import * as host from "./run-hosted-smoke.mjs";
 import { cleanupFixtureResources, validateFixtureOwnership } from "./fixture-ownership.mjs";
+import { annotateFixtureFailure, atFixtureStage } from "./fixture-diagnostics.mjs";
 
 export function assertFixtureDockerDaemon(info) {
   if (info?.OSType !== "linux" || info.CgroupVersion !== "2" || !Array.isArray(info.SecurityOptions) ||
@@ -120,30 +121,32 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
     const cancellation = new AbortController();
     let stdout = "", stderr = "", uidObserved = false, settled = false, childClosed = false;
     let deadline, observer, inFlight = Promise.resolve();
-    const expired = () => new Error("fixture phase deadline exceeded");
+    const expired = () => annotateFixtureFailure(new Error("fixture phase deadline exceeded"), {
+      stage: `${phase}.execute`, category: "deadline", timedOut: true, commandBudgetMs: timeoutMs });
     const remaining = () => {
       const milliseconds = expiresAt - performance.now();
       if (milliseconds <= 0) throw expired();
       return Math.max(1, Math.floor(milliseconds));
     };
-    const child = spawnProcess(docker, args, { cwd: "/", env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C", TZ: "UTC" },
-      stdio: ["ignore", "pipe", "pipe"] });
+    const child = atFixtureStage(`${phase}.execute`, "spawn", () => spawnProcess(docker, args, { cwd: "/", env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C", TZ: "UTC" },
+      stdio: ["ignore", "pipe", "pipe"] }), { commandBudgetMs: timeoutMs });
     const fail = (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline); clearTimeout(observer);
       cancellation.abort(); // Kills the active inspect process, including final inspection.
       if (!childClosed) child.kill("SIGKILL");
-      reject(performance.now() >= expiresAt ? expired() : error);
+      reject(performance.now() >= expiresAt ? expired() : annotateFixtureFailure(error, {
+        stage: `${phase}.execute`, category: "unexpected", commandBudgetMs: timeoutMs }));
     };
     const receive = (stream) => (data) => {
       if (settled) return;
       if (stream === "stdout") stdout += data; else stderr += data;
-      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 1024 * 1024) fail(new Error("fixture phase output exceeded bound"));
+      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 1024 * 1024) fail(annotateFixtureFailure(new Error("fixture phase output exceeded bound"), { category: "output_limit" }));
     };
     child.stdout.on("data", receive("stdout")); child.stderr.on("data", receive("stderr"));
     deadline = setTimeout(() => fail(expired()), Math.max(1, expiresAt - performance.now()));
-    const inspect = async (final) => {
+    const inspect = (final) => atFixtureStage(`${phase}.inspect`, "inspection", async () => {
       const name = resources.containers[phase];
       const result = await command(docker, ["container", "inspect", name], {
         timeoutMs: Math.min(5000, remaining()), signal: cancellation.signal,
@@ -154,22 +157,22 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
         const missing = [`Error: No such object: ${name}`, `Error: No such container: ${name}`,
           `Error response from daemon: No such container: ${name}`];
         if (!final && result.status === 1 && missing.includes(result.stderr.trim())) return null;
-        throw new Error("fixture active container inspection failed");
+        throw annotateFixtureFailure(new Error("fixture active container inspection failed"), { category: "inspection", exitStatus: result.status });
       }
       const values = JSON.parse(result.stdout);
       if (!Array.isArray(values) || values.length !== 1) throw new Error("fixture container inspection malformed");
-      return validateFixtureContainer(values[0], resources, phase);
-    };
+      return atFixtureStage(`${phase}.inspect`, "identity", () => validateFixtureContainer(values[0], resources, phase));
+    });
     const observe = async () => {
       const value = await inspect(false);
       if (!settled && !childClosed && value?.State.Running && value.State.Pid > 1) {
         const pid = value.State.Pid;
         let status;
-        try { status = await processStatus(pid, { signal: cancellation.signal }); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+        try { status = await atFixtureStage(`${phase}.uid`, "uid_evidence", () => processStatus(pid, { signal: cancellation.signal })); } catch (error) { if (error.code === "ENOENT") return; throw error; }
         remaining();
         if (settled || childClosed) return;
         const ids = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m.exec(status);
-        if (!ids || ids.slice(1).some((id) => id !== "12001")) throw new Error("fixture workload host UID evidence mismatched");
+        if (!ids || ids.slice(1).some((id) => id !== "12001")) throw annotateFixtureFailure(new Error("fixture workload host UID evidence mismatched"), { stage: `${phase}.uid`, category: "uid_evidence" });
         uidObserved = true;
       }
     };
@@ -183,8 +186,8 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
       } catch (error) { fail(error); }
     };
     schedule();
-    child.once("error", fail);
-    child.once("close", (code) => {
+    child.once("error", (error) => fail(annotateFixtureFailure(error, { stage: `${phase}.execute`, category: "spawn" })));
+    child.once("close", (code, signal) => {
       childClosed = true;
       clearTimeout(observer);
       if (settled) return;
@@ -194,15 +197,15 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
         if (settled) return;
         const value = await inspect(true);
         if (settled) return;
-        if (!value || value.State.Running) throw new Error("fixture phase container not settled");
+        if (!value || value.State.Running) throw annotateFixtureFailure(new Error("fixture phase container not settled"), { stage: `${phase}.inspect`, category: "inspection" });
         if (code !== 0) {
           const error = new Error(`fixture ${phase} subprocess failed`);
           if (phase === "install" && stderr.includes("prepared install state does not match the host-sealed digest")) error.code = "FIXTURE_INSTALL_PROTOCOL_REJECTED";
-          throw error;
+          throw annotateFixtureFailure(error, { stage: `${phase}.execute`, category: "subprocess_exit", exitStatus: code, signal });
         }
-        if (phase === "install" && !uidObserved) throw new Error("fixture install host UID evidence missing");
+        if (phase === "install" && !uidObserved) throw annotateFixtureFailure(new Error("fixture install host UID evidence missing"), { stage: `${phase}.uid`, category: "uid_evidence" });
         remaining();
-        evidence.write(`${phase}-execution`, JSON.stringify({ phase, image: resources.image, jobId: resources.jobId, uid: 12001, uidObserved, code }));
+        atFixtureStage(`${phase}.evidence`, "evidence", () => evidence.write(`${phase}-execution`, JSON.stringify({ phase, image: resources.image, jobId: resources.jobId, uid: 12001, uidObserved, code })));
         remaining();
         settled = true; clearTimeout(deadline);
         accept(stdout);

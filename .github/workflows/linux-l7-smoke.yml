@@ -248,6 +248,7 @@ jobs:
           sudo install -o root -g root -m 0555 -- "$nft_source" "${tool_root}/nft"
           sudo install -o root -g root -m 0444 -- \
             "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/run-hosted-smoke.mjs" \
+            "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/fixture-diagnostics.mjs" \
             "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/cleanup-hosted-smoke.mjs" \
             "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/hosted-lifecycle-smoke.mjs" \
             "${GITHUB_WORKSPACE}/ops/publication-runner/deployment/hosted-smoke-runtime.mjs" \

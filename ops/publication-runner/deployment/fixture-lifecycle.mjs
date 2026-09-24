@@ -29,9 +29,11 @@ export async function runFixtureLifecycle(operations) {
     const cleanup = await functions.cleanup();
     if (cleanup?.complete !== true) throw new Error("fixture cleanup incomplete");
   } catch (error) {
+    const cleanupFailure = annotateFixtureFailure(error, { stage: "cleanup", category: "cleanup" });
     failure = failed
-      ? new AggregateError([failure, error], "fixture execution and cleanup failed")
-      : error;
+      ? new AggregateError([failure, cleanupFailure], "fixture execution and cleanup failed")
+      : cleanupFailure;
+    markFixtureCleanupFailure(failure);
     failed = true;
   }
   if (failed) throw failure;
@@ -47,3 +49,4 @@ export async function runFixtureLifecycle(operations) {
     externalSigningEligible: false,
   };
 }
+import { annotateFixtureFailure, markFixtureCleanupFailure } from "./fixture-diagnostics.mjs";

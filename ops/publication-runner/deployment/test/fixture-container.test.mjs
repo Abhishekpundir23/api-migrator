@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { validateFixtureContainer, assertFixtureDockerDaemon, executeNativeFixturePhase } from "../fixture-native.mjs";
-import { gatewaySystemdArguments } from "../run-hosted-smoke.mjs";
+import { gatewaySystemdArguments, runCommand } from "../run-hosted-smoke.mjs";
+import { atFixtureStage } from "../fixture-diagnostics.mjs";
+import { formatFixtureFailure } from "../run-image-lifecycle-fixture.mjs";
 import { EventEmitter } from "node:events";
 import { performance } from "node:perf_hooks";
 import { runFixtureLifecycle } from "../fixture-lifecycle.mjs";
@@ -15,6 +17,33 @@ const observed = { Name: `/${resources.containers.install}`, Image: image,
   Config: { User: "12001:12001", Labels: { "api-migrator.fixture-job": jobId } },
   HostConfig: { NetworkMode: "host", UsernsMode: "", Privileged: false },
   State: { Running: true, Pid: 1234 } };
+
+test("native host command facts preserve exact status and timeout without arguments or output", () => {
+  for (const [script, timeoutMs, category, facts] of [
+    ["process.stderr.write('SECRET /private/source');process.exit(7)", 1000, "subprocess_exit", /exitStatus=7, timedOut=false, commandBudgetMs=1000/],
+    ["setTimeout(()=>{}, 10000)", 50, "deadline", /signal=SIGTERM, timedOut=true, commandBudgetMs=50/],
+  ]) assert.throws(() => atFixtureStage("probe.correct_sni", "host_operation", () => runCommand(process.execPath, ["-e", script], { timeoutMs })), (error) => {
+    const diagnostic = formatFixtureFailure(error);
+    assert.match(diagnostic, new RegExp(`stage=probe.correct_sni, category=${category}`));
+    assert.match(diagnostic, facts);
+    assert.doesNotMatch(diagnostic, /SECRET|private|setTimeout|process\.stderr|node_modules/);
+    return true;
+  });
+  let accessed = 0;
+  const error = new Error("SECRET");
+  for (const key of ["stage", "category", "code", "signal", "stdout", "stderr"]) Object.defineProperty(error, key, { get() { accessed += 1; throw new Error("SECRET getter"); } });
+  assert.throws(() => atFixtureStage("probe.correct_sni", "host_operation", () => { throw error; }), (failure) => {
+    assert.match(formatFixtureFailure(failure), /stage=probe.correct_sni, category=host_operation/);
+    return true;
+  });
+  assert.equal(accessed, 0);
+  assert.throws(() => atFixtureStage("probe.correct_sni", "host_operation", () => { throw new Error("SECRET"); }, {
+    exitStatus: 256, signal: "SECRET", timedOut: "true", commandBudgetMs: Infinity,
+  }), (failure) => {
+    assert.equal(formatFixtureFailure(failure), "fixture execution failed (stage=probe.correct_sni, category=host_operation, cleanupFailed=false)");
+    return true;
+  });
+});
 test("container ownership rejects substituted label/image/user/network/remapping before removal", () => {
   assert.equal(validateFixtureContainer(observed, resources, "install").State.Pid, 1234);
   for (const changed of [
@@ -54,6 +83,7 @@ test("native execution requires live host UID evidence, bounded output and settl
     child.kill = () => { killed = true; clearTimeout(finish); running = false; queueMicrotask(() => child.emit("close", null)); };
     const processes = {
       spawn(path, args, options) {
+        if (fault.spawn) throw new Error("SECRET spawn arguments /private/source");
         if (fault.slowSpawn) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
         assert.equal(path, "/usr/bin/docker");
         assert(!args.includes("--rm"));
@@ -62,11 +92,13 @@ test("native execution requires live host UID evidence, bounded output and settl
           running = false;
           if (fault.protocol) child.stderr.emit("data", "prepared install state does not match the host-sealed digest");
           child.stdout.emit("data", fault.excessive ? "x".repeat(1024 * 1024 + 1) : "trusted status\n");
-          child.emit("close", fault.protocol ? 1 : 0);
+          child.emit("close", fault.protocol ? 1 : fault.exit ? 7 : 0, fault.signal ?? null);
         }, fault.fast ? 1 : 150);
         return child;
       },
       command(path, args) {
+        if (fault.inspect) throw new Error("SECRET inspect stdout 104.16.0.34");
+        if (fault.malformed) return { status: 0, stdout: "SECRET malformed inspect" };
         assert.equal(path, "/usr/bin/docker");
         if (args[1] === "ls") return { stdout: resources.containers.install };
         assert.deepEqual(args, ["container", "inspect", resources.containers.install]);
@@ -86,6 +118,27 @@ test("native execution requires live host UID evidence, bounded output and settl
   await assert.rejects(run({ excessive: true }), /output exceeded/);
   await assert.rejects(run({ write: true }), /evidence write failed/);
   await assert.rejects(run({ protocol: true }), (error) => error.code === "FIXTURE_INSTALL_PROTOCOL_REJECTED");
+  for (const [fault, stage, category, facts] of [
+    [{ timeout: true }, "install.execute", "deadline", /timedOut=true/],
+    [{ spawn: true }, "install.execute", "spawn", /commandBudgetMs=1000/],
+    [{ exit: true }, "install.execute", "subprocess_exit", /exitStatus=7/],
+    [{ exit: true, signal: "SIGTERM" }, "install.execute", "subprocess_exit", /signal=SIGTERM/],
+    [{ inspect: true }, "install.inspect", "inspection", /cleanupFailed=false/],
+    [{ malformed: true }, "install.inspect", "inspection", /cleanupFailed=false/],
+    [{ uid: true }, "install.uid", "uid_evidence", /cleanupFailed=false/],
+    [{ fast: true }, "install.uid", "uid_evidence", /cleanupFailed=false/],
+    [{ write: true }, "install.evidence", "evidence", /cleanupFailed=false/],
+    [{ excessive: true }, "install.execute", "output_limit", /cleanupFailed=false/],
+  ]) {
+    await assert.rejects(run(fault), (error) => {
+      const diagnostic = formatFixtureFailure(error);
+      assert.match(diagnostic, new RegExp(`stage=${stage}, category=${category}`));
+      assert.match(diagnostic, facts);
+      assert.doesNotMatch(diagnostic, /SECRET|private|104\.16|trusted status/);
+      assert(Buffer.byteLength(diagnostic) <= 512);
+      return true;
+    });
+  }
 });
 
 for (const inspection of ["active", "final"]) {

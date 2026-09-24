@@ -10,37 +10,13 @@ import { canonicalJson, renderGatewayDeployment } from "../gateway/gateway-contr
 import { deriveFixtureResources, fixtureOwnership } from "./fixture-ownership.mjs";
 import { createFixtureNative, executeNativeFixturePhase, assertFixtureDockerDaemon, fixtureContainerInventory, cleanupNativeFixture } from "./fixture-native.mjs";
 import { runFixtureLifecycle } from "./fixture-lifecycle.mjs";
+import { annotateFixtureFailure, assertFixtureDiagnosticStage, atFixtureStage, formatFixtureFailure, markFixtureCleanupFailure } from "./fixture-diagnostics.mjs";
+export { formatFixtureFailure } from "./fixture-diagnostics.mjs";
 
 const USAGE = "usage: run-image-lifecycle-fixture.mjs --image sha256:DIGEST --output-dir /tmp/api-migrator-fixture-results/NAME [--scenario install_failure]";
 const CLEANUP_RESERVE_MS = 30000;
 const OPERATION_STAGES = ["installPolicy", "prepare", "startGateway", "probeOnline", "install", "stopGateway", "assertOffline", "migrate", "verify"];
-const FRESHNESS_STAGES = new Set(["unspecified", ...OPERATION_STAGES,
-  ...["prepare", "install", "migrate", "verify"].flatMap((phase) => [`${phase}.launch`, `${phase}.complete`]),
-  ...["wrong_sni", "absent_sni", "wrong_sni_ipv6", "absent_sni_ipv6", "non_443", "non_npm", "correct_sni", "correct_sni_ipv6", "direct_bypass", "offline_network"]
-    .map((name) => `probe.${name}`)]);
-// Only locally constructed diagnostics may cross the CLI boundary. Neither
-// arbitrary Error.message values nor aggregate cleanup messages are published.
-const failureDiagnostics = new WeakMap();
 const safeInteger = (value) => Number.isSafeInteger(value) ? value : null;
-
-export function formatFixtureFailure(error) {
-  const pending = [error];
-  for (let visited = 0; pending.length && visited < 16; visited += 1) {
-    const item = pending.shift();
-    if (!item || typeof item !== "object") continue;
-    const diagnostic = failureDiagnostics.get(item);
-    if (diagnostic) return diagnostic.slice(0, 512);
-    if (item instanceof AggregateError) {
-      const errors = Object.getOwnPropertyDescriptor(item, "errors")?.value;
-      if (Array.isArray(errors)) {
-        for (let index = 0; index < Math.min(errors.length, 8); index += 1) {
-          pending.push(Object.getOwnPropertyDescriptor(errors, String(index))?.value);
-        }
-      }
-    }
-  }
-  return "fixture execution failed";
-}
 
 export async function resolveImageFixtureOrigin(options = {}) {
   let diagnostic;
@@ -54,9 +30,8 @@ export async function resolveImageFixtureOrigin(options = {}) {
     const failure = new Error("fixture DNS admission failed");
     const outcomes = new Set(["ttl_floor_exhausted", "resolver_timeout", "resolver_error", "missing_or_excessive_answer", "invalid_answer"]);
     const reason = outcomes.has(diagnostic?.outcome) ? diagnostic.outcome : "diagnostic_or_internal_failure";
-    failureDiagnostics.set(failure, `fixture DNS admission failed (reason=${reason}, attempts=${safeInteger(diagnostic?.attempts)}, ` +
-      `elapsedMs=${safeInteger(diagnostic?.elapsedMs)}, requiredMinimumTtlSeconds=120)`);
-    throw failure;
+    throw annotateFixtureFailure(failure, { stage: "setup.dns", category: "dns_admission", reason,
+      attempts: diagnostic?.attempts, elapsedMs: diagnostic?.elapsedMs, requiredMinimumTtlSeconds: 120 });
   }
 }
 export function parseImageLifecycleFixtureCli(argv) {
@@ -85,7 +60,7 @@ export function claimFixtureOutput(path) {
 }
 
 export function assertFixtureFresh(record, dnsExpiry, now, timeoutMs, stage = "unspecified") {
-  if (!FRESHNESS_STAGES.has(stage)) throw new Error("fixture freshness stage invalid");
+  assertFixtureDiagnosticStage(stage);
   const job = record?.plan?.job;
   if (![job?.createdAt, job?.expiresAt, dnsExpiry, now, timeoutMs].every(Number.isSafeInteger) ||
       timeoutMs < 1 || now < job.createdAt || now + timeoutMs + CLEANUP_RESERVE_MS >= Math.min(job.expiresAt, dnsExpiry)) {
@@ -94,8 +69,9 @@ export function assertFixtureFresh(record, dnsExpiry, now, timeoutMs, stage = "u
       `planAgeMs=${difference(now, job?.createdAt)}, planRemainingMs=${difference(job?.expiresAt, now)}, ` +
       `dnsRemainingMs=${difference(dnsExpiry, now)}, commandBudgetMs=${safeInteger(timeoutMs)}, cleanupReserveMs=${CLEANUP_RESERVE_MS})`;
     const error = new Error(diagnostic);
-    failureDiagnostics.set(error, diagnostic);
-    throw error;
+    throw annotateFixtureFailure(error, { stage, category: "freshness", planAgeMs: difference(now, job?.createdAt),
+      planRemainingMs: difference(job?.expiresAt, now), dnsRemainingMs: difference(dnsExpiry, now),
+      commandBudgetMs: safeInteger(timeoutMs), cleanupReserveMs: CLEANUP_RESERVE_MS });
   }
   return timeoutMs;
 }
@@ -122,7 +98,7 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
     installNetwork: "host", uid: 12001, gid: 12001, timeoutMs: phaseTimeout,
     execute: async (request) => {
       assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), request.timeoutMs, `${request.phase}.launch`);
-      const output = await execute(request);
+      const output = await atFixtureStage(`${request.phase}.execute`, "unexpected", () => execute(request), { commandBudgetMs: request.timeoutMs });
       assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 1, `${request.phase}.complete`);
       return output;
     } });
@@ -133,11 +109,11 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
   };
   const probe = (scenario) => {
     assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 15000, `probe.${scenario}`);
-    native.probe(scenario);
+    atFixtureStage(`probe.${scenario}`, "host_operation", () => native.probe(scenario));
   };
-  return {
+  const operations = {
     async installPolicy() { order(0); await native.installPolicy(); stage = 1; },
-    async prepare() { order(1); prepared = await phases.prepare(); stage = 2; },
+    async prepare() { order(1); prepared = await atFixtureStage("prepare.validate", "protocol", () => phases.prepare()); stage = 2; },
     async startGateway() {
       order(2);
       const ready = await native.startGateway();
@@ -159,14 +135,14 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
         }
       }
       const before = native.counters(); probe("direct_bypass");
-      evidence.write("direct-forced-route", JSON.stringify(proveForcedFixtureRoute(before, native.counters())));
+      atFixtureStage("probeOnline", "evidence", () => evidence.write("direct-forced-route", JSON.stringify(proveForcedFixtureRoute(before, native.counters()))));
       stage = 4;
     },
     async install() {
       order(4);
       const before = native.counters();
       if (scenario === "install_failure") {
-        try { await phases.install({ preparedStateDigest: `sha256:${"0".repeat(64)}` }); }
+        try { await atFixtureStage("install.validate", "protocol", () => phases.install({ preparedStateDigest: `sha256:${"0".repeat(64)}` })); }
         catch (error) {
           // Only a real nonzero install subprocess is the injected outcome;
           // expiry/UID/evidence errors must not be converted to expected failure.
@@ -175,9 +151,9 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
         }
         throw new Error("fixed install failure unexpectedly succeeded");
       }
-      installed = await phases.install(prepared);
+      installed = await atFixtureStage("install.validate", "protocol", () => phases.install(prepared));
       installProof = proveForcedFixtureRoute(before, native.counters());
-      evidence.write("install-forced-route", JSON.stringify(installProof));
+      atFixtureStage("install.evidence", "evidence", () => evidence.write("install-forced-route", JSON.stringify(installProof)));
       stage = 5;
     },
     async stopGateway() { order(5); await native.stopGateway(); stage = 6; },
@@ -191,13 +167,15 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
           nftCounterDelta(before, after, "gatewayDownstreamV4") + nftCounterDelta(before, after, "gatewayDownstreamV6") !== 0 || !native.idle()) {
         throw new Error("fixture offline closure proof incomplete");
       }
-      evidence.write("offline-closure", JSON.stringify({ idle: true, listenerAbsent: true, before, after }));
+      atFixtureStage("assertOffline", "evidence", () => evidence.write("offline-closure", JSON.stringify({ idle: true, listenerAbsent: true, before, after })));
       stage = 7;
     },
-    async migrate() { order(7); migrated = await phases.migrate(installed); stage = 8; },
-    async verify() { order(8); const result = await phases.verify(migrated); stage = 9; return { ...result, installProof }; },
+    async migrate() { order(7); migrated = await atFixtureStage("migrate.validate", "protocol", () => phases.migrate(installed)); stage = 8; },
+    async verify() { order(8); const result = await atFixtureStage("verify.validate", "protocol", () => phases.verify(migrated)); stage = 9; return { ...result, installProof }; },
     async cleanup() { return native.cleanup(); },
   };
+  return Object.fromEntries(Object.entries(operations).map(([name, operation]) => [name,
+    () => atFixtureStage(name, name === "cleanup" ? "cleanup" : "host_operation", operation)]));
 }
 
 function writeOwnership(outputDir, resources) {
@@ -240,27 +218,44 @@ function renderFixtureGateway(plan, resources, inventory) {
 }
 
 export async function runImageLifecycleFixture(argv) {
+  const context = { stage: "setup.cli", category: "protocol" };
+  try { return await runImageLifecycleFixtureInternal(argv, context); }
+  catch (error) { throw annotateFixtureFailure(error, context); }
+}
+
+async function runImageLifecycleFixtureInternal(argv, context) {
   const config = parseImageLifecycleFixtureCli(argv);
+  context.stage = "setup.environment"; context.category = "identity";
   const environment = validateFixtureEnvironment(process.env);
+  context.stage = "setup.platform";
   host.assertLinuxHostedRoot(); host.readOsRelease();
+  context.stage = "setup.accounts";
   host.validateHostedSmokeAccounts(readFileSync("/etc/passwd", "utf8"), readFileSync("/etc/group", "utf8"));
+  context.stage = "setup.tools";
   const inventory = host.buildToolInventory(environment.envoyPath), tools = inventory.paths;
   const docker = host.findTool(["/usr/bin/docker"], "Docker");
+  context.stage = "setup.docker";
   const daemon = JSON.parse(host.runCommand(docker, ["--host=unix:///var/run/docker.sock", "info", "--format", "{{json .}}"], { timeoutMs: 10000 }).stdout);
   assertFixtureDockerDaemon(daemon);
-  const context = host.runCommand(docker, ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], { timeoutMs: 5000 }).stdout.trim();
-  if (context !== "unix:///var/run/docker.sock") throw new Error("fixture Docker context is not the exact local daemon");
+  context.stage = "setup.context";
+  const dockerContext = host.runCommand(docker, ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], { timeoutMs: 5000 }).stdout.trim();
+  if (dockerContext !== "unix:///var/run/docker.sock") throw new Error("fixture Docker context is not the exact local daemon");
+  context.stage = "setup.image";
   const image = host.runCommand(docker, ["image", "inspect", "--format", "{{.Id}}", config.image], { timeoutMs: 10000 }).stdout.trim();
   if (image !== config.image) throw new Error("fixture preloaded image digest substituted");
+  context.stage = "setup.resources";
   let resources = deriveFixtureResources({ ...environment, ...config, image });
   if (existsSync(resources.runtimeRoot) || existsSync(resources.workspacePath) ||
       host.unitSnapshot(tools.systemctl, resources.gatewayUnit).values.LoadState !== "not-found" ||
       host.pidsForUid(12001).length || host.pidsForUid(12002).length ||
       !host.proveHostedListenerAbsence(host.listenerSnapshot(tools.ss, 15443))) throw new Error("fixture initial resource collision");
+  context.stage = "setup.output";
   claimFixtureOutput(config.outputDir);
+  context.stage = "setup.ownership";
   writeOwnership(config.outputDir, resources);
   let lifecycleOwnsCleanup = false;
   try {
+    context.stage = "setup.workspace"; context.category = "host_operation";
     makeOwnedDirectory(resources.runtimeRoot, 0o755);
     makeOwnedDirectory(resources.workspacePath, 0o711);
     const evidenceDir = join(config.outputDir, "evidence"); mkdirSync(evidenceDir, { mode: 0o700 });
@@ -268,23 +263,30 @@ export async function runImageLifecycleFixture(argv) {
     // Root fixture construction/lockfile acquisition is explicitly outside the
     // measured restricted runner. Fresh DNS is acquired only after it finishes.
     const prepared = prepareFixtureWorkspace(resources.workspacePath);
+    context.stage = "setup.dns";
     const resolution = await resolveImageFixtureOrigin({ writeDiagnostics: (bytes) => evidence.write("dns-diagnostics", bytes) });
+    context.stage = "setup.plan"; context.category = "protocol";
     const now = Date.now();
     const window = host.hostedNpmPlanWindow({ minimumTtlSeconds: resolution.minimumTtlSeconds, resolutionObservedAt: resolution.observedAt, createdAt: now });
     const plan = createFixturePlan(prepared, { imageDigest: image, addresses: resolution.addresses, resolutionObservedAt: resolution.observedAt,
       ...window, now });
     resources = deriveFixtureResources({ ...resources, jobId: plan.plan.job.id, planDigest: plan.digest });
+    context.stage = "setup.collision"; context.category = "identity";
     if (host.tableSnapshot(tools.nft, resources.nftTable, true).exists || fixtureContainerInventory(resources, docker).length) {
       // Do not adopt a collided table/container into the marker's authority.
       throw new Error("fixture plan resource collision");
     }
+    context.stage = "setup.ownership";
     writeOwnership(config.outputDir, resources);
+    context.stage = "setup.evidence"; context.category = "evidence";
     evidence.write("dns-window", canonicalJson({ ...resolution, ...window }));
     evidence.write("plan-identity", canonicalJson({ jobId: resources.jobId, planDigest: plan.digest, image, sourceDigest: prepared.bundle.digest }));
+    context.stage = "setup.permissions"; context.category = "identity";
     for (const name of ["dependencies", "installation", "output", "result"]) {
       chownSync(prepared.paths[name], 12001, 12001); chmodSync(prepared.paths[name], 0o700);
     }
     for (const name of ["planPath", "sourcePath"]) { chownSync(prepared.paths[name], 0, 12001); chmodSync(prepared.paths[name], 0o440); }
+    context.stage = "setup.gateway"; context.category = "protocol";
     const rendered = renderFixtureGateway(plan, resources, inventory);
     const native = createFixtureNative({ resources, rendered, tools, docker, evidence, outputDir: config.outputDir });
     const operations = createImageFixtureOperations({ plan, paths: prepared.paths, image, native, evidence, scenario: config.scenario,
@@ -297,6 +299,7 @@ export async function runImageLifecycleFixture(argv) {
       result = { phaseIntegration: "expected_install_protocol_rejection", cleanup: "complete",
         securityDrill: false, selfAttested: true, releaseEvidenceEligible: false, activationBlocked: true, externalSigningEligible: false };
     }
+    context.stage = "setup.report"; context.category = "evidence";
     const report = { schemaVersion: 1, kind: "api_migrator_joined_image_lifecycle_fixture", scenario: config.scenario,
       sourceRevision: environment.sourceRevision, sourceDigest: prepared.bundle.digest, planDigest: plan.digest,
       jobId: plan.plan.job.id, image, gatewayDigest: rendered.deployment.digest, cleanup: "complete", ...result };
@@ -305,11 +308,18 @@ export async function runImageLifecycleFixture(argv) {
     writeFileSync(join(config.outputDir, "fixture-report.json"), bytes, { mode: 0o600, flag: "wx" });
     return report;
   } catch (error) {
+    error = annotateFixtureFailure(error, context);
     if (!lifecycleOwnsCleanup) {
       // Read the last persisted authority, not a candidate plan that collided.
-      const marker = JSON.parse(readFileSync(join(config.outputDir, "ownership.json"), "utf8"));
-      try { await cleanupNativeFixture(deriveFixtureResources(marker), { tools, docker, outputDir: config.outputDir }); }
-      catch (cleanupError) { throw new AggregateError([error, cleanupError], "fixture setup and cleanup failed"); }
+      try {
+        const marker = JSON.parse(readFileSync(join(config.outputDir, "ownership.json"), "utf8"));
+        await cleanupNativeFixture(deriveFixtureResources(marker), { tools, docker, outputDir: config.outputDir });
+      }
+      catch (cleanupError) {
+        const failure = new AggregateError([error, annotateFixtureFailure(cleanupError, { stage: "cleanup", category: "cleanup" })], "fixture setup and cleanup failed");
+        markFixtureCleanupFailure(failure);
+        throw failure;
+      }
     }
     throw error;
   }

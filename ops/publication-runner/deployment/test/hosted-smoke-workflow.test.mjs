@@ -1,9 +1,31 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 const workflowUrl = new URL("../../../../.github/workflows/linux-l7-smoke.yml", import.meta.url);
 const workflow = readFileSync(workflowUrl, "utf8");
+
+test("sealed smoke runtime copy list contains a complete executable import closure", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "smoke-import-closure-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sources = [...workflow.matchAll(/"\$\{GITHUB_WORKSPACE\}\/ops\/publication-runner\/([^"\n]+)"/g)]
+    .map((match) => match[1]);
+  assert(sources.includes("deployment/run-hosted-smoke.mjs"));
+  for (const source of sources) {
+    const destination = join(root, source);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(new URL(`../../${source}`, import.meta.url), destination);
+  }
+  for (const script of ["run-hosted-smoke.mjs", "cleanup-hosted-smoke.mjs"]) {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e",
+      `await import(${JSON.stringify(pathToFileURL(join(root, "deployment", script)).href)})`], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  }
+});
 
 const scenarios = [
   "success",

@@ -231,6 +231,11 @@ both plan and DNS expiry with a 30-second cleanup reserve. Freshness failures
 name the allowlisted stage, plan age, remaining plan/DNS lifetime, command
 budget and cleanup reserve in bounded CLI output, including when cleanup also
 fails. Arbitrary error text, source and subprocess output are not printed.
+Other failures report fixed setup/operation/probe/phase stages and allowlisted
+categories, with bounded exit status, signal, timeout or command-budget facts
+only when observed. A `cleanupFailed` boolean distinguishes initial cleanup
+failure without hiding the original diagnostic. These diagnostics do not relax
+any lifecycle check or establish the cause of an earlier generic failure.
 
 The two workflow scenarios are:
 
