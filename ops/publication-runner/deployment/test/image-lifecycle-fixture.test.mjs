@@ -92,7 +92,7 @@ function adapter(t, fault = {}) {
     migrationInstallEgress: [{ host: "registry.npmjs.org", protocol: "tcp", port: 443, tls: true,
       addresses: ["104.16.1.35"], resolutionEvidenceDigest: image, resolutionObservedAt: now, resolutionExpiresAt: now + 300000 }],
     now, expiresAt: now + 300000 });
-  const events = [], commands = [];
+  const events = [], commands = [], writes = [];
   let n = 0, upstream = 0, rejected = 0, online = false, elapsed = 0;
   const counters = () => ({ redirect: n, runnerV4: n, runnerV6: n,
     gatewayV4: upstream, gatewayV6: 0, gatewayDownstreamV4: upstream,
@@ -100,13 +100,13 @@ function adapter(t, fault = {}) {
   const native = {
     installPolicy: () => { events.push("policy"); if (fault.policy) throw new Error("SECRET policy stderr"); },
     startGateway: async () => { events.push("gateway"); if (fault.readiness) throw new Error("listener unavailable"); online = true; return { uid: fault.gatewayUid ? undefined : 12002, listeners: ["127.0.0.1", "::1"] }; },
-    probe: (scenario) => { events.push(scenario); n += 1;
+    probe: (scenario) => { events.push(scenario); if (scenario !== fault.uncorrelatedProbe) n += 1;
       if (fault.probe && scenario === "correct_sni") throw new Error("SECRET probe stdout /private/source");
       if (scenario === "direct_bypass") elapsed = fault.afterProbesMs ?? 0;
       if (online && ["correct_sni", "correct_sni_ipv6", "direct_bypass"].includes(scenario)) upstream += 1;
-      if (scenario === "non_npm") rejected += 1;
+      if (scenario === "non_npm" && scenario !== fault.uncorrelatedProbe) rejected += 1;
     },
-    counters,
+    counters: () => { if (fault.expireBeforeProbe) elapsed = 270000; return counters(); },
     stopGateway: async () => { events.push("stop"); online = false; },
     idle: () => !fault.uid,
     listenerAbsent: () => true,
@@ -139,9 +139,12 @@ function adapter(t, fault = {}) {
   };
   const operations = createImageFixtureOperations({ plan, paths, image, native, execute,
     now: () => fault.expired ? now + 300001 : now + elapsed,
-    evidence: { write: (label) => { if (fault.write && label === "install-forced-route") throw new Error("evidence write failed"); return image; } },
+    evidence: { write: (label) => {
+      if ((fault.write && label === "install-forced-route") || label === fault.writeLabel) throw new Error("evidence write failed");
+      writes.push(label); return image;
+    } },
     scenario: fault.scenario ?? "success" });
-  return { operations, events, commands };
+  return { operations, events, commands, writes };
 }
 
 test("adapter joins exact host-mode install to ordered policy, UID/offline proof and network-none phases", async (t) => {
@@ -288,4 +291,50 @@ test("host and phase validation failures retain their origin when cleanup also f
     assert.match(fixture.formatFixtureFailure(error), /stage=cleanup, category=cleanup, cleanupFailed=true/);
     return true;
   });
+});
+
+for (const scenario of ["wrong_sni", "absent_sni", "wrong_sni_ipv6", "absent_sni_ipv6", "non_443", "non_npm", "direct_bypass", "offline_network"]) {
+  test(`${scenario} counter rejection retains its probe origin and withholds later phases`, async (t) => {
+    for (const cleanupError of [undefined, new Error("SECRET cleanup token=credential")]) {
+      const { operations, events, commands, writes } = adapter(t, { uncorrelatedProbe: scenario, cleanupError });
+      await assert.rejects(runFixtureLifecycle(operations), (error) => {
+        assert.equal(fixture.formatFixtureFailure(error),
+          `fixture execution failed (stage=probe.${scenario}, category=host_operation, cleanupFailed=${Boolean(cleanupError)})`);
+        return true;
+      });
+      assert.deepEqual(commands.map((command) => command.phase), scenario === "offline_network" ? ["prepare", "install"] : ["prepare"]);
+      assert.deepEqual(events.slice(-2), [scenario, "cleanup"]);
+      assert(!writes.includes(scenario === "offline_network" ? "offline-closure" : "direct-forced-route"));
+    }
+  });
+}
+
+for (const [scenario, label, phases] of [
+  ["direct_bypass", "direct-forced-route", ["prepare"]],
+  ["offline_network", "offline-closure", ["prepare", "install"]],
+]) {
+  test(`${scenario} proof evidence rejection is not a host-operation failure`, async (t) => {
+    const { operations, events, commands, writes } = adapter(t, { writeLabel: label });
+    await assert.rejects(runFixtureLifecycle(operations), (error) => {
+      assert.equal(fixture.formatFixtureFailure(error),
+        `fixture execution failed (stage=probe.${scenario}, category=evidence, cleanupFailed=false)`);
+      return true;
+    });
+    assert.deepEqual(commands.map((command) => command.phase), phases);
+    assert.deepEqual(events.slice(-2), [scenario, "cleanup"]);
+    assert(!writes.includes(label));
+  });
+}
+
+test("probe correlation boundaries retain the inner freshness diagnostic", async (t) => {
+  const { operations, events, commands, writes } = adapter(t, { expireBeforeProbe: true });
+  await assert.rejects(runFixtureLifecycle(operations), (error) => {
+    assert.equal(fixture.formatFixtureFailure(error), "fixture plan or DNS expired or lacks command lifetime " +
+      "(stage=probe.wrong_sni, planAgeMs=270000, planRemainingMs=30000, dnsRemainingMs=30000, " +
+      "commandBudgetMs=15000, cleanupReserveMs=30000, cleanupFailed=false)");
+    return true;
+  });
+  assert.deepEqual(commands.map((command) => command.phase), ["prepare"]);
+  assert.deepEqual(events.slice(-2), ["gateway", "cleanup"]);
+  assert.deepEqual(writes, []);
 });

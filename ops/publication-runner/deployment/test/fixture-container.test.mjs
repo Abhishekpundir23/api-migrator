@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateFixtureContainer, assertFixtureDockerDaemon, executeNativeFixturePhase } from "../fixture-native.mjs";
+import { validateFixtureContainer, assertFixtureDockerDaemon, executeNativeFixturePhase, createFixtureNative } from "../fixture-native.mjs";
 import { gatewaySystemdArguments, runCommand } from "../run-hosted-smoke.mjs";
 import { atFixtureStage } from "../fixture-diagnostics.mjs";
 import { formatFixtureFailure } from "../run-image-lifecycle-fixture.mjs";
@@ -17,6 +17,29 @@ const observed = { Name: `/${resources.containers.install}`, Image: image,
   Config: { User: "12001:12001", Labels: { "api-migrator.fixture-job": jobId } },
   HostConfig: { NetworkMode: "host", UsernsMode: "", Privileged: false },
   State: { Running: true, Pid: 1234 } };
+
+test("native probe evidence rejection retains the exact probe and evidence category", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "fixture-probe-evidence-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const setpriv = join(root, "setpriv");
+  for (const scenario of ["correct_sni", "offline_network"]) {
+    const raw = JSON.stringify({ scenario, status: "passed", jobId });
+    writeFileSync(setpriv, `#!/bin/sh\nprintf '%s\\n' '${raw}'\n`, { mode: 0o755 });
+    let attempted = false;
+    const native = createFixtureNative({ resources,
+      rendered: { contractPath: join(root, "contract.json"), deployment: { contract: { jobId } } },
+      tools: { setpriv, node: process.execPath }, evidence: { write(label, bytes) {
+        assert.equal(label, `probe-${scenario}`); assert.equal(bytes, `${raw}\n`);
+        attempted = true; throw new Error("SECRET evidence path /private/source");
+      } } });
+    assert.throws(() => atFixtureStage(`probe.${scenario}`, "host_operation", () => native.probe(scenario)), (error) => {
+      assert.equal(formatFixtureFailure(error),
+        `fixture execution failed (stage=probe.${scenario}, category=evidence, cleanupFailed=false)`);
+      return true;
+    });
+    assert(attempted, "the real native probe must reach its evidence writer");
+  }
+});
 
 test("native host command facts preserve exact status and timeout without arguments or output", () => {
   for (const [script, timeoutMs, category, facts] of [

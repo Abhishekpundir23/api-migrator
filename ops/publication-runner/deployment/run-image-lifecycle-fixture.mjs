@@ -123,19 +123,24 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
     async probeOnline() {
       order(3);
       for (const name of ["wrong_sni", "absent_sni", "wrong_sni_ipv6", "absent_sni_ipv6", "non_443", "non_npm", "correct_sni", "correct_sni_ipv6"]) {
-        const before = native.counters(); probe(name); const after = native.counters();
-        if (name.includes("wrong_sni") || name.includes("absent_sni")) {
-          const family = name.endsWith("ipv6") ? "runnerV6" : "runnerV4";
-          if (nftCounterDelta(before, after, family) < 1 || nftCounterDelta(before, after, "gatewayV4") + nftCounterDelta(before, after, "gatewayV6") !== 0) {
-            throw new Error("fixture SNI denial lacks correlated listener-only counters");
+        atFixtureStage(`probe.${name}`, "host_operation", () => {
+          const before = native.counters(); probe(name); const after = native.counters();
+          if (name.includes("wrong_sni") || name.includes("absent_sni")) {
+            const family = name.endsWith("ipv6") ? "runnerV6" : "runnerV4";
+            if (nftCounterDelta(before, after, family) < 1 || nftCounterDelta(before, after, "gatewayV4") + nftCounterDelta(before, after, "gatewayV6") !== 0) {
+              throw new Error("fixture SNI denial lacks correlated listener-only counters");
+            }
           }
-        }
-        if (["non_443", "non_npm"].includes(name) && nftCounterDelta(before, after, name === "non_443" ? "runnerReject" : "gatewayReject") < 1) {
-          throw new Error("fixture denial lacks reject counter");
-        }
+          if (["non_443", "non_npm"].includes(name) && nftCounterDelta(before, after, name === "non_443" ? "runnerReject" : "gatewayReject") < 1) {
+            throw new Error("fixture denial lacks reject counter");
+          }
+        });
       }
-      const before = native.counters(); probe("direct_bypass");
-      atFixtureStage("probeOnline", "evidence", () => evidence.write("direct-forced-route", JSON.stringify(proveForcedFixtureRoute(before, native.counters()))));
+      const proof = atFixtureStage("probe.direct_bypass", "host_operation", () => {
+        const before = native.counters(); probe("direct_bypass");
+        return proveForcedFixtureRoute(before, native.counters());
+      });
+      atFixtureStage("probe.direct_bypass", "evidence", () => evidence.write("direct-forced-route", JSON.stringify(proof)));
       stage = 4;
     },
     async install() {
@@ -160,14 +165,17 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
     async assertOffline() {
       order(6);
       if (!native.idle() || !native.listenerAbsent()) throw new Error("fixture UID/cgroup idle or listener absence unproven");
-      const before = native.counters(); probe("offline_network"); const after = native.counters();
-      if (nftCounterDelta(before, after, "redirect") < 1 ||
-          nftCounterDelta(before, after, "runnerV4") + nftCounterDelta(before, after, "runnerV6") < 1 ||
-          nftCounterDelta(before, after, "gatewayV4") + nftCounterDelta(before, after, "gatewayV6") !== 0 ||
-          nftCounterDelta(before, after, "gatewayDownstreamV4") + nftCounterDelta(before, after, "gatewayDownstreamV6") !== 0 || !native.idle()) {
-        throw new Error("fixture offline closure proof incomplete");
-      }
-      atFixtureStage("assertOffline", "evidence", () => evidence.write("offline-closure", JSON.stringify({ idle: true, listenerAbsent: true, before, after })));
+      const proof = atFixtureStage("probe.offline_network", "host_operation", () => {
+        const before = native.counters(); probe("offline_network"); const after = native.counters();
+        if (nftCounterDelta(before, after, "redirect") < 1 ||
+            nftCounterDelta(before, after, "runnerV4") + nftCounterDelta(before, after, "runnerV6") < 1 ||
+            nftCounterDelta(before, after, "gatewayV4") + nftCounterDelta(before, after, "gatewayV6") !== 0 ||
+            nftCounterDelta(before, after, "gatewayDownstreamV4") + nftCounterDelta(before, after, "gatewayDownstreamV6") !== 0 || !native.idle()) {
+          throw new Error("fixture offline closure proof incomplete");
+        }
+        return { idle: true, listenerAbsent: true, before, after };
+      });
+      atFixtureStage("probe.offline_network", "evidence", () => evidence.write("offline-closure", JSON.stringify(proof)));
       stage = 7;
     },
     async migrate() { order(7); migrated = await atFixtureStage("migrate.validate", "protocol", () => phases.migrate(installed)); stage = 8; },

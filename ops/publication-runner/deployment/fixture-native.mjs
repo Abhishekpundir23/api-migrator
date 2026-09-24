@@ -48,7 +48,10 @@ export function createFixtureNative({ resources, rendered, tools, docker, eviden
       await host.waitForListener(identity, resources, tools, evidence);
       return { uid: 12002, listeners: ["127.0.0.1", "::1"] };
     },
-    probe(scenario) { const value = host.runProbe(scenario, rendered, tools); evidence.write(`probe-${scenario}`, value.raw); },
+    probe(scenario) {
+      const value = atFixtureStage(`probe.${scenario}`, "host_operation", () => host.runProbe(scenario, rendered, tools));
+      atFixtureStage(`probe.${scenario}`, "evidence", () => evidence.write(`probe-${scenario}`, value.raw));
+    },
     counters() { return host.captureTableCounters(resources, tools, evidence, "fixture-counters").counters; },
     stopGateway: () => host.stopExactUnit(resources.gatewayUnit, tools),
     idle,
