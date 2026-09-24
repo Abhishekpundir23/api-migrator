@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -102,4 +102,16 @@ test("migrate and verify reject extra status output", async () => {
     verify: `runner_phase=verify status=passed evidence_digest=${evidenceDigest} preflight_id=pf_${"d".repeat(64)}\nextra\n`,
   });
   await assert.rejects(verify.verify({ dependencyStateDigest: C }), /runner_phase=verify/);
+});
+
+test("verify refuses oversized or symlinked runner evidence before reading it", async () => {
+  const evidencePath = join(paths.result, "runner-evidence.json");
+  const invoke = () => phases({ verify: "unused" }).operations.verify({ dependencyStateDigest: C });
+  writeFileSync(evidencePath, " ".repeat(98305));
+  await assert.rejects(invoke(), /bounded regular evidence/);
+  rmSync(evidencePath);
+  const other = join(root, "other-evidence.json");
+  writeFileSync(other, evidenceText);
+  symlinkSync(other, evidencePath);
+  await assert.rejects(invoke(), /bounded regular evidence/);
 });

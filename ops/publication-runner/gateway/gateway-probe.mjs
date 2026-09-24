@@ -17,7 +17,9 @@ export const GATEWAY_PROBE_SCENARIOS = Object.freeze([
   "correct_sni_ipv6",
   "direct_bypass",
   "wrong_sni",
+  "wrong_sni_ipv6",
   "absent_sni",
+  "absent_sni_ipv6",
   "plaintext",
   "non_443",
   "non_npm",
@@ -87,19 +89,21 @@ export function buildGatewayProbeSpecification(contractValue, scenario) {
         expected: "https_ping_passed",
       });
     case "wrong_sni":
+    case "wrong_sni_ipv6":
       return Object.freeze({
         ...base,
         transport: "tls",
-        address: loopbackAddress,
+        address: scenario.endsWith("ipv6") ? contract.listener.addresses[1] : loopbackAddress,
         port: contract.listener.port,
         servername: "wrong-sni.invalid",
         expected: "connection_denied",
       });
     case "absent_sni":
+    case "absent_sni_ipv6":
       return Object.freeze({
         ...base,
         transport: "tls",
-        address: loopbackAddress,
+        address: scenario.endsWith("ipv6") ? contract.listener.addresses[1] : loopbackAddress,
         port: contract.listener.port,
         servername: null,
         expected: "connection_denied",
@@ -287,7 +291,7 @@ export function expectConnectionDenied(spec, timeoutMs) {
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
     let tcpConnected = false;
-    const mustReachListener = spec.scenario === "wrong_sni" || spec.scenario === "absent_sni";
+    const mustReachListener = ["wrong_sni", "absent_sni", "wrong_sni_ipv6", "absent_sni_ipv6"].includes(spec.scenario);
     const socket = spec.transport === "tls"
       ? connectTls({
           host: spec.address,

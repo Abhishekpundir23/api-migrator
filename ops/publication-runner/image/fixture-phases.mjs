@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, lstatSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { canonicalJson, createPublicationRunnerPlan } from "../../../packages/app/dist/runner-internal.js";
 import { createSourceBundle } from "../../../packages/runner/dist/index.js";
@@ -171,7 +171,12 @@ export function createFixturePhaseOperations({ image, paths, plan, addresses, ex
       ], ["verify", "--plan", "/run/api-migrator/plan.json", "--input", "/run/api-migrator/input",
         "--dependencies", "/run/api-migrator/dependencies", "--dependency-state-digest", dependencyStateDigest,
         "--result", "/run/api-migrator/result"]);
-      const evidenceText = readFileSync(join(paths.result, "runner-evidence.json"), "utf8");
+      const evidencePath = join(paths.result, "runner-evidence.json");
+      const evidenceStat = lstatSync(evidencePath);
+      if (!evidenceStat.isFile() || evidenceStat.isSymbolicLink() || evidenceStat.nlink !== 1 || evidenceStat.size < 1 || evidenceStat.size > 98_304) {
+        throw new Error("fixture verify requires bounded regular evidence");
+      }
+      const evidenceText = readFileSync(evidencePath, "utf8");
       const evidence = JSON.parse(evidenceText);
       assert.equal(evidenceText, canonicalJson(evidence));
       assert.equal(evidence.planDigest, plan.digest);

@@ -43,6 +43,15 @@ import {
 } from "./hosted-smoke-runtime.mjs";
 
 const USAGE = "usage: run-hosted-smoke.mjs --scenario NAME --output-dir ABSOLUTE_PATH";
+// Import-safe native primitives shared by the separate image fixture. The
+// smoke CLI, scenario matrix and ownership/removal contracts remain unchanged.
+export {
+  runCommand, findTool, buildToolInventory, createEvidenceWriter,
+  assertLinuxHostedRoot, readOsRelease, pidsForUid, unitSnapshot,
+  tableSnapshot, listenerSnapshot, nativeValidate, installPolicy,
+  startGateway, gatewaySystemdArguments, waitForListener, runProbe, captureTableCounters,
+  stopExactUnit, cgroupIsAbsent, assertSanitizedRunnerEnvironment,
+};
 const EXPECTED_ENVOY_DIGEST = "sha256:7af83300cd615004f8b8fe58954705014c92754c5b68a1edf0dba1f3e9cc9920";
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 1024 * 1024;
@@ -773,7 +782,10 @@ function installPolicy(rendered, resources, tools, evidence) {
   return evidence.write("nftables-policy-installed", snapshot.text);
 }
 
-function gatewaySystemdArguments(resources, rendered, tools) {
+function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSeconds } = {}) {
+  if (maximumRuntimeSeconds !== undefined && (!Number.isSafeInteger(maximumRuntimeSeconds) || maximumRuntimeSeconds < 1 || maximumRuntimeSeconds > 840)) {
+    throw new Error("fixture gateway maximum lifetime is invalid");
+  }
   return [
     `--unit=${resources.gatewayUnit}`,
     "--collect",
@@ -793,6 +805,7 @@ function gatewaySystemdArguments(resources, rendered, tools) {
     "--property=TimeoutStopSec=10s",
     "--property=StandardOutput=journal",
     "--property=StandardError=journal",
+    ...(maximumRuntimeSeconds === undefined ? [] : [`--property=RuntimeMaxSec=${maximumRuntimeSeconds}s`]),
     tools.envoy,
     "--disable-hot-restart",
     "--concurrency", "1",
@@ -802,8 +815,8 @@ function gatewaySystemdArguments(resources, rendered, tools) {
   ];
 }
 
-async function startGateway(resources, rendered, tools, evidence) {
-  runCommand(tools.systemdRun, gatewaySystemdArguments(resources, rendered, tools));
+async function startGateway(resources, rendered, tools, evidence, options) {
+  runCommand(tools.systemdRun, gatewaySystemdArguments(resources, rendered, tools, options));
   const identity = await waitFor(() => {
     const snapshot = unitSnapshot(tools.systemctl, resources.gatewayUnit);
     if (snapshot.values.ActiveState !== "active" || snapshot.values.SubState !== "running") return false;

@@ -1,0 +1,228 @@
+name: Runner image lifecycle fixture
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: [".github/workflows/runner-lifecycle-fixture.yml", "ops/publication-runner/**", "packages/**", "scripts/test-git-identity.mjs", "package-lock.json"]
+  push:
+    branches: [main]
+    paths: [".github/workflows/runner-lifecycle-fixture.yml", "ops/publication-runner/**", "packages/**", "scripts/test-git-identity.mjs", "package-lock.json"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-lifecycle-fixture-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 22.23.2
+  NFTABLES_PACKAGE_VERSION: 1.0.9-1ubuntu0.1
+  ENVOY_IMAGE_REFERENCE: docker.io/envoyproxy/envoy:v1.39.0@sha256:f6e2f57b1bef8235083a2553b523508cf97d8991c893fd2aae3a94a6b21096a2
+  ENVOY_IMAGE_CONFIG_DIGEST: sha256:0ac66ca46caa8964c146a0eb729fd890b7d5fbcc737528b6c9705ebcbcdfd0aa
+  ENVOY_BINARY_SHA256: 7af83300cd615004f8b8fe58954705014c92754c5b68a1edf0dba1f3e9cc9920
+
+jobs:
+  fixture:
+    name: Joined image fixture (${{ matrix.scenario }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [success, install_failure]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build packages and exact local runner image
+        id: image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build:packages
+          npm run runner:image:build
+          npm run runner:image:verify
+          image=$(docker image inspect --format '{{.Id}}' api-migrator-runner:local)
+          [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'digest=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
+      - name: Provision exact disposable identities
+        id: identities
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for key in api-migrator-smoke-runner api-migrator-smoke-gateway 12001 12002; do
+            if getent passwd "$key" >/dev/null || getent group "$key" >/dev/null; then
+              echo "disposable identity collision" >&2; exit 1
+            fi
+          done
+          runner_group=false; runner_user=false; gateway_group=false; gateway_user=false
+          rollback() {
+            [[ "$gateway_user" == false ]] || sudo userdel api-migrator-smoke-gateway
+            [[ "$gateway_group" == false ]] || sudo groupdel api-migrator-smoke-gateway
+            [[ "$runner_user" == false ]] || sudo userdel api-migrator-smoke-runner
+            [[ "$runner_group" == false ]] || sudo groupdel api-migrator-smoke-runner
+          }
+          trap rollback ERR
+          sudo groupadd --gid 12001 api-migrator-smoke-runner; runner_group=true
+          sudo useradd --uid 12001 --gid 12001 --comment '' --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin api-migrator-smoke-runner; runner_user=true
+          sudo groupadd --gid 12002 api-migrator-smoke-gateway; gateway_group=true
+          sudo useradd --uid 12002 --gid 12002 --comment '' --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin api-migrator-smoke-gateway; gateway_user=true
+          trap - ERR
+          printf 'created=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Extract pinned Envoy and seal complete fixture runtime
+        id: runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          sudo apt-get update -o Acquire::Retries=3
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends "nftables=${NFTABLES_PACKAGE_VERSION}"
+          tool_root=/usr/local/libexec/api-migrator-hosted-smoke
+          runtime_root="${tool_root}/fixture-runtime"
+          [[ ! -e "$tool_root" ]]
+          sudo install -d -o root -g root -m 0755 "$tool_root" "$runtime_root"
+          extraction=$(mktemp -d "${RUNNER_TEMP}/fixture-envoy.XXXXXX")
+          container_id=""
+          cleanup_extraction() { [[ -z "$container_id" ]] || docker rm --force "$container_id"; }
+          trap cleanup_extraction EXIT
+          docker pull --platform linux/amd64 "$ENVOY_IMAGE_REFERENCE"
+          [[ $(docker image inspect --format '{{.Id}}' "$ENVOY_IMAGE_REFERENCE") == "$ENVOY_IMAGE_CONFIG_DIGEST" ]]
+          container_id=$(docker create --platform linux/amd64 "$ENVOY_IMAGE_REFERENCE")
+          docker cp "${container_id}:/usr/local/bin/envoy" "${extraction}/envoy"
+          docker rm --force "$container_id"; container_id=""
+          printf '%s  %s\n' "$ENVOY_BINARY_SHA256" "${extraction}/envoy" | sha256sum --check --strict
+          [[ -f "${extraction}/envoy" && ! -L "${extraction}/envoy" && $(stat -c '%h' "${extraction}/envoy") == 1 ]]
+          readelf -l "${extraction}/envoy" | grep -F '/lib64/ld-linux-x86-64.so.2'
+          expected_libraries=$(printf '%s\n' ld-linux-x86-64.so.2 libc.so.6 libdl.so.2 libm.so.6 libpthread.so.0 librt.so.1 | LC_ALL=C sort)
+          observed_libraries=$(readelf -d "${extraction}/envoy" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_libraries") <(printf '%s\n' "$observed_libraries")
+          sudo install -o root -g root -m 0555 "${extraction}/envoy" "${tool_root}/envoy"
+          sudo install -o root -g root -m 0555 "$(realpath "$(command -v node)")" "${tool_root}/node"
+          sudo install -o root -g root -m 0555 "$(realpath "$(command -v nft)")" "${tool_root}/nft"
+          npm_root=$(dirname "$(dirname "$(realpath "$(command -v npm)")")")
+          sudo cp -a "$npm_root" "${tool_root}/npm-runtime"
+          sudo ln -s "${tool_root}/npm-runtime/bin/npm-cli.js" "${tool_root}/npm"
+          sudo install -d -m 0755 "${runtime_root}/ops" "${runtime_root}/packages" "${runtime_root}/scripts"
+          sudo cp -a ops/publication-runner "${runtime_root}/ops/publication-runner"
+          sudo cp -a node_modules "${runtime_root}/node_modules"
+          sudo cp package.json "${runtime_root}/package.json"
+          sudo cp scripts/test-git-identity.mjs "${runtime_root}/scripts/"
+          for package in app runner engine db console; do
+            sudo install -d -m 0755 "${runtime_root}/packages/${package}"
+            sudo cp "packages/${package}/package.json" "${runtime_root}/packages/${package}/"
+            if [[ -d "packages/${package}/dist" ]]; then sudo cp -a "packages/${package}/dist" "${runtime_root}/packages/${package}/dist"; fi
+            if [[ -d "packages/${package}/node_modules" ]]; then sudo cp -a "packages/${package}/node_modules" "${runtime_root}/packages/${package}/node_modules"; fi
+          done
+          # Relative workspace symlinks resolve exclusively within this copy.
+          while IFS= read -r -d '' link; do
+            resolved=$(realpath "$link")
+            [[ "$resolved" == "${tool_root}/"* && -e "$resolved" ]]
+          done < <(sudo find "$tool_root" -type l -print0)
+          sudo chown -R --no-dereference root:root "$tool_root"
+          sudo find "$tool_root" -type d -exec chmod 0555 {} +
+          sudo find "$tool_root" -type f -exec chmod a-w {} +
+          [[ $("${tool_root}/node" --version) == "v${NODE_VERSION}" ]]
+          sudo env -i PATH="${tool_root}:/usr/sbin:/usr/bin:/sbin:/bin" "${tool_root}/node" --input-type=module -e "await import('${runtime_root}/ops/publication-runner/deployment/run-image-lifecycle-fixture.mjs')"
+          manifest=$(mktemp "${RUNNER_TEMP}/fixture-runtime-manifest.XXXXXX")
+          sudo find "$tool_root" -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | sudo xargs -0 sha256sum > "$manifest"
+          sudo install -o root -g root -m 0444 "$manifest" "${tool_root}/SHA256SUMS"
+          sudo install -d -o root -g root -m 0755 /tmp/api-migrator-fixture-results
+          printf 'sealed=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Run joined fixture
+        shell: bash
+        env:
+          FIXTURE_RUN_ID: ${{ github.run_id }}
+          FIXTURE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          FIXTURE_REVISION: ${{ github.sha }}
+          FIXTURE_REPOSITORY: ${{ github.repository }}
+          FIXTURE_WORKFLOW: ${{ github.workflow_ref }}
+          FIXTURE_IMAGE: ${{ steps.image.outputs.digest }}
+          FIXTURE_SCENARIO: ${{ matrix.scenario }}
+        run: |
+          set -Eeuo pipefail
+          tool_root=/usr/local/libexec/api-migrator-hosted-smoke
+          sudo sha256sum --check --strict "${tool_root}/SHA256SUMS" >/dev/null
+          sudo env -i PATH="${tool_root}:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C LC_ALL=C TZ=UTC \
+            API_MIGRATOR_HOSTED_ENVOY_PATH="${tool_root}/envoy" \
+            API_MIGRATOR_SMOKE_RUN_ID="$FIXTURE_RUN_ID" API_MIGRATOR_SMOKE_RUN_ATTEMPT="$FIXTURE_RUN_ATTEMPT" \
+            API_MIGRATOR_SMOKE_SOURCE_REVISION="$FIXTURE_REVISION" API_MIGRATOR_SMOKE_REPOSITORY="$FIXTURE_REPOSITORY" \
+            API_MIGRATOR_SMOKE_WORKFLOW_REF="$FIXTURE_WORKFLOW" API_MIGRATOR_SMOKE_IMAGE_VERSION="${ImageVersion:-unknown}" \
+            "${tool_root}/node" "${tool_root}/fixture-runtime/ops/publication-runner/deployment/run-image-lifecycle-fixture.mjs" \
+            --image "$FIXTURE_IMAGE" --output-dir "/tmp/api-migrator-fixture-results/${FIXTURE_RUN_ID}-${FIXTURE_RUN_ATTEMPT}-${FIXTURE_SCENARIO}" --scenario "$FIXTURE_SCENARIO"
+
+      - name: Always clean and audit exact owned resources
+        if: always() && steps.runtime.outputs.sealed == 'true'
+        shell: bash
+        env:
+          FIXTURE_RUN_ID: ${{ github.run_id }}
+          FIXTURE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          FIXTURE_REVISION: ${{ github.sha }}
+          FIXTURE_REPOSITORY: ${{ github.repository }}
+          FIXTURE_WORKFLOW: ${{ github.workflow_ref }}
+          FIXTURE_IMAGE: ${{ steps.image.outputs.digest }}
+          FIXTURE_SCENARIO: ${{ matrix.scenario }}
+        run: |
+          set -Eeuo pipefail
+          tool_root=/usr/local/libexec/api-migrator-hosted-smoke
+          sudo sha256sum --check --strict "${tool_root}/SHA256SUMS" >/dev/null
+          failed=0
+          for mode in cleanup audit; do
+            set --; [[ "$mode" != audit ]] || set -- --audit-only
+            sudo env -i PATH="${tool_root}:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C LC_ALL=C TZ=UTC \
+              API_MIGRATOR_HOSTED_ENVOY_PATH="${tool_root}/envoy" \
+              API_MIGRATOR_SMOKE_RUN_ID="$FIXTURE_RUN_ID" API_MIGRATOR_SMOKE_RUN_ATTEMPT="$FIXTURE_RUN_ATTEMPT" \
+              API_MIGRATOR_SMOKE_SOURCE_REVISION="$FIXTURE_REVISION" API_MIGRATOR_SMOKE_REPOSITORY="$FIXTURE_REPOSITORY" \
+              API_MIGRATOR_SMOKE_WORKFLOW_REF="$FIXTURE_WORKFLOW" API_MIGRATOR_SMOKE_IMAGE_VERSION="${ImageVersion:-unknown}" \
+              "${tool_root}/node" "${tool_root}/fixture-runtime/ops/publication-runner/deployment/cleanup-image-lifecycle-fixture.mjs" \
+              --image "$FIXTURE_IMAGE" --output-dir "/tmp/api-migrator-fixture-results/${FIXTURE_RUN_ID}-${FIXTURE_RUN_ATTEMPT}-${FIXTURE_SCENARIO}" --scenario "$FIXTURE_SCENARIO" "$@" || failed=1
+          done
+          exit "$failed"
+
+      - name: Remove idle disposable identities
+        if: always() && steps.identities.outputs.created == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if ps -eo uid= | awk '$1 == 12001 || $1 == 12002 { found=1 } END { exit found ? 0 : 1 }'; then exit 1; fi
+          for pair in api-migrator-smoke-runner:12001 api-migrator-smoke-gateway:12002; do
+            name=${pair%:*}; uid=${pair#*:}
+            [[ $(getent passwd "$name") == "${name}:x:${uid}:${uid}::/nonexistent:/usr/sbin/nologin" ]]
+            [[ $(getent group "$name") == "${name}:x:${uid}:" ]]
+            sudo userdel "$name"
+            if getent group "$name" >/dev/null; then sudo groupdel "$name"; fi
+            if getent passwd "$uid" >/dev/null || getent group "$uid" >/dev/null; then exit 1; fi
+          done
+
+      - name: Export bounded sanitized result only
+        id: result
+        if: always() && steps.runtime.outputs.sealed == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          report="/tmp/api-migrator-fixture-results/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.scenario }}/fixture-report.json"
+          sudo test -f "$report"
+          sudo test ! -L "$report"
+          [[ $(sudo stat -c '%h' "$report") == 1 ]]
+          size=$(sudo stat -c '%s' "$report"); (( size > 0 && size <= 32768 ))
+          artifact="${RUNNER_TEMP}/fixture-result-${{ matrix.scenario }}.json"
+          sudo install -o "$(id -u)" -g "$(id -g)" -m 0440 "$report" "$artifact"
+          jq -e '.securityDrill == false and .selfAttested == true and .releaseEvidenceEligible == false and .activationBlocked == true and .externalSigningEligible == false and .cleanup == "complete"' "$artifact"
+          printf 'path=%s\n' "$artifact" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.result.outcome == 'success'
+        with:
+          name: joined-fixture-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.scenario }}
+          path: ${{ steps.result.outputs.path }}
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7

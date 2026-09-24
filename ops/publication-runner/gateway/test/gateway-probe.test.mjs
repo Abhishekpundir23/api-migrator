@@ -35,7 +35,9 @@ test("derives only fixed numeric-address gateway probes", () => {
     correct_sni_ipv6: [12001, "tls", "::1", 15443, "registry.npmjs.org", "https_ping_passed"],
     direct_bypass: [12001, "tls", "104.16.1.35", 443, "registry.npmjs.org", "https_ping_passed"],
     wrong_sni: [12001, "tls", "127.0.0.1", 15443, "wrong-sni.invalid", "connection_denied"],
+    wrong_sni_ipv6: [12001, "tls", "::1", 15443, "wrong-sni.invalid", "connection_denied"],
     absent_sni: [12001, "tls", "127.0.0.1", 15443, null, "connection_denied"],
+    absent_sni_ipv6: [12001, "tls", "::1", 15443, null, "connection_denied"],
     plaintext: [12001, "tcp", "127.0.0.1", 15443, null, "plaintext_rejected"],
     non_443: [12001, "tcp", "104.16.1.35", 80, null, "connection_denied"],
     non_npm: [12002, "tcp", "1.1.1.1", 443, null, "connection_denied"],
@@ -99,6 +101,17 @@ test("wrong and absent SNI denial proves the exact listener was reached", async 
   } finally {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolvePromise) => rejectingServer.close(resolvePromise));
+  }
+});
+
+test("IPv6 wrong/absent SNI require reaching the listener, not connection refusal", async () => {
+  const server = createServer();
+  await new Promise((done, fail) => { server.once("error", fail); server.listen(0, "::1", done); });
+  const port = server.address().port;
+  await new Promise((done) => server.close(done));
+  for (const scenario of ["wrong_sni_ipv6", "absent_sni_ipv6"]) {
+    await assert.rejects(expectConnectionDenied({ scenario, transport: "tls", address: "::1", port,
+      servername: scenario === "wrong_sni_ipv6" ? "wrong-sni.invalid" : null }, 500), /before reaching|never reached/);
   }
 });
 
