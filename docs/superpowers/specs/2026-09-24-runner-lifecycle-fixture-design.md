@@ -105,7 +105,8 @@ fields. Raw fixture source and credentials must not become CI artifacts.
 - A separate read-only-permission CI workflow provisions only job-local test
   identities, extracts the pinned Envoy binary, builds the local image, invokes
   the fixed Linux fixture, and uploads only bounded sanitized result evidence.
-- Native success includes wrong/absent SNI and direct-bypass rejection,
+- Native success includes wrong/absent SNI rejection and successful direct-to-npm
+  traffic with counters proving forced gateway traversal (not a bypass),
   gateway-stop closure, forced-route counters during install, all four real
   phases and final resource absence. A failure-injection fixture run demonstrates
   cleanup after a phase failure. The existing 15-scenario smoke remains intact.
