@@ -153,6 +153,10 @@ export function nftCounterDelta(before, after, name) {
 }
 
 export async function resolveHostedNpmOrigin(options = {}) {
+  const requiredMinimumTtlSeconds = options.requiredMinimumTtlSeconds === undefined
+    ? DNS_MIN_TTL_SECONDS : options.requiredMinimumTtlSeconds;
+  if (!Number.isSafeInteger(requiredMinimumTtlSeconds) || requiredMinimumTtlSeconds < DNS_MIN_TTL_SECONDS ||
+      requiredMinimumTtlSeconds > 1800) throw new Error("hosted smoke npm DNS TTL requirement is invalid");
   const nativeResolver = options.resolver === undefined ? new Resolver() : null;
   const resolver = options.resolver ?? ((...args) => nativeResolver.resolve4(...args));
   const cancelResolver = options.cancelResolver ?? (() => nativeResolver?.cancel());
@@ -210,7 +214,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
     return new Error(
       "hosted smoke npm DNS resolution failed (" +
       `reason=${reason}, attempts=${attempts}, elapsedMs=${Math.max(0, Math.ceil(completedAt - startedAt))}, ` +
-      `requiredMinimumTtlSeconds=${DNS_MIN_TTL_SECONDS}, ` +
+      `requiredMinimumTtlSeconds=${requiredMinimumTtlSeconds}, ` +
       `lowestObservedTtlSeconds=${lowestObservedTtlSeconds ?? "none"}, ` +
       `highestObservedTtlSeconds=${highestObservedTtlSeconds ?? "none"}, ` +
       `lastAnswerCount=${lastAnswerCount})`
@@ -315,7 +319,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
       highestObservedTtlSeconds = highestObservedTtlSeconds === null
         ? minimumTtlSeconds
         : Math.max(highestObservedTtlSeconds, minimumTtlSeconds);
-      const accepted = addresses.length >= 1 && addresses.length <= 32 && minimumTtlSeconds >= DNS_MIN_TTL_SECONDS;
+      const accepted = addresses.length >= 1 && addresses.length <= 32 && minimumTtlSeconds >= requiredMinimumTtlSeconds;
       completeAttempt(accepted ? "accepted" : "ttl_below_minimum", {
         uniqueAddressCount: addresses.length,
         minimumTtlSeconds,
@@ -355,7 +359,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
             cares: process.versions.ares ?? null,
             resolverServerCount,
           },
-          requiredMinimumTtlSeconds: DNS_MIN_TTL_SECONDS,
+          requiredMinimumTtlSeconds,
           budgetMs: DNS_REFRESH_WAIT_MAX_MS,
           retryIntervalMs: DNS_RETRY_INTERVAL_MS,
           attempts,

@@ -221,6 +221,17 @@ verification. Containment remains installed until exact owned containers,
 units/cgroups, processes and workspace trees have been cleared. An incomplete
 cleanup or failed evidence write cannot produce a passing result.
 
+The joined fixture admits only DNS answers with a complete-answer minimum TTL
+of at least 120 seconds. This is stronger admission headroom, not a guarantee
+that the worst-case lifecycle fits. The existing smoke retains its 65-second
+floor; both callers retain the same bounded 90-second acquisition window and
+5-second retry interval. Neither observed TTL nor observation time is extended
+or renewed. Each image phase still has a 45-second maximum and must fit before
+both plan and DNS expiry with a 30-second cleanup reserve. Freshness failures
+name the allowlisted stage, plan age, remaining plan/DNS lifetime, command
+budget and cleanup reserve in bounded CLI output, including when cleanup also
+fails. Arbitrary error text, source and subprocess output are not printed.
+
 The two workflow scenarios are:
 
 - `success`: all four real image phases, transport checks and cleanup.

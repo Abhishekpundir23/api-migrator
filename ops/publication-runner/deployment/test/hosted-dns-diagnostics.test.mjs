@@ -10,7 +10,7 @@ import { hostedNpmPlanWindow, resolveHostedNpmOrigin } from "../run-hosted-smoke
 
 const EPOCH = 2_000_000_000_000;
 
-function diagnosticFile(t) {
+function diagnosticFile(t, requiredMinimumTtlSeconds = 65) {
   const directory = mkdtempSync(join(tmpdir(), "api-migrator-dns-test-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, "dns-resolution-diagnostics.json");
@@ -27,7 +27,7 @@ function diagnosticFile(t) {
       assert.equal(report.activationBlocked, true);
       assert.equal(report.externalSigningEligible, false);
       assert.equal(report.authorizationStatus, "non_authorizing_github_hosted_smoke_only");
-      assert.equal(report.requiredMinimumTtlSeconds, 65);
+      assert.equal(report.requiredMinimumTtlSeconds, requiredMinimumTtlSeconds);
       assert.equal(report.budgetMs, 90_000);
       assert.equal(report.retryIntervalMs, 5_000);
       assert.equal(report.runtime.node, process.versions.node);
@@ -52,6 +52,43 @@ function timedAnswers(answers, queryDuration = 25) {
     },
   };
 }
+
+test("a caller can strengthen DNS admission without renewing observed lifetime", async (t) => {
+  const file = diagnosticFile(t, 120);
+  const result = await resolveHostedNpmOrigin({
+    ...timedAnswers([65, 119, 120].map((ttl) => [{ address: "104.16.0.34", ttl }])),
+    requiredMinimumTtlSeconds: 120, writeDiagnostics: file.writeDiagnostics,
+  });
+  assert.deepEqual(result, { addresses: ["104.16.0.34"], minimumTtlSeconds: 120,
+    observedAt: EPOCH + 10075, attempts: 3 });
+  assert.deepEqual(hostedNpmPlanWindow({ minimumTtlSeconds: result.minimumTtlSeconds,
+    resolutionObservedAt: result.observedAt, createdAt: result.observedAt + 5000 }), {
+    resolutionExpiresAt: EPOCH + 130075, expiresAt: EPOCH + 130075,
+  });
+  assert.deepEqual(file.read().report.entries.map((entry) => entry.outcome),
+    ["ttl_below_minimum", "ttl_below_minimum", "accepted"]);
+});
+
+test("stronger acquisition exhausts the same bounded window and reports its actual requirement", async (t) => {
+  const file = diagnosticFile(t, 120);
+  await assert.rejects(resolveHostedNpmOrigin({
+    ...timedAnswers([[{ address: "104.16.0.34", ttl: 119 }]], 0),
+    requiredMinimumTtlSeconds: 120, writeDiagnostics: file.writeDiagnostics,
+  }), /reason=ttl_floor_exhausted, attempts=18, elapsedMs=90000, requiredMinimumTtlSeconds=120/);
+  const { report } = file.read();
+  assert.equal(report.entries.length, 18);
+  assert.equal(report.elapsedMs, 90000);
+});
+
+test("DNS admission override cannot weaken the floor or request an unusable lifetime", async () => {
+  for (const requiredMinimumTtlSeconds of [0, 64, 120.1, "120", null, NaN, Infinity, 1801]) {
+    await assert.rejects(resolveHostedNpmOrigin({ requiredMinimumTtlSeconds,
+      resolver: async () => [{ address: "104.16.0.34", ttl: 300 }] }), /TTL requirement/);
+  }
+  const result = await resolveHostedNpmOrigin(timedAnswers([[{ address: "104.16.0.34", ttl: 65 }]], 0));
+  assert.equal(result.minimumTtlSeconds, 65);
+  assert.equal(result.attempts, 1);
+});
 
 // Losing low-TTL attempts or reporting retry sleep as query latency must fail this test.
 test("persists the complete countdown and recovery without changing the resolution", async (t) => {

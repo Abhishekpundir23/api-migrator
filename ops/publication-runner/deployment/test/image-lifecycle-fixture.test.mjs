@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, writeFileSync, chmodSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import * as fixture from "../run-image-lifecycle-fixture.mjs";
 import { parseImageLifecycleFixtureCli, validateFixtureEnvironment,
   claimFixtureOutput, assertFixtureFresh, proveForcedFixtureRoute, createImageFixtureOperations, ExpectedInstallFailure,
 } from "../run-image-lifecycle-fixture.mjs";
@@ -90,7 +92,7 @@ function adapter(t, fault = {}) {
       addresses: ["104.16.1.35"], resolutionEvidenceDigest: image, resolutionObservedAt: now, resolutionExpiresAt: now + 300000 }],
     now, expiresAt: now + 300000 });
   const events = [], commands = [];
-  let n = 0, upstream = 0, rejected = 0, online = false;
+  let n = 0, upstream = 0, rejected = 0, online = false, elapsed = 0;
   const counters = () => ({ redirect: n, runnerV4: n, runnerV6: n,
     gatewayV4: upstream, gatewayV6: 0, gatewayDownstreamV4: upstream,
     gatewayDownstreamV6: 0, gatewayReject: rejected, runnerReject: n });
@@ -98,6 +100,7 @@ function adapter(t, fault = {}) {
     installPolicy: () => events.push("policy"),
     startGateway: async () => { events.push("gateway"); if (fault.readiness) throw new Error("listener unavailable"); online = true; return { uid: fault.gatewayUid ? undefined : 12002, listeners: ["127.0.0.1", "::1"] }; },
     probe: (scenario) => { events.push(scenario); n += 1;
+      if (scenario === "direct_bypass") elapsed = fault.afterProbesMs ?? 0;
       if (online && ["correct_sni", "correct_sni_ipv6", "direct_bypass"].includes(scenario)) upstream += 1;
       if (scenario === "non_npm") rejected += 1;
     },
@@ -105,7 +108,9 @@ function adapter(t, fault = {}) {
     stopGateway: async () => { events.push("stop"); online = false; },
     idle: () => !fault.uid,
     listenerAbsent: () => true,
-    cleanup: async () => { events.push("cleanup"); return { complete: !fault.cleanup }; },
+    cleanup: async () => { events.push("cleanup");
+      if (fault.cleanupError) throw fault.cleanupError;
+      return { complete: !fault.cleanup }; },
   };
   const evidence = { planDigest: plan.digest,
     output: { preflightId: `pf_${"d".repeat(64)}`, artifactDigest: image, candidateTreeSha: "e".repeat(40) },
@@ -130,7 +135,7 @@ function adapter(t, fault = {}) {
       verify: `runner_phase=verify status=passed evidence_digest=${digest} preflight_id=pf_${"d".repeat(64)}\n` }[request.phase];
   };
   const operations = createImageFixtureOperations({ plan, paths, image, native, execute,
-    now: () => fault.expired ? now + 300001 : now,
+    now: () => fault.expired ? now + 300001 : now + elapsed,
     evidence: { write: (label) => { if (fault.write && label === "install-forced-route") throw new Error("evidence write failed"); return image; } },
     scenario: fault.scenario ?? "success" });
   return { operations, events, commands };
@@ -174,4 +179,78 @@ test("fixed failure invokes real phase argv and recognizes only protocol rejecti
   await assert.rejects(runFixtureLifecycle(broken.operations), AggregateError);
   const unrelated = adapter(t, { scenario: "install_failure", install: true });
   await assert.rejects(runFixtureLifecycle(unrelated.operations), (error) => !(error instanceof ExpectedInstallFailure));
+});
+
+test("joined fixture admission rejects short answers and preserves the accepted observation timestamp", async () => {
+  let elapsed = 0, attempt = 0;
+  const result = await fixture.resolveImageFixtureOrigin({
+    requiredMinimumTtlSeconds: 65, // The joined fixture never permits a weaker caller override.
+    now: () => 2000000000000 + elapsed, elapsedNow: () => elapsed,
+    sleep: async (milliseconds) => { elapsed += milliseconds; },
+    resolver: async () => [{ address: "104.16.0.34", ttl: [65, 119, 120][attempt++] }],
+  });
+  assert.deepEqual(result, { addresses: ["104.16.0.34"], minimumTtlSeconds: 120,
+    observedAt: 2000000010000, attempts: 3 });
+});
+
+test("elapsed lifecycle identifies the refused phase and cleans up without launching it", async (t) => {
+  for (const cleanupError of [undefined, new Error("SECRET source=/private/source token=credential 104.16.0.34")]) {
+    const { operations, events, commands } = adapter(t, { afterProbesMs: 230000, cleanupError });
+    let failure;
+    await assert.rejects(runFixtureLifecycle(operations), (error) => { failure = error; return true; });
+    assert.deepEqual(commands.map((command) => command.phase), ["prepare"]);
+    assert.equal(events.at(-1), "cleanup");
+    const diagnostic = fixture.formatFixtureFailure(failure);
+    assert.match(diagnostic, /stage=install.launch/);
+    assert.match(diagnostic, /planAgeMs=230000, planRemainingMs=70000, dnsRemainingMs=70000/);
+    assert.match(diagnostic, /commandBudgetMs=45000, cleanupReserveMs=30000/);
+    assert.doesNotMatch(diagnostic, /SECRET|private|credential|104\.16/);
+    assert(Buffer.byteLength(diagnostic) <= 512);
+  }
+});
+
+test("freshness diagnostics allowlist stages and never serialize arbitrary errors or fields", () => {
+  const plan = { plan: { job: { createdAt: 100000, expiresAt: 200000 } } };
+  assert.throws(() => assertFixtureFresh(plan, 200000, 100000, 45000, "SECRET"), /stage/);
+  for (const error of [new Error("SECRET token=credential"),
+    new AggregateError([new Error("SECRET" )], "SECRET"),
+    { message: "SECRET", stage: "SECRET", planRemainingMs: "SECRET" }]) {
+    assert.equal(fixture.formatFixtureFailure(error), "fixture execution failed");
+  }
+  const accessor = Object.defineProperty({}, "message", { get() { throw new Error("SECRET getter executed"); } });
+  assert.equal(fixture.formatFixtureFailure(accessor), "fixture execution failed");
+});
+
+test("joined acquisition failure stays actionable through cleanup without raw diagnostic leaks", async () => {
+  let elapsed = 0;
+  let failure;
+  await assert.rejects(fixture.resolveImageFixtureOrigin({
+    now: () => 2000000000000 + elapsed, elapsedNow: () => elapsed,
+    sleep: async (milliseconds) => { elapsed += milliseconds; },
+    resolver: async () => [{ address: "104.16.0.34", ttl: 119 }],
+  }), (error) => { failure = error; return true; });
+  const diagnostic = fixture.formatFixtureFailure(new AggregateError([
+    failure, new Error("SECRET source=/private/source token=credential"),
+  ], "SECRET cleanup stderr"));
+  assert.equal(diagnostic, "fixture DNS admission failed (reason=ttl_floor_exhausted, attempts=18, elapsedMs=90000, requiredMinimumTtlSeconds=120)");
+  for (const fault of [
+    { resolver: async () => { throw new Error("SECRET credential 104.16.0.34"); } },
+    { resolver: async () => [{ address: "104.16.0.34", ttl: 120 }],
+      writeDiagnostics: () => { throw new Error("SECRET source=/private/source"); } },
+  ]) {
+    await assert.rejects(fixture.resolveImageFixtureOrigin(fault), (error) => {
+      const text = fixture.formatFixtureFailure(error);
+      assert.match(text, /fixture DNS admission failed/);
+      assert.doesNotMatch(text, /SECRET|private|credential|104\.16/);
+      return true;
+    });
+  }
+});
+
+test("CLI failure output uses the bounded formatter instead of arbitrary parser error text", () => {
+  const result = spawnSync(process.execPath, [new URL("../run-image-lifecycle-fixture.mjs", import.meta.url).pathname,
+    "--SECRET=credential"], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "image lifecycle fixture failed: fixture execution failed\n");
 });

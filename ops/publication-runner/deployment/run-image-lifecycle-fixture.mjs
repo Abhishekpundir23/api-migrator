@@ -12,6 +12,53 @@ import { createFixtureNative, executeNativeFixturePhase, assertFixtureDockerDaem
 import { runFixtureLifecycle } from "./fixture-lifecycle.mjs";
 
 const USAGE = "usage: run-image-lifecycle-fixture.mjs --image sha256:DIGEST --output-dir /tmp/api-migrator-fixture-results/NAME [--scenario install_failure]";
+const CLEANUP_RESERVE_MS = 30000;
+const OPERATION_STAGES = ["installPolicy", "prepare", "startGateway", "probeOnline", "install", "stopGateway", "assertOffline", "migrate", "verify"];
+const FRESHNESS_STAGES = new Set(["unspecified", ...OPERATION_STAGES,
+  ...["prepare", "install", "migrate", "verify"].flatMap((phase) => [`${phase}.launch`, `${phase}.complete`]),
+  ...["wrong_sni", "absent_sni", "wrong_sni_ipv6", "absent_sni_ipv6", "non_443", "non_npm", "correct_sni", "correct_sni_ipv6", "direct_bypass", "offline_network"]
+    .map((name) => `probe.${name}`)]);
+// Only locally constructed diagnostics may cross the CLI boundary. Neither
+// arbitrary Error.message values nor aggregate cleanup messages are published.
+const failureDiagnostics = new WeakMap();
+const safeInteger = (value) => Number.isSafeInteger(value) ? value : null;
+
+export function formatFixtureFailure(error) {
+  const pending = [error];
+  for (let visited = 0; pending.length && visited < 16; visited += 1) {
+    const item = pending.shift();
+    if (!item || typeof item !== "object") continue;
+    const diagnostic = failureDiagnostics.get(item);
+    if (diagnostic) return diagnostic.slice(0, 512);
+    if (item instanceof AggregateError) {
+      const errors = Object.getOwnPropertyDescriptor(item, "errors")?.value;
+      if (Array.isArray(errors)) {
+        for (let index = 0; index < Math.min(errors.length, 8); index += 1) {
+          pending.push(Object.getOwnPropertyDescriptor(errors, String(index))?.value);
+        }
+      }
+    }
+  }
+  return "fixture execution failed";
+}
+
+export async function resolveImageFixtureOrigin(options = {}) {
+  let diagnostic;
+  try {
+    return await host.resolveHostedNpmOrigin({ ...options, requiredMinimumTtlSeconds: 120,
+      writeDiagnostics(bytes) {
+        diagnostic = JSON.parse(bytes);
+        options.writeDiagnostics?.(bytes);
+      } });
+  } catch {
+    const failure = new Error("fixture DNS admission failed");
+    const outcomes = new Set(["ttl_floor_exhausted", "resolver_timeout", "resolver_error", "missing_or_excessive_answer", "invalid_answer"]);
+    const reason = outcomes.has(diagnostic?.outcome) ? diagnostic.outcome : "diagnostic_or_internal_failure";
+    failureDiagnostics.set(failure, `fixture DNS admission failed (reason=${reason}, attempts=${safeInteger(diagnostic?.attempts)}, ` +
+      `elapsedMs=${safeInteger(diagnostic?.elapsedMs)}, requiredMinimumTtlSeconds=120)`);
+    throw failure;
+  }
+}
 export function parseImageLifecycleFixtureCli(argv) {
   if (!Array.isArray(argv) || ![4, 6].includes(argv.length) || argv[0] !== "--image" || argv[2] !== "--output-dir" ||
       !/^sha256:[a-f0-9]{64}$/.test(argv[1]) || !/^\/tmp\/api-migrator-fixture-results\/[A-Za-z0-9][A-Za-z0-9_-]{0,100}$/.test(argv[3]) ||
@@ -37,11 +84,18 @@ export function claimFixtureOutput(path) {
   }
 }
 
-export function assertFixtureFresh(record, dnsExpiry, now, timeoutMs) {
+export function assertFixtureFresh(record, dnsExpiry, now, timeoutMs, stage = "unspecified") {
+  if (!FRESHNESS_STAGES.has(stage)) throw new Error("fixture freshness stage invalid");
   const job = record?.plan?.job;
   if (![job?.createdAt, job?.expiresAt, dnsExpiry, now, timeoutMs].every(Number.isSafeInteger) ||
-      timeoutMs < 1 || now < job.createdAt || now + timeoutMs + 30000 >= Math.min(job.expiresAt, dnsExpiry)) {
-    throw new Error("fixture plan or DNS expired or lacks command lifetime");
+      timeoutMs < 1 || now < job.createdAt || now + timeoutMs + CLEANUP_RESERVE_MS >= Math.min(job.expiresAt, dnsExpiry)) {
+    const difference = (a, b) => Number.isSafeInteger(a) && Number.isSafeInteger(b) ? safeInteger(a - b) : null;
+    const diagnostic = `fixture plan or DNS expired or lacks command lifetime (stage=${stage}, ` +
+      `planAgeMs=${difference(now, job?.createdAt)}, planRemainingMs=${difference(job?.expiresAt, now)}, ` +
+      `dnsRemainingMs=${difference(dnsExpiry, now)}, commandBudgetMs=${safeInteger(timeoutMs)}, cleanupReserveMs=${CLEANUP_RESERVE_MS})`;
+    const error = new Error(diagnostic);
+    failureDiagnostics.set(error, diagnostic);
+    throw error;
   }
   return timeoutMs;
 }
@@ -67,18 +121,18 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
   const phases = createFixturePhaseOperations({ image, paths, plan, addresses: origin.addresses,
     installNetwork: "host", uid: 12001, gid: 12001, timeoutMs: phaseTimeout,
     execute: async (request) => {
-      assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), request.timeoutMs);
+      assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), request.timeoutMs, `${request.phase}.launch`);
       const output = await execute(request);
-      assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 1);
+      assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 1, `${request.phase}.complete`);
       return output;
     } });
   let stage = 0, prepared, installed, migrated, installProof;
   const order = (expected) => {
     if (stage !== expected) throw new Error("fixture operation order rejected");
-    assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 15000);
+    assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 15000, OPERATION_STAGES[expected]);
   };
   const probe = (scenario) => {
-    assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 15000);
+    assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 15000, `probe.${scenario}`);
     native.probe(scenario);
   };
   return {
@@ -214,7 +268,7 @@ export async function runImageLifecycleFixture(argv) {
     // Root fixture construction/lockfile acquisition is explicitly outside the
     // measured restricted runner. Fresh DNS is acquired only after it finishes.
     const prepared = prepareFixtureWorkspace(resources.workspacePath);
-    const resolution = await host.resolveHostedNpmOrigin({ writeDiagnostics: (bytes) => evidence.write("dns-diagnostics", bytes) });
+    const resolution = await resolveImageFixtureOrigin({ writeDiagnostics: (bytes) => evidence.write("dns-diagnostics", bytes) });
     const now = Date.now();
     const window = host.hostedNpmPlanWindow({ minimumTtlSeconds: resolution.minimumTtlSeconds, resolutionObservedAt: resolution.observedAt, createdAt: now });
     const plan = createFixturePlan(prepared, { imageDigest: image, addresses: resolution.addresses, resolutionObservedAt: resolution.observedAt,
@@ -266,7 +320,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     (error) => {
       // The fixture has no external source or credentials. Still print only a
       // bounded first diagnostic line, never raw subprocess output or stacks.
-      const message = String(error?.message ?? "unknown failure").split("\n")[0].replace(/[^\x20-\x7e]/g, " ").slice(0, 512);
+      const message = formatFixtureFailure(error);
       process.stderr.write(`image lifecycle fixture failed: ${message}\n`); process.exitCode = 1;
     });
 }
