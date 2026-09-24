@@ -1,6 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, rmSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import * as host from "./run-hosted-smoke.mjs";
 import { cleanupFixtureResources, validateFixtureOwnership } from "./fixture-ownership.mjs";
 
@@ -103,55 +105,119 @@ export async function cleanupNativeFixture(resources, { tools, docker, outputDir
 // termination: the coordinator and external cleanup both remove exact labels.
 export function executeNativeFixturePhase(request, { resources, docker, evidence, processes = {} }) {
   const spawnProcess = processes.spawn ?? spawn;
-  const command = processes.command ?? host.runCommand;
-  const processStatus = processes.status ?? ((pid) => readFileSync(`/proc/${pid}/status`, "utf8"));
+  const command = processes.command ?? fixtureObservationCommand;
+  const processStatus = processes.status ?? ((pid, options) => readFile(`/proc/${pid}/status`, { encoding: "utf8", ...options }));
   const { phase, dockerArgs, timeoutMs } = request;
-  if (dockerArgs[dockerArgs.indexOf("--name") + 1] !== resources.containers[phase] || !dockerArgs.includes(resources.image)) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1200000 ||
+      dockerArgs[dockerArgs.indexOf("--name") + 1] !== resources.containers[phase] || !dockerArgs.includes(resources.image)) {
     throw new Error("fixture phase command identity substituted");
   }
   // Retain exited named containers until exact cleanup; this also lets a fast
   // protocol rejection be inspected without racing --rm.
   const args = dockerArgs.filter((arg) => arg !== "--rm");
   return new Promise((accept, reject) => {
-    let stdout = "", stderr = "", failure, uidObserved = false;
+    const expiresAt = performance.now() + timeoutMs;
+    const cancellation = new AbortController();
+    let stdout = "", stderr = "", uidObserved = false, settled = false, childClosed = false;
+    let deadline, observer, inFlight = Promise.resolve();
+    const expired = () => new Error("fixture phase deadline exceeded");
+    const remaining = () => {
+      const milliseconds = expiresAt - performance.now();
+      if (milliseconds <= 0) throw expired();
+      return Math.max(1, Math.floor(milliseconds));
+    };
     const child = spawnProcess(docker, args, { cwd: "/", env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C", TZ: "UTC" },
       stdio: ["ignore", "pipe", "pipe"] });
-    const fail = (error) => { failure ??= error; child.kill("SIGKILL"); };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline); clearTimeout(observer);
+      cancellation.abort(); // Kills the active inspect process, including final inspection.
+      if (!childClosed) child.kill("SIGKILL");
+      reject(performance.now() >= expiresAt ? expired() : error);
+    };
     const receive = (stream) => (data) => {
+      if (settled) return;
       if (stream === "stdout") stdout += data; else stderr += data;
       if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 1024 * 1024) fail(new Error("fixture phase output exceeded bound"));
     };
     child.stdout.on("data", receive("stdout")); child.stderr.on("data", receive("stderr"));
-    const deadline = setTimeout(() => fail(new Error("fixture phase deadline exceeded")), timeoutMs);
-    const observer = setInterval(() => {
+    deadline = setTimeout(() => fail(expired()), Math.max(1, expiresAt - performance.now()));
+    const inspect = async (final) => {
+      const name = resources.containers[phase];
+      const result = await command(docker, ["container", "inspect", name], {
+        timeoutMs: Math.min(5000, remaining()), signal: cancellation.signal,
+      });
+      remaining();
+      if (settled) throw expired();
+      if (result.status !== 0) {
+        const missing = [`Error: No such object: ${name}`, `Error: No such container: ${name}`,
+          `Error response from daemon: No such container: ${name}`];
+        if (!final && result.status === 1 && missing.includes(result.stderr.trim())) return null;
+        throw new Error("fixture active container inspection failed");
+      }
+      const values = JSON.parse(result.stdout);
+      if (!Array.isArray(values) || values.length !== 1) throw new Error("fixture container inspection malformed");
+      return validateFixtureContainer(values[0], resources, phase);
+    };
+    const observe = async () => {
+      const value = await inspect(false);
+      if (!settled && !childClosed && value?.State.Running && value.State.Pid > 1) {
+        const pid = value.State.Pid;
+        let status;
+        try { status = await processStatus(pid, { signal: cancellation.signal }); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+        remaining();
+        if (settled || childClosed) return;
+        const ids = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m.exec(status);
+        if (!ids || ids.slice(1).some((id) => id !== "12001")) throw new Error("fixture workload host UID evidence mismatched");
+        uidObserved = true;
+      }
+    };
+    const schedule = () => {
+      if (settled || childClosed) return;
       try {
-        const entry = fixtureContainerInventory(resources, docker, command).find((item) => item.phase === phase);
-        if (entry?.value.State.Running && entry.value.State.Pid > 1) {
-          const pid = entry.value.State.Pid;
-          let status;
-          try { status = processStatus(pid); } catch (error) { if (error.code === "ENOENT") return; throw error; }
-          const ids = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m.exec(status);
-          if (!ids || ids.slice(1).some((id) => id !== "12001")) throw new Error("fixture workload host UID evidence mismatched");
-          uidObserved = true;
-        }
+        observer = setTimeout(() => {
+          inFlight = observe();
+          inFlight.then(schedule, fail);
+        }, Math.min(100, remaining()));
       } catch (error) { fail(error); }
-    }, 100);
-    child.once("error", (error) => { failure ??= error; });
+    };
+    schedule();
+    child.once("error", fail);
     child.once("close", (code) => {
-      clearTimeout(deadline); clearInterval(observer);
-      try {
-        if (failure) throw failure;
-        const entry = fixtureContainerInventory(resources, docker, command).find((item) => item.phase === phase);
-        if (!entry || entry.value.State.Running) throw new Error("fixture phase container not settled");
+      childClosed = true;
+      clearTimeout(observer);
+      if (settled) return;
+      const finish = async () => {
+        // Do not overlap final inspection with an observation already running.
+        await inFlight;
+        if (settled) return;
+        const value = await inspect(true);
+        if (settled) return;
+        if (!value || value.State.Running) throw new Error("fixture phase container not settled");
         if (code !== 0) {
           const error = new Error(`fixture ${phase} subprocess failed`);
           if (phase === "install" && stderr.includes("prepared install state does not match the host-sealed digest")) error.code = "FIXTURE_INSTALL_PROTOCOL_REJECTED";
           throw error;
         }
         if (phase === "install" && !uidObserved) throw new Error("fixture install host UID evidence missing");
+        remaining();
         evidence.write(`${phase}-execution`, JSON.stringify({ phase, image: resources.image, jobId: resources.jobId, uid: 12001, uidObserved, code }));
+        remaining();
+        settled = true; clearTimeout(deadline);
         accept(stdout);
-      } catch (error) { reject(error); }
+      };
+      finish().catch(fail);
+    });
+  });
+}
+
+function fixtureObservationCommand(path, args, { timeoutMs, signal }) {
+  return new Promise((accept, reject) => {
+    execFile(path, args, { encoding: "utf8", cwd: "/", timeout: timeoutMs, signal, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
+      env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C", TZ: "UTC" } }, (error, stdout, stderr) => {
+      if (error && (typeof error.code !== "number" || error.killed)) { reject(error); return; }
+      accept({ status: error?.code ?? 0, stdout, stderr });
     });
   });
 }
