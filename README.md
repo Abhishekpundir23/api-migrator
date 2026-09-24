@@ -4,6 +4,15 @@ API Migrator is an operator-reviewed pilot for upgrading application code when a
 
 **Current status:** sandbox-validated internal pilot. The owner-challenge, offline-signing, exact-authorization, and durable replay primitives exist, but the console cannot currently generate an owner challenge or publish: both paths require an opaque verified-runner capability, and no trusted control-plane provider is wired yet. A minimal Node 22 runner image now exercises offline preparation, lifecycle-disabled dependency installation, offline migration, and offline verification, while the host and L7 gateway directories define non-authorizing deployment contracts and an observer-first native-configuration preflight. A separate Ubuntu 24.04 workflow exercises 15 independent, secret-free native Envoy/nftables smoke scenarios, including forced routing, negative probes, gateway-stop closure, and table-last cleanup. Its same-host reports are explicitly self-attested and cannot become release, signing, capability, or publication evidence.
 
+The [joined runner fixture](ops/publication-runner/deployment/README.md#joined-runner-image-fixture)
+connects the four-phase image protocol to those native gateway controls in a
+separate two-scenario Linux workflow. It uses only a generated fixture, with
+test-only Docker host networking under a dedicated non-root UID during
+installation; every other phase is offline. A passing run must prove traffic
+through the gateway and exact cleanup. This does not validate the production
+rootless-Podman adapter or enable publication; inspect the workflow result for
+the exact revision before claiming hosted execution passed.
+
 The provider-neutral dedicated-host contract fixes one provider and provider scope across the future 17-host handoff, accepts target hosts created no more than 15 minutes before handoff, limits attempt deadlines to 30 minutes and leases to one hour from handoff, and retains off-host evidence for at least 30 days after the latest deadline. Controller and observer identities must use distinct hosts, principals, runtimes, and trust domains. Contextual attempt digests bind the suite, source revision, provider scope, control identities, and attempt, while each event chain is rooted in its handoff and attempt. Cgroup- and time-bound OOM snapshots, scenario-specific stimuli and observations, bounded provider-reboot receipts and timing, provider lease and destruction receipts, and a deterministic retrievable evidence manifest bind the corresponding observer events and evidence objects.
 
 This remains executable contract validation, not a live drill: the checked-in example is synthetic, no provider adapter, cloud project, OIDC trust, credential, evidence service, or provisioning workflow is configured, and every handoff and report remains non-authorizing with `authoritativeDrill: false`, `releaseEvidenceEligible: false`, `activationBlocked: true`, and `externalSigningEligible: false`. Live host activation, external-source execution, owner-challenge generation, and publication remain disabled until the complete gateway lifecycle is integrated and externally observed on disposable dedicated Linux hosts, a control plane independently verifies and supplies the runner capability, repository ruleset and required-CI evidence are validated, and a supervised sandbox drill passes. It is not a hosted multi-tenant product, it does not track merged PRs, and it should not be exposed directly to the internet.
@@ -190,6 +199,12 @@ When challenge generation is enabled, its receipt will never extend the original
 | `npm run owner:sign -- ...` | Signs an exact canonical challenge without GitHub access; the console does not currently issue such a challenge |
 
 GitHub Actions runs `npm run ci` on pushes and pull requests. The separate Linux L7 workflow also runs the 15-scenario GitHub-hosted smoke when publication-runner paths change. CI uses only its read-only checkout token, does not persist that credential, does not configure application GitHub credentials, request cloud OIDC identity, provision hosts, push branches, open real PRs, or prove customer-repository compatibility. Hosted-smoke output remains co-resident, self-attested regression evidence; a real pilot still requires operator review and externally observed evidence from approved repositories.
+
+The [runner lifecycle fixture workflow](.github/workflows/runner-lifecycle-fixture.yml)
+adds a successful four-phase run and an install-protocol rejection after gateway
+setup. Both require cleanup, and their small result artifacts remain permanently
+non-authorizing. The rejection case does not simulate interruption of an active
+download, SIGKILL, OOM, or reboot.
 
 ## Pilot acceptance criteria
 

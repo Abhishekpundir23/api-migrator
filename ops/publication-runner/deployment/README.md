@@ -1,9 +1,10 @@
 # Runner Deployment v2 host contract — activation blocked
 
-This directory is a non-authorizing **deployment contract candidate**. It is not
-a deployed runner, a working gateway integration, Linux enforcement evidence,
-or a source of signed attestations. Live host activation and external signing
-eligibility are deliberately blocked.
+The production boundary in this directory remains a non-authorizing
+**deployment contract candidate**, not a deployed runner or a source of signed
+attestations. The test-only hosted integrations below cannot supply authoritative
+Linux enforcement evidence. Live host activation and external signing
+eligibility remain blocked.
 
 The checked-in image protocol, v2 host/job descriptors, host-unit renderer,
 gateway renderer and probe, structural lifecycle-drill contract, external
@@ -193,6 +194,55 @@ are unchanged. Diagnostic capture does not fix intermittent upstream DNS
 freshness failures. Inspect an instrumented hosted run before choosing a
 functional retry or resolver change.
 
+## Joined runner-image fixture
+
+[`runner-lifecycle-fixture.yml`](../../../.github/workflows/runner-lifecycle-fixture.yml)
+runs the fixed image protocol and native gateway controls together on disposable
+Ubuntu 24.04 workers. This is a separate test entrypoint,
+`run-image-lifecycle-fixture.mjs`; it does not enable the guarded production
+wrapper, observer, or console actions. The existing 15-scenario smoke stays
+separate.
+
+The shared `image/fixture-phases.mjs` generates the fixed Inngest fixture and
+dependency lockfile before restricted execution is measured. After fresh DNS
+acquisition, the adapter binds the real source, image config digest, runner plan
+and gateway contract. It installs containment before preparation, uses
+`--network=none` for preparation, migration and verification, and permits host
+networking only for installation under the dedicated non-root UID. The native
+adapter checks the actual container host UID and rejects Docker rootless or
+user-namespace modes that would invalidate that attribution.
+
+Readiness probes cover both loopback listener families, wrong/missing TLS SNI,
+and prohibited destinations. A direct npm connection is expected to succeed
+only through forced redirection: correlated counters establish traversal, not
+HTTP success alone. Installation has its own before/after counter observations.
+The gateway must stop and offline closure must pass before migration and
+verification. Containment remains installed until exact owned containers,
+units/cgroups, processes and workspace trees have been cleared. An incomplete
+cleanup or failed evidence write cannot produce a passing result.
+
+The two workflow scenarios are:
+
+- `success`: all four real image phases, transport checks and cleanup.
+- `install_failure`: a real install container receives a deliberately wrong
+  prepared-state digest after gateway setup. Protocol rejection must prevent
+  migration and verification, then cleanup must succeed. This is not an
+  interrupted-download, SIGKILL, OOM or reboot test.
+
+The workflow seals its runtime, invokes it with an allowlisted environment, and
+runs `cleanup-image-lifecycle-fixture.mjs` plus a residual audit even after the
+main step fails. Only the bounded `fixture-report.json` summary is uploaded; the
+fixture checkout, raw source bundle and phase workspaces are not artifacts.
+Every passing result fixes `securityDrill: false`, `selfAttested: true`,
+`releaseEvidenceEligible: false`, `activationBlocked: true`, and
+`externalSigningEligible: false`.
+
+Check the current revision's hosted jobs and artifacts before claiming this
+integration passed on Linux. Local command-boundary tests and the standalone
+Docker image integration do not prove native Linux enforcement. Even a passing
+hosted fixture does not validate the production rootless-Podman adapter,
+independent observation, protected custody, signing, or the console bridge.
+
 ## Static checks
 
 These commands do not provision or activate a host:
@@ -228,6 +278,10 @@ The hosted workflow covers the non-authorizing full-Linux regression slice but
 does not replace externally observed release evidence. OOM and reboot are
 deliberately omitted because a co-resident hosted job cannot safely or
 authoritatively observe those host-loss boundaries.
+
+The joined fixture adds real image-phase orchestration to that test surface. A
+production rootless runner, independently observed gateway lifecycle, and a
+verified control-plane provider for the console are still separate work.
 
 The provider-neutral handoff and attempt-report contracts now define the data
 boundary, but the authoritative drill still requires infrastructure and

@@ -87,6 +87,7 @@ if (failure) throw failure;
 - Create: `ops/publication-runner/deployment/test/image-lifecycle-fixture.test.mjs`
 - Create: `.github/workflows/runner-lifecycle-fixture.yml`
 - Modify as needed for narrow shared primitives: `ops/publication-runner/deployment/run-hosted-smoke.mjs`, `ops/publication-runner/image/fixture-phases.mjs`
+- Modify for IPv6 negative-probe parity: `ops/publication-runner/gateway/gateway-probe.mjs` and its focused tests; retain the existing smoke scenario matrix.
 - Modify: `ops/publication-runner/deployment/README.md`, `README.md`
 
 **Interfaces:**
