@@ -8,12 +8,12 @@ import { validatePublicationRunnerPlan } from "../../../packages/app/dist/runner
 import * as host from "./run-hosted-smoke.mjs";
 import { canonicalJson, renderGatewayDeployment } from "../gateway/gateway-contract.mjs";
 import { deriveFixtureResources, fixtureOwnership } from "./fixture-ownership.mjs";
-import { createFixtureNative, executeNativeFixturePhase, assertFixtureDockerDaemon, fixtureContainerInventory, cleanupNativeFixture } from "./fixture-native.mjs";
+import { createFixtureNative, executeNativeFixturePhase, getFixtureInstallCancellation, assertFixtureDockerDaemon, fixtureContainerInventory, cleanupNativeFixture } from "./fixture-native.mjs";
 import { runFixtureLifecycle } from "./fixture-lifecycle.mjs";
 import { annotateFixtureFailure, assertFixtureDiagnosticStage, atFixtureStage, formatFixtureFailure, markFixtureCleanupFailure } from "./fixture-diagnostics.mjs";
 export { formatFixtureFailure } from "./fixture-diagnostics.mjs";
 
-const USAGE = "usage: run-image-lifecycle-fixture.mjs --image sha256:DIGEST --output-dir /tmp/api-migrator-fixture-results/NAME [--scenario install_failure]";
+const USAGE = "usage: run-image-lifecycle-fixture.mjs --image sha256:DIGEST --output-dir /tmp/api-migrator-fixture-results/NAME [--scenario success|install_failure|install_cancel]";
 const CLEANUP_RESERVE_MS = 30000;
 const OPERATION_STAGES = ["installPolicy", "prepare", "startGateway", "probeOnline", "install", "stopGateway", "assertOffline", "migrate", "verify"];
 const safeInteger = (value) => Number.isSafeInteger(value) ? value : null;
@@ -37,7 +37,7 @@ export async function resolveImageFixtureOrigin(options = {}) {
 export function parseImageLifecycleFixtureCli(argv) {
   if (!Array.isArray(argv) || ![4, 6].includes(argv.length) || argv[0] !== "--image" || argv[2] !== "--output-dir" ||
       !/^sha256:[a-f0-9]{64}$/.test(argv[1]) || !/^\/tmp\/api-migrator-fixture-results\/[A-Za-z0-9][A-Za-z0-9_-]{0,100}$/.test(argv[3]) ||
-      (argv.length === 6 && (argv[4] !== "--scenario" || !["success", "install_failure"].includes(argv[5])))) throw new Error(USAGE);
+      (argv.length === 6 && (argv[4] !== "--scenario" || !["success", "install_failure", "install_cancel"].includes(argv[5])))) throw new Error(USAGE);
   return Object.freeze({ image: argv[1], outputDir: argv[3], scenario: argv[5] ?? "success" });
 }
 
@@ -89,16 +89,34 @@ export function proveForcedFixtureRoute(before, after) {
 
 export class ExpectedInstallFailure extends Error {}
 
+export async function runImageFixtureScenario(operations, scenario) {
+  let result;
+  try { result = await runFixtureLifecycle(operations); }
+  catch (error) {
+    const proof = getFixtureInstallCancellation(error);
+    if (scenario === "install_cancel" && proof) {
+      result = { phaseIntegration: "expected_install_cancellation", cancellationProof: proof };
+    } else if (scenario === "install_failure" && error instanceof ExpectedInstallFailure) {
+      result = { phaseIntegration: "expected_install_protocol_rejection" };
+    } else throw error; // Includes aggregates with incomplete cleanup.
+    return { ...result, cleanup: "complete", securityDrill: false, selfAttested: true,
+      releaseEvidenceEligible: false, activationBlocked: true, externalSigningEligible: false };
+  }
+  if (scenario !== "success") throw new Error("fixed install failure unexpectedly succeeded");
+  return result;
+}
+
 export function createImageFixtureOperations({ plan, paths, image, native, execute, evidence, scenario, now = Date.now }) {
   validatePublicationRunnerPlan(plan.plan);
-  if (plan.plan.imageDigest !== image || !["success", "install_failure"].includes(scenario)) throw new Error("fixture image or scenario substituted");
+  if (plan.plan.imageDigest !== image || !["success", "install_failure", "install_cancel"].includes(scenario)) throw new Error("fixture image or scenario substituted");
   const origin = plan.plan.egress.install.destinations[0];
   const phaseTimeout = 45000;
   const phases = createFixturePhaseOperations({ image, paths, plan, addresses: origin.addresses,
     installNetwork: "host", uid: 12001, gid: 12001, timeoutMs: phaseTimeout,
     execute: async (request) => {
       assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), request.timeoutMs, `${request.phase}.launch`);
-      const output = await atFixtureStage(`${request.phase}.execute`, "unexpected", () => execute(request), { commandBudgetMs: request.timeoutMs });
+      const output = await atFixtureStage(`${request.phase}.execute`, "unexpected", () => execute(request,
+        { cancelInstall: scenario === "install_cancel" && request.phase === "install" }), { commandBudgetMs: request.timeoutMs });
       assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 1, `${request.phase}.complete`);
       return output;
     } });
@@ -157,6 +175,7 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
         throw new Error("fixed install failure unexpectedly succeeded");
       }
       installed = await atFixtureStage("install.validate", "protocol", () => phases.install(prepared));
+      if (scenario === "install_cancel") throw new Error("fixed install cancellation unexpectedly succeeded");
       installProof = proveForcedFixtureRoute(before, native.counters());
       atFixtureStage("install.evidence", "evidence", () => evidence.write("install-forced-route", JSON.stringify(installProof)));
       stage = 5;
@@ -298,15 +317,9 @@ async function runImageLifecycleFixtureInternal(argv, context) {
     const rendered = renderFixtureGateway(plan, resources, inventory);
     const native = createFixtureNative({ resources, rendered, tools, docker, evidence, outputDir: config.outputDir });
     const operations = createImageFixtureOperations({ plan, paths: prepared.paths, image, native, evidence, scenario: config.scenario,
-      execute: (request) => executeNativeFixturePhase(request, { resources, docker, evidence }) });
+      execute: (request, options) => executeNativeFixturePhase(request, { ...options, resources, docker, evidence }) });
     lifecycleOwnsCleanup = true;
-    let result;
-    try { result = await runFixtureLifecycle(operations); }
-    catch (error) {
-      if (!(error instanceof ExpectedInstallFailure) || config.scenario !== "install_failure") throw error;
-      result = { phaseIntegration: "expected_install_protocol_rejection", cleanup: "complete",
-        securityDrill: false, selfAttested: true, releaseEvidenceEligible: false, activationBlocked: true, externalSigningEligible: false };
-    }
+    const result = await runImageFixtureScenario(operations, config.scenario);
     context.stage = "setup.report"; context.category = "evidence";
     const report = { schemaVersion: 1, kind: "api_migrator_joined_image_lifecycle_fixture", scenario: config.scenario,
       sourceRevision: environment.sourceRevision, sourceDigest: prepared.bundle.digest, planDigest: plan.digest,

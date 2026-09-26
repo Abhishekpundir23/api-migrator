@@ -1,7 +1,7 @@
 // Internal, non-authorizing diagnostics. Raw errors remain private; only fixed
 // stages/categories and observed bounded primitives can cross the CLI boundary.
 const stages = new Set([
-  "unspecified", "cleanup", "installPolicy", "prepare", "startGateway", "probeOnline", "install", "stopGateway", "assertOffline", "migrate", "verify",
+  "unspecified", "cleanup", "installPolicy", "prepare", "startGateway", "probeOnline", "install", "install.cancel", "stopGateway", "assertOffline", "migrate", "verify",
   ...["cli", "environment", "platform", "accounts", "tools", "docker", "context", "image", "resources", "output", "workspace", "dns", "plan", "collision", "ownership", "evidence", "permissions", "gateway", "report"]
     .map((name) => `setup.${name}`),
   ...["prepare", "install", "migrate", "verify"].flatMap((phase) =>

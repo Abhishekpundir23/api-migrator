@@ -121,8 +121,8 @@ function adapter(t, fault = {}) {
   const evidenceText = canonicalJson(evidence);
   writeFileSync(join(paths.result, "runner-evidence.json"), evidenceText);
   const digest = `sha256:${createHash("sha256").update(evidenceText).digest("hex")}`;
-  const execute = async (request) => {
-    commands.push(request); events.push(request.phase);
+  const execute = async (request, options) => {
+    commands.push({ ...request, ...options }); events.push(request.phase);
     if (request.phase === "install") {
       if (fault.protocol) {
         assert(request.dockerArgs.includes(`sha256:${"0".repeat(64)}`));
@@ -185,6 +185,18 @@ test("fixed failure invokes real phase argv and recognizes only protocol rejecti
   await assert.rejects(runFixtureLifecycle(broken.operations), AggregateError);
   const unrelated = adapter(t, { scenario: "install_failure", install: true });
   await assert.rejects(runFixtureLifecycle(unrelated.operations), (error) => !(error instanceof ExpectedInstallFailure));
+});
+
+test("cancellation injection is install-only and unexpected install success still stops before migrate", async (t) => {
+  const cancelled = adapter(t, { scenario: "install_cancel" });
+  await assert.rejects(fixture.runImageFixtureScenario(cancelled.operations, "install_cancel"), /cancellation unexpectedly succeeded/);
+  assert.deepEqual(cancelled.commands.map(({ phase, cancelInstall }) => ({ phase, cancelInstall })),
+    [{ phase: "prepare", cancelInstall: false }, { phase: "install", cancelInstall: true }]);
+  assert.equal(cancelled.events.at(-1), "cleanup");
+  assert(!cancelled.events.includes("migrate")); assert(!cancelled.events.includes("verify"));
+  const success = adapter(t);
+  await fixture.runImageFixtureScenario(success.operations, "success");
+  assert(success.commands.every((request) => request.cancelInstall === false));
 });
 
 test("joined fixture admission rejects short answers and preserves the accepted observation timestamp", async () => {

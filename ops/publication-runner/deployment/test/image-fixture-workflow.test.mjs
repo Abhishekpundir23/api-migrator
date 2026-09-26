@@ -14,7 +14,7 @@ function script(name) {
     .split("\n").filter((line) => line.startsWith("          ") || line === "").map((line) => line.slice(10)).join("\n");
 }
 
-function executeStep(t, name, failCleanup = false) {
+function executeStep(t, name, scenario, failCleanup = false) {
   const root = mkdtempSync(join(tmpdir(), "fixture-workflow-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "bin"));
@@ -39,7 +39,7 @@ process.exit(r.status ?? 1);
     GITHUB_TOKEN: "synthetic-secret-must-not-arrive", HTTPS_PROXY: "synthetic-proxy",
     FIXTURE_RUN_ID: "123", FIXTURE_RUN_ATTEMPT: "1", FIXTURE_REVISION: "a".repeat(40), FIXTURE_REPOSITORY: "owner/repo",
     FIXTURE_WORKFLOW: "owner/repo/.github/workflows/runner-lifecycle-fixture.yml@refs/heads/main", FIXTURE_IMAGE: `sha256:${"b".repeat(64)}`,
-    FIXTURE_SCENARIO: "install_failure", ImageVersion: "20260924.1" };
+    FIXTURE_SCENARIO: scenario, ImageVersion: "20260924.1" };
   const result = spawnSync("/bin/bash", ["-c", script(name)], { env, encoding: "utf8", timeout: 10000 });
   let calls;
   try { calls = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse); }
@@ -47,23 +47,36 @@ process.exit(r.status ?? 1);
   return { result, calls };
 }
 
-test("workflow launch executes env-i with only approved coordinates and fixed fixture CLI", (t) => {
-  const { result, calls } = executeStep(t, "Run joined fixture");
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(Object.keys(calls[0].env).filter((key) => !key.startsWith("API_MIGRATOR_")).sort(), ["LANG", "LC_ALL", "PATH", "TZ"]);
-  assert.equal(validateFixtureEnvironment(calls[0].env).runId, "123");
-  assert.equal(calls[0].env.GITHUB_TOKEN, undefined);
-  assert.equal(calls[0].env.HTTPS_PROXY, undefined);
-  const config = parseImageLifecycleFixtureCli(calls[0].args.slice(1));
-  assert.deepEqual(config, { image: `sha256:${"b".repeat(64)}`, outputDir: "/tmp/api-migrator-fixture-results/123-1-install_failure", scenario: "install_failure" });
+test("every joined fixture matrix scenario launches through the sanitized shell boundary", (t) => {
+  const matrix = /^\s+scenario: \[([^\]]+)\]$/m.exec(workflow);
+  assert(matrix, "fixture scenario matrix must exist");
+  const scenarios = matrix[1].split(",").map((value) => value.trim());
+  assert.deepEqual(scenarios, ["success", "install_failure", "install_cancel"]);
+  for (const scenario of scenarios) {
+    const { result, calls } = executeStep(t, "Run joined fixture", scenario);
+    assert.equal(result.status, 0, `${scenario}: ${result.stderr}`);
+    assert.equal(calls.length, 1, scenario);
+    assert.deepEqual(Object.keys(calls[0].env).filter((key) => !key.startsWith("API_MIGRATOR_")).sort(), ["LANG", "LC_ALL", "PATH", "TZ"]);
+    assert.equal(validateFixtureEnvironment(calls[0].env).runId, "123");
+    assert.equal(calls[0].env.GITHUB_TOKEN, undefined);
+    assert.equal(calls[0].env.HTTPS_PROXY, undefined);
+    const config = parseImageLifecycleFixtureCli(calls[0].args.slice(1));
+    assert.deepEqual(config, { image: `sha256:${"b".repeat(64)}`,
+      outputDir: `/tmp/api-migrator-fixture-results/123-1-${scenario}`, scenario });
+  }
 });
 
-test("workflow still audits exact residual resources after cleanup fails and remains failed", (t) => {
-  const { result, calls } = executeStep(t, "Always clean and audit exact owned resources", true);
-  assert.equal(calls.length, 2, "audit must run after a failed cleanup subprocess");
-  assert.notEqual(result.status, 0);
-  assert(!calls[0].args.includes("--audit-only"));
-  assert.equal(calls[1].args.at(-1), "--audit-only");
-  for (const call of calls) assert.equal(validateFixtureEnvironment(call.env).runId, "123");
+test("each scenario still audits exact residual resources after cleanup fails", (t) => {
+  for (const scenario of ["success", "install_failure", "install_cancel"]) {
+    const { result, calls } = executeStep(t, "Always clean and audit exact owned resources", scenario, true);
+    assert.equal(calls.length, 2, `${scenario}: audit must run after failed cleanup`);
+    assert.notEqual(result.status, 0, scenario);
+    assert(!calls[0].args.includes("--audit-only"));
+    assert.equal(calls[1].args.at(-1), "--audit-only");
+    for (const call of calls) {
+      assert.equal(validateFixtureEnvironment(call.env).runId, "123");
+      const config = parseImageLifecycleFixtureCli(call.args.slice(1).filter((arg) => arg !== "--audit-only"));
+      assert.equal(config.scenario, scenario);
+    }
+  }
 });

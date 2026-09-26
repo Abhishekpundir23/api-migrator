@@ -7,6 +7,11 @@ import * as host from "./run-hosted-smoke.mjs";
 import { cleanupFixtureResources, validateFixtureOwnership } from "./fixture-ownership.mjs";
 import { annotateFixtureFailure, atFixtureStage } from "./fixture-diagnostics.mjs";
 
+// Only a completed native observation can identify the expected cancellation.
+// Messages, public error codes and cleanup aggregates cannot mint this proof.
+const installCancellations = new WeakMap();
+export function getFixtureInstallCancellation(error) { return installCancellations.get(error); }
+
 export function assertFixtureDockerDaemon(info) {
   if (info?.OSType !== "linux" || info.CgroupVersion !== "2" || !Array.isArray(info.SecurityOptions) ||
       info.SecurityOptions.some((item) => /userns|rootless/i.test(item))) throw new Error("fixture Docker must use local rootful host UID mapping and cgroup v2");
@@ -107,12 +112,13 @@ export async function cleanupNativeFixture(resources, { tools, docker, outputDir
 
 // Runs only the generated phase argv. Docker's client timeout is not container
 // termination: the coordinator and external cleanup both remove exact labels.
-export function executeNativeFixturePhase(request, { resources, docker, evidence, processes = {} }) {
+export function executeNativeFixturePhase(request, { resources, docker, evidence, processes = {}, cancelInstall = false }) {
   const spawnProcess = processes.spawn ?? spawn;
   const command = processes.command ?? fixtureObservationCommand;
   const processStatus = processes.status ?? ((pid, options) => readFile(`/proc/${pid}/status`, { encoding: "utf8", ...options }));
   const { phase, dockerArgs, timeoutMs } = request;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1200000 ||
+  if (typeof cancelInstall !== "boolean" || (cancelInstall && phase !== "install") ||
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1200000 ||
       dockerArgs[dockerArgs.indexOf("--name") + 1] !== resources.containers[phase] || !dockerArgs.includes(resources.image)) {
     throw new Error("fixture phase command identity substituted");
   }
@@ -122,7 +128,9 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
   return new Promise((accept, reject) => {
     const expiresAt = performance.now() + timeoutMs;
     const cancellation = new AbortController();
-    let stdout = "", stderr = "", uidObserved = false, settled = false, childClosed = false;
+    let stdout = "", stderr = "", uidObserved = false, settled = false, childClosed = false, cancelling = false;
+    let resolveClose;
+    const closed = new Promise((resolve) => { resolveClose = resolve; });
     let deadline, observer, inFlight = Promise.resolve();
     const expired = () => annotateFixtureFailure(new Error("fixture phase deadline exceeded"), {
       stage: `${phase}.execute`, category: "deadline", timedOut: true, commandBudgetMs: timeoutMs });
@@ -149,8 +157,7 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
     };
     child.stdout.on("data", receive("stdout")); child.stderr.on("data", receive("stderr"));
     deadline = setTimeout(() => fail(expired()), Math.max(1, expiresAt - performance.now()));
-    const inspect = (final) => atFixtureStage(`${phase}.inspect`, "inspection", async () => {
-      const name = resources.containers[phase];
+    const inspect = (final, name = resources.containers[phase]) => atFixtureStage(`${phase}.inspect`, "inspection", async () => {
       const result = await command(docker, ["container", "inspect", name], {
         timeoutMs: Math.min(5000, remaining()), signal: cancellation.signal,
       });
@@ -166,17 +173,54 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
       if (!Array.isArray(values) || values.length !== 1) throw new Error("fixture container inspection malformed");
       return atFixtureStage(`${phase}.inspect`, "identity", () => validateFixtureContainer(values[0], resources, phase));
     });
+    const readUid = async (pid) => {
+      const status = await atFixtureStage(`${phase}.uid`, "uid_evidence", () => processStatus(pid, { signal: cancellation.signal }));
+      remaining();
+      const ids = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m.exec(status);
+      if (!ids || ids.slice(1).some((id) => id !== "12001")) throw annotateFixtureFailure(new Error("fixture workload host UID evidence mismatched"), { stage: `${phase}.uid`, category: "uid_evidence" });
+    };
+    const cancelLiveInstall = (value) => atFixtureStage("install.cancel", "host_operation", async () => {
+      const id = value.Id, pid = value.State.Pid;
+      if (!/^[a-f0-9]{64}$/.test(id) || value.State.Paused !== false || childClosed || settled) {
+        throw new Error("fixture cancellation lacks live container identity");
+      }
+      // Freeze the observed workload, not a timer racing npm. A container that
+      // exits before pause is a failure, never expected cancellation evidence.
+      const paused = await command(docker, ["container", "pause", id], {
+        timeoutMs: Math.min(5000, remaining()), signal: cancellation.signal,
+      });
+      remaining();
+      if (paused.status !== 0) throw new Error("fixture install pause failed");
+      const assertPaused = (current) => {
+        if (current?.Id !== id || current.State.Pid !== pid || current.State.Running !== true || current.State.Paused !== true) {
+          throw new Error("fixture paused install identity substituted or absent");
+        }
+      };
+      assertPaused(await inspect(true, id));
+      await readUid(pid);
+      if (childClosed || settled) throw new Error("fixture client closed before cancellation");
+      cancelling = true;
+      if (child.kill("SIGKILL") !== true) throw new Error("fixture client cancellation was not sent");
+      const outcome = await closed;
+      remaining();
+      if (settled || outcome.code !== null || outcome.signal !== "SIGKILL") throw new Error("fixture client cancellation was not observed");
+      assertPaused(await inspect(true, id));
+      const proof = Object.freeze({ jobId: resources.jobId, image: resources.image, containerId: id,
+        uidObserved: true, containerPaused: true, clientSignal: "SIGKILL", containerRetained: true });
+      atFixtureStage("install.evidence", "evidence", () => evidence.write("install-cancellation", JSON.stringify(proof)));
+      remaining();
+      const error = new Error("fixture live install client cancellation observed");
+      installCancellations.set(error, proof);
+      throw error;
+    });
     const observe = async () => {
       const value = await inspect(false);
       if (!settled && !childClosed && value?.State.Running && value.State.Pid > 1) {
         const pid = value.State.Pid;
-        let status;
-        try { status = await atFixtureStage(`${phase}.uid`, "uid_evidence", () => processStatus(pid, { signal: cancellation.signal })); } catch (error) { if (error.code === "ENOENT") return; throw error; }
-        remaining();
+        try { await readUid(pid); } catch (error) { if (error.code === "ENOENT") return; throw error; }
         if (settled || childClosed) return;
-        const ids = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m.exec(status);
-        if (!ids || ids.slice(1).some((id) => id !== "12001")) throw annotateFixtureFailure(new Error("fixture workload host UID evidence mismatched"), { stage: `${phase}.uid`, category: "uid_evidence" });
         uidObserved = true;
+        if (cancelInstall) await cancelLiveInstall(value);
       }
     };
     const schedule = () => {
@@ -192,8 +236,9 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
     child.once("error", (error) => fail(annotateFixtureFailure(error, { stage: `${phase}.execute`, category: "spawn" })));
     child.once("close", (code, signal) => {
       childClosed = true;
+      resolveClose({ code, signal });
       clearTimeout(observer);
-      if (settled) return;
+      if (settled || cancelling) return;
       const finish = async () => {
         // Do not overlap final inspection with an observation already running.
         await inFlight;

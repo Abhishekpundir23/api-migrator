@@ -237,13 +237,23 @@ only when observed. A `cleanupFailed` boolean distinguishes initial cleanup
 failure without hiding the original diagnostic. These diagnostics do not relax
 any lifecycle check or establish the cause of an earlier generic failure.
 
-The two workflow scenarios are:
+The three workflow scenarios are:
 
 - `success`: all four real image phases, transport checks and cleanup.
 - `install_failure`: a real install container receives a deliberately wrong
   prepared-state digest after gateway setup. Protocol rejection must prevent
   migration and verification, then cleanup must succeed. This is not an
   interrupted-download, SIGKILL, OOM or reboot test.
+- `install_cancel`: after observing the owned install container running under
+  host UID 12001, the fixture pauses that exact container, kills only its
+  attached Docker client with SIGKILL, and checks that the same paused
+  container remains until exact cleanup removes it. The bounded result records
+  `uidObserved`, `containerPaused`, `clientSignal`, and `containerRetained`;
+  migration and verification must not run. This exercises client cancellation
+  and cleanup of a real container, not a proven mid-download interruption,
+  deadline expiry, OOM, host reboot, or production rootless-Podman teardown.
+  A container that exits before the live observation and pause fails this
+  scenario; startup timing is not guaranteed by a sleep or fixture delay.
 
 The workflow seals its runtime, invokes it with an allowlisted environment, and
 runs `cleanup-image-lifecycle-fixture.mjs` plus a residual audit even after the

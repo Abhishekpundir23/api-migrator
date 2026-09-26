@@ -3,7 +3,7 @@ import { canonicalJson } from "./lib.mjs";
 
 export function deriveFixtureResources({ runId, runAttempt, scenario, jobId = null, image, planDigest = null }) {
   if (!/^[1-9][0-9]{0,19}$/.test(runId) || !Number.isSafeInteger(runAttempt) || runAttempt < 1 || runAttempt > 999999 ||
-      !["success", "install_failure"].includes(scenario) || !/^sha256:[a-f0-9]{64}$/.test(image) ||
+      !["success", "install_failure", "install_cancel"].includes(scenario) || !/^sha256:[a-f0-9]{64}$/.test(image) ||
       (jobId !== null && !/^previewjob_[a-f0-9]{64}$/.test(jobId)) ||
       (planDigest !== null && !/^sha256:[a-f0-9]{64}$/.test(planDigest)) || ((jobId === null) !== (planDigest === null))) {
     throw new Error("fixture ownership identity invalid");
