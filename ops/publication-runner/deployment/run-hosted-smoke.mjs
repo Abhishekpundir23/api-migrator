@@ -27,6 +27,7 @@ import { annotateFixtureFailure } from "./fixture-diagnostics.mjs";
 import {
   canonicalJson,
   renderGatewayDeployment,
+  validateGatewayDeploymentRecord,
 } from "../gateway/gateway-contract.mjs";
 import {
   HOSTED_SMOKE_EVENT_ORDER,
@@ -66,6 +67,9 @@ const DNS_RETRY_INTERVAL_MS = 5_000;
 const DNS_MAX_ATTEMPTS = 100;
 const DNS_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
 const DNS_RESOLUTION_TIMEOUT = Symbol("hosted smoke DNS resolution timeout");
+const GATEWAY_START_COMMAND_TIMEOUT_MS = 5_000;
+const GATEWAY_START_JOB_TIMEOUT_MS = 5_000;
+const GATEWAY_ACTIVATION_AND_SHUTDOWN_RESERVE_MS = 20_000;
 const HOSTED_SMOKE_RUNNER_ACCOUNT = "api-migrator-smoke-runner";
 const HOSTED_SMOKE_GATEWAY_ACCOUNT = "api-migrator-smoke-gateway";
 const TOOL_SPECS = Object.freeze({
@@ -780,8 +784,11 @@ function nativeValidate(rendered, tools, evidence) {
   });
 }
 
-function installPolicy(rendered, resources, tools, evidence) {
-  runCommand(tools.nft, ["-f", rendered.nftablesPolicyPath]);
+function installPolicy(rendered, resources, tools, evidence, { now = Date.now, command = runCommand } = {}) {
+  // Native validation can consume the bound answer's lifetime. Refuse the next
+  // host mutation unless the exact contract still has a usable launch window.
+  gatewayStartWindow(rendered, now);
+  command(tools.nft, ["-f", rendered.nftablesPolicyPath]);
   const snapshot = tableSnapshot(tools.nft, resources.nftTable);
   if (sha256Bytes(Buffer.from(rendered.deployment.nftablesPolicy, "utf8")) !== rendered.deployment.nftablesPolicyDigest) {
     throw new Error("hosted smoke rendered nftables policy digest drifted before install");
@@ -789,15 +796,39 @@ function installPolicy(rendered, resources, tools, evidence) {
   return evidence.write("nftables-policy-installed", snapshot.text);
 }
 
-function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSeconds } = {}) {
+function gatewayStartWindow(rendered, now, maximumRuntimeSeconds) {
   if (maximumRuntimeSeconds !== undefined && (!Number.isSafeInteger(maximumRuntimeSeconds) || maximumRuntimeSeconds < 1 || maximumRuntimeSeconds > 840)) {
     throw new Error("fixture gateway maximum lifetime is invalid");
   }
+  const { contract } = validateGatewayDeploymentRecord(rendered?.deployment);
+  const observedAt = now();
+  const expiresAt = Math.min(contract.plan.expiresAt, contract.origin.resolutionExpiresAt);
+  if (!Number.isSafeInteger(observedAt) || observedAt < contract.plan.createdAt || observedAt >= expiresAt) {
+    throw new Error("hosted gateway startup lifetime clock is invalid or outside its active window");
+  }
+  // RuntimeMaxSec starts at activation, not command submission. Allow for the
+  // bounded client command and queued job, then reserve five seconds for final
+  // activation and fifteen for stop/kill (TimeoutStopSec is ten seconds).
+  // Floor seconds with an additional strict expiry margin.
+  const seconds = Math.floor((expiresAt - observedAt - GATEWAY_START_COMMAND_TIMEOUT_MS -
+    GATEWAY_START_JOB_TIMEOUT_MS - GATEWAY_ACTIVATION_AND_SHUTDOWN_RESERVE_MS - 1) / 1000);
+  if (seconds < 1) throw new Error("hosted gateway startup window lacks a complete bounded lifetime");
+  return { observedAt, expiresAt, maximumRuntimeSeconds: Math.min(seconds, maximumRuntimeSeconds ?? seconds) };
+}
+
+function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSeconds, now = Date.now } = {}) {
+  const window = gatewayStartWindow(rendered, now, maximumRuntimeSeconds);
+  return gatewayArguments(resources, rendered, tools, window.maximumRuntimeSeconds);
+}
+
+function gatewayArguments(resources, rendered, tools, maximumRuntimeSeconds) {
   return [
     `--unit=${resources.gatewayUnit}`,
     "--collect",
     "--quiet",
     "--property=Type=exec",
+    `--property=JobTimeoutSec=${GATEWAY_START_JOB_TIMEOUT_MS / 1000}s`,
+    `--property=TimeoutStartSec=${GATEWAY_START_JOB_TIMEOUT_MS / 1000}s`,
     `--property=User=${HOSTED_SMOKE_GATEWAY_UID}`,
     `--property=Group=${HOSTED_SMOKE_GATEWAY_UID}`,
     "--property=NoNewPrivileges=yes",
@@ -812,7 +843,7 @@ function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSec
     "--property=TimeoutStopSec=10s",
     "--property=StandardOutput=journal",
     "--property=StandardError=journal",
-    ...(maximumRuntimeSeconds === undefined ? [] : [`--property=RuntimeMaxSec=${maximumRuntimeSeconds}s`]),
+    `--property=RuntimeMaxSec=${maximumRuntimeSeconds}s`,
     tools.envoy,
     "--disable-hot-restart",
     "--concurrency", "1",
@@ -822,8 +853,32 @@ function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSec
   ];
 }
 
-async function startGateway(resources, rendered, tools, evidence, options) {
-  runCommand(tools.systemdRun, gatewaySystemdArguments(resources, rendered, tools, options));
+async function startGateway(resources, rendered, tools, evidence, {
+  maximumRuntimeSeconds, now = Date.now, elapsedNow = () => performance.now(), command = runCommand,
+} = {}) {
+  const elapsedStartedAt = elapsedNow();
+  if (typeof elapsedStartedAt !== "number" || !Number.isFinite(elapsedStartedAt)) {
+    throw new Error("hosted gateway startup elapsed clock is invalid");
+  }
+  const window = gatewayStartWindow(rendered, now, maximumRuntimeSeconds);
+  const assertCurrent = (reservedCommandMs) => {
+    const wall = now(), elapsed = elapsedNow();
+    const age = elapsed - elapsedStartedAt;
+    const startupPending = reservedCommandMs !== undefined;
+    const selectedLifetimeMs = window.maximumRuntimeSeconds * 1000 + GATEWAY_START_JOB_TIMEOUT_MS +
+      GATEWAY_ACTIVATION_AND_SHUTDOWN_RESERVE_MS + (reservedCommandMs ?? 0);
+    if (!Number.isSafeInteger(wall) || wall < window.observedAt || wall >= window.expiresAt ||
+        typeof elapsed !== "number" || !Number.isFinite(elapsed) || age < 0 ||
+        age >= window.expiresAt - window.observedAt ||
+        (startupPending && (age >= GATEWAY_START_COMMAND_TIMEOUT_MS ||
+          selectedLifetimeMs >= window.expiresAt - wall))) {
+      throw new Error("hosted gateway startup clock or lifetime budget was exhausted");
+    }
+  };
+  const args = gatewayArguments(resources, rendered, tools, window.maximumRuntimeSeconds);
+  assertCurrent(GATEWAY_START_COMMAND_TIMEOUT_MS);
+  command(tools.systemdRun, args, { timeoutMs: GATEWAY_START_COMMAND_TIMEOUT_MS });
+  assertCurrent(0);
   const identity = await waitFor(() => {
     const snapshot = unitSnapshot(tools.systemctl, resources.gatewayUnit);
     if (snapshot.values.ActiveState !== "active" || snapshot.values.SubState !== "running") return false;
@@ -842,6 +897,7 @@ async function startGateway(resources, rendered, tools, evidence, options) {
     const namespace = readlinkSync(`/proc/${pid}/ns/net`);
     return Object.freeze({ pid, cgroup, namespace, invocationId: snapshot.values.InvocationID, snapshot });
   }, "the exact gateway process");
+  assertCurrent();
   const digest = evidence.write("gateway-start", canonicalJson({
     unit: resources.gatewayUnit,
     pid: identity.pid,

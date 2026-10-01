@@ -194,6 +194,23 @@ are unchanged. Diagnostic capture does not fix intermittent upstream DNS
 freshness failures. Inspect an instrumented hosted run before choosing a
 functional retry or resolver change.
 
+Every hosted and joined-fixture gateway launch requires a canonical rendered
+contract and an independent systemd `RuntimeMaxSec` bound. Native validation
+delay is checked before policy installation; setup age is checked again at
+launch and consumes the original earliest plan/DNS expiry. Startup reserves
+five seconds for the client command, five seconds for the queued job, five
+seconds for service activation, and fifteen seconds for stop/kill (including
+the ten-second `TimeoutStopSec`). Whole-second runtime is rounded down to finish
+strictly before expiry. The command uses the same five-second timeout;
+`JobTimeoutSec` and `TimeoutStartSec` separately bound queueing and activation.
+An optional joined-fixture runtime is an additional upper cap. Invalid,
+expired, or insufficient windows refuse the relevant host mutation, and
+the selected runtime must still fit at command submission and completion;
+readiness after clock rollback or budget expiry fails.
+Systemd retains its independent deadline if the JavaScript controller exits.
+These guards strengthen lifetime enforcement; they do not fix upstream
+short-TTL admission failures or establish native enforcement from unit tests.
+
 ## Joined runner-image fixture
 
 [`runner-lifecycle-fixture.yml`](../../../.github/workflows/runner-lifecycle-fixture.yml)
