@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { renderGatewayDeployment } from "../../gateway/gateway-contract.mjs";
 import { gatewaySystemdArguments, installPolicy, startGateway } from "../run-hosted-smoke.mjs";
 
@@ -8,7 +9,7 @@ const NOW = 2_000_000_000_000;
 const resources = { gatewayUnit: "api-migrator-hosted-gateway-exact.service" };
 // Node rejects the systemd arguments without changing any host services if a
 // regression reaches the default command rather than the injected seam.
-const tools = { envoy: "/run/exact/envoy", systemdRun: process.execPath };
+const tools = { node: process.execPath, envoy: "/run/exact/envoy", systemdRun: process.execPath };
 
 function rendered(lifetimeMs = 300_000, dnsLifetimeMs = lifetimeMs) {
   const contract = JSON.parse(readFileSync(new URL("../../gateway/examples/gateway-contract.example.json", import.meta.url), "utf8"));
@@ -29,7 +30,8 @@ function runtime(args) {
 test("hosted gateway always carries bounded runtime, queued-start and service-start deadlines", () => {
   const args = gatewaySystemdArguments(resources, rendered(65_000), tools, { now: () => NOW });
   assert.equal(runtime(args), 34);
-  assert(args.includes("--property=JobTimeoutSec=5s"));
+  assert(!args.some((arg) => arg.startsWith("--property=JobTimeoutSec=")));
+  assert(args.includes("--property=JobRunningTimeoutSec=5s"));
   assert(args.includes("--property=TimeoutStartSec=5s"));
   assert(args.includes("--property=TimeoutStopSec=10s"));
 });
@@ -185,5 +187,46 @@ test("expired, rolled-back or over-budget command completion never reaches readi
     }), /lifetime|clock|budget|window/);
     assert.equal(commands, 1);
     assert.equal(writes, 0);
+  }
+});
+
+test("queued gateway admission is checked by a native pre-start guard after controller exit", () => {
+  const admitted = 1_000_000_000n;
+  const args = gatewaySystemdArguments(resources, rendered(65_000), tools, {
+    now: () => NOW, monotonicNow: () => admitted,
+  });
+  const guards = args.filter((arg) => arg.startsWith("--property=ExecStartPre="));
+  assert.equal(guards.length, 1, "one native admission guard must precede Envoy activation");
+  assert(args.indexOf(guards[0]) < args.indexOf(tools.envoy));
+  assert(guards[0].includes(`${tools.node} --jitless --no-expose-wasm --eval `));
+  const script = JSON.parse(guards[0].slice(guards[0].indexOf(" --eval ") + 8));
+  for (const [label, wall, mono, expected] of [
+    ["immediate", NOW, admitted, 0],
+    ["bounded waiting", NOW + 4_000, admitted + 4_000_000_000n, 0],
+    ["pre-start completion needs its own reserve", NOW + 9_000, admitted + 9_000_000_000n, 1],
+    ["queue exhausted with stalled wall", NOW, admitted + 10_000_000_000n, 1],
+    ["late queue", NOW + 10_000, admitted + 10_000_000_000n, 1],
+    ["wall step leaves no full runtime", NOW + 11_000, admitted + 1_000_000n, 1],
+    ["wall rollback", NOW - 1, admitted + 1_000_000n, 1],
+    ["monotonic rollback", NOW, admitted - 1n, 1],
+  ]) {
+    const result = spawnSync(tools.node, ["--jitless", "--no-expose-wasm", "--eval",
+      `Date.now=()=>${wall};process.hrtime.bigint=()=>${mono}n;${script}`], {
+      encoding: "utf8", timeout: 5000, env: {},
+    });
+    assert.equal(result.error, undefined, label);
+    assert.equal(result.signal, null, label);
+    assert.equal(result.status, expected, `${label}: ${result.stderr}`);
+  }
+});
+
+test("invalid native monotonic admission clocks refuse before service submission", async () => {
+  for (const value of [-1n, 0, NaN, undefined]) {
+    let commands = 0;
+    await assert.rejects(startGateway(resources, rendered(65_000), tools, {}, {
+      now: () => NOW, elapsedNow: () => 0, monotonicNow: () => value,
+      command() { commands += 1; throw new Error("invalid native clock was submitted"); },
+    }), /monotonic|clock/);
+    assert.equal(commands, 0);
   }
 });

@@ -213,7 +213,14 @@ five seconds for the client command, five seconds for the queued job, five
 seconds for service activation, and fifteen seconds for stop/kill (including
 the ten-second `TimeoutStopSec`). Whole-second runtime is rounded down to finish
 strictly before expiry. The command uses the same five-second timeout;
-`JobTimeoutSec` and `TimeoutStartSec` separately bound queueing and activation.
+The supported `JobRunningTimeoutSec` bounds a job once it runs; it cannot bound
+waiting in the queue by itself. A native `ExecStartPre` guard uses the sealed
+Node executable with JIT/Wasm disabled under `MemoryDenyWriteExecute`. Before
+Envoy can start, it rejects admission at or after the combined ten-second
+client/queue allowance and requires the full selected runtime plus 25 seconds
+for pre-start completion, main activation and shutdown to fit both canonical wall expiry and the same Linux kernel
+monotonic clock. This guard remains effective if the controller exits.
+`TimeoutStartSec` separately bounds native startup phases.
 An optional joined-fixture runtime is an additional upper cap. Invalid,
 expired, or insufficient windows refuse the relevant host mutation, and
 the selected runtime must still fit at command submission and completion;

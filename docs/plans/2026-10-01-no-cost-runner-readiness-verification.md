@@ -1,7 +1,7 @@
 # No-cost runner readiness verification
 
 Date: 2026-10-01. Baseline main: bdb1e8c542cab951f6dda9fcec4e9556cc68e99e.
-Branch: codex/no-cost-runner-readiness. Status: local readiness verified and independent review finding fixed; exact-head hosted release checks pending.
+Branch: codex/no-cost-runner-readiness. Status: local implementation and hosted compatibility correction verified; new exact-head hosted release checks pending.
 
 ## Authorized boundary
 
@@ -62,3 +62,37 @@ cleanup/observation suite passed 48/48. Full supported Node 22 CI then passed
 trusted independent two-stage producer exists. This changes the unsigned data
 contract and does not assert that a native lifecycle or producer was deployed.
 The reviewer found no other significant issue in the reviewed changes.
+
+## Hosted compatibility correction
+
+PR 23 at `f86d9b1` passed hosted CI but the Linux smoke and joined fixtures
+refused startup: Ubuntu 24.04/systemd 255 rejects `JobTimeoutSec` on transient
+units (`Cannot set property JobTimeoutUSec`). The pinned upstream setter falls
+through without returning success; the sibling `JobRunningTimeoutUSec` setter
+is supported. [Pinned systemd source](https://github.com/systemd/systemd/blob/v255/src/core/dbus-unit.c).
+
+The correction uses `JobRunningTimeoutSec` and a fixed native `ExecStartPre`
+admission guard through the already sealed Node executable. Queue admission
+must finish within the original ten-second combined client/queue allowance;
+the selected runtime plus 25 seconds for pre-start completion, main activation
+and shutdown must still precede both
+canonical wall expiry and the original host-monotonic deadline. No later
+queued start can renew the plan, even after controller exit. JIT/Wasm are
+disabled to preserve the unit's existing memory-execution restriction. Three
+regressions failed before the correction; focused tests then passed 25/25,
+including harmless executions of the actual guard for permitted, delayed,
+expired and rolled-back clock cases. The DNS floor and existing reserves are
+preserved. Native acceptance awaits the new exact PR revision's hosted checks.
+
+Peer review also identified that systemd re-arms the startup timer separately
+for `ExecStartPre` and main start. A late pre-start guard regression failed
+(actual status 0 instead of 1), then the guard reserved five additional seconds
+for descheduling/completion after its clock read. The original 15-second
+shutdown reserve remains intact. [Pinned stage timer source](https://github.com/systemd/systemd/blob/v255/src/core/service.c#L1512-L1520).
+[Node's pinned Linux monotonic clock](https://github.com/nodejs/node/blob/v22.23.2/deps/uv/src/unix/linux.c#L1525-L1556)
+is shared by controller and pre-start process in the same host/time namespace;
+this cross-process property is not inferred from `process.uptime`.
+
+After the pre-start completion correction, focused tests passed 25/25 and
+full supported Node 22 CI passed 1,096/1,096, with zero failures, skips or
+cancellations. The complete deployment suite passed 293/293.

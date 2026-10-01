@@ -816,18 +816,48 @@ function gatewayStartWindow(rendered, now, maximumRuntimeSeconds) {
   return { observedAt, expiresAt, maximumRuntimeSeconds: Math.min(seconds, maximumRuntimeSeconds ?? seconds) };
 }
 
-function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSeconds, now = Date.now } = {}) {
-  const window = gatewayStartWindow(rendered, now, maximumRuntimeSeconds);
-  return gatewayArguments(resources, rendered, tools, window.maximumRuntimeSeconds);
+function gatewayAdmissionClock(monotonicNow) {
+  const value = monotonicNow();
+  if (typeof value !== "bigint" || value < 0n) {
+    throw new Error("hosted gateway native monotonic admission clock is invalid");
+  }
+  return value;
 }
 
-function gatewayArguments(resources, rendered, tools, maximumRuntimeSeconds) {
+function gatewayNativeAdmissionGuard(window, admittedAt) {
+  // systemd re-arms TimeoutStartSec independently for ExecStartPre and the
+  // main start. Reserve the rest of pre-start even after its clock read.
+  const reserveMs = window.maximumRuntimeSeconds * 1000 + GATEWAY_START_JOB_TIMEOUT_MS +
+    GATEWAY_ACTIVATION_AND_SHUTDOWN_RESERVE_MS;
+  const expiresAt = admittedAt + BigInt(window.expiresAt - window.observedAt) * 1_000_000n;
+  const queueDeadline = admittedAt + BigInt(GATEWAY_START_COMMAND_TIMEOUT_MS + GATEWAY_START_JOB_TIMEOUT_MS) * 1_000_000n;
+  // Linux Node uses the same kernel monotonic clock across processes. Run this
+  // in the native unit before Envoy, so a queued job cannot start after expiry
+  // even when the controller exits. All interpolated values are canonical
+  // integers; no caller command, path, environment or source is evaluated.
+  return `const w=Date.now(),m=process.hrtime.bigint();if(!Number.isSafeInteger(w)||w<${window.observedAt}||w+${reserveMs}>=${window.expiresAt}||m<${admittedAt}n||m>=${queueDeadline}n||m+${BigInt(reserveMs) * 1_000_000n}n>=${expiresAt}n)process.exit(1);`;
+}
+
+function gatewaySystemdArguments(resources, rendered, tools, {
+  maximumRuntimeSeconds, now = Date.now, monotonicNow = () => process.hrtime.bigint(),
+} = {}) {
+  const admittedAt = gatewayAdmissionClock(monotonicNow);
+  const window = gatewayStartWindow(rendered, now, maximumRuntimeSeconds);
+  return gatewayArguments(resources, rendered, tools, window, admittedAt);
+}
+
+function gatewayArguments(resources, rendered, tools, window, admittedAt) {
+  if (typeof tools.node !== "string" || !/^\/[A-Za-z0-9._/-]+$/.test(tools.node)) {
+    throw new Error("hosted gateway sealed native Node path is invalid");
+  }
+  const admission = gatewayNativeAdmissionGuard(window, admittedAt);
   return [
     `--unit=${resources.gatewayUnit}`,
     "--collect",
     "--quiet",
     "--property=Type=exec",
-    `--property=JobTimeoutSec=${GATEWAY_START_JOB_TIMEOUT_MS / 1000}s`,
+    `--property=JobRunningTimeoutSec=${GATEWAY_START_JOB_TIMEOUT_MS / 1000}s`,
+    `--property=ExecStartPre=${tools.node} --jitless --no-expose-wasm --eval ${JSON.stringify(admission)}`,
     `--property=TimeoutStartSec=${GATEWAY_START_JOB_TIMEOUT_MS / 1000}s`,
     `--property=User=${HOSTED_SMOKE_GATEWAY_UID}`,
     `--property=Group=${HOSTED_SMOKE_GATEWAY_UID}`,
@@ -843,7 +873,7 @@ function gatewayArguments(resources, rendered, tools, maximumRuntimeSeconds) {
     "--property=TimeoutStopSec=10s",
     "--property=StandardOutput=journal",
     "--property=StandardError=journal",
-    `--property=RuntimeMaxSec=${maximumRuntimeSeconds}s`,
+    `--property=RuntimeMaxSec=${window.maximumRuntimeSeconds}s`,
     tools.envoy,
     "--disable-hot-restart",
     "--concurrency", "1",
@@ -854,8 +884,10 @@ function gatewayArguments(resources, rendered, tools, maximumRuntimeSeconds) {
 }
 
 async function startGateway(resources, rendered, tools, evidence, {
-  maximumRuntimeSeconds, now = Date.now, elapsedNow = () => performance.now(), command = runCommand,
+  maximumRuntimeSeconds, now = Date.now, elapsedNow = () => performance.now(),
+  monotonicNow = () => process.hrtime.bigint(), command = runCommand,
 } = {}) {
+  const admittedAt = gatewayAdmissionClock(monotonicNow);
   const elapsedStartedAt = elapsedNow();
   if (typeof elapsedStartedAt !== "number" || !Number.isFinite(elapsedStartedAt)) {
     throw new Error("hosted gateway startup elapsed clock is invalid");
@@ -875,7 +907,7 @@ async function startGateway(resources, rendered, tools, evidence, {
       throw new Error("hosted gateway startup clock or lifetime budget was exhausted");
     }
   };
-  const args = gatewayArguments(resources, rendered, tools, window.maximumRuntimeSeconds);
+  const args = gatewayArguments(resources, rendered, tools, window, admittedAt);
   assertCurrent(GATEWAY_START_COMMAND_TIMEOUT_MS);
   command(tools.systemdRun, args, { timeoutMs: GATEWAY_START_COMMAND_TIMEOUT_MS });
   assertCurrent(0);

@@ -90,7 +90,7 @@ test("fixture runtime remains an upper cap on the mandatory hosted gateway deadl
   const resources = { gatewayUnit: "api-migrator-fixture-gateway-a.service" };
   const contract = JSON.parse(readFileSync(new URL("../../gateway/examples/gateway-contract.example.json", import.meta.url), "utf8"));
   const rendered = { deployment: renderGatewayDeployment(contract), envoyConfigPath: "/run/exact/envoy.json" };
-  const tools = { envoy: "/usr/local/libexec/exact/envoy" };
+  const tools = { node: "/usr/local/libexec/exact/node", envoy: "/usr/local/libexec/exact/envoy" };
   const now = () => contract.plan.createdAt;
   const original = gatewaySystemdArguments(resources, rendered, tools, { now });
   assert(original.includes("--property=RuntimeMaxSec=569s"));

@@ -73,3 +73,15 @@ because it cannot produce both stages; its unused native helpers were removed.
 The observer template remains blocked until a trusted independent producer and
 native drill exist. Cost if wrong: activation stays unavailable; no publication
 or signing gate is opened by fixture data.
+
+Ruling: The first hosted revision exposed Ubuntu's unsupported transient
+JobTimeoutSec setter. Use supported JobRunningTimeoutSec plus an independent
+native pre-start wall/monotonic admission guard; the running-job timeout alone
+cannot bound queued admission. Three regressions RED, focused suite 25/25
+GREEN; final combined Node 22 CI 1,096/1,096 GREEN, new exact-head hosted checks pending. Cost if wrong:
+native startup refuses and release stays blocked rather than extending expiry.
+
+Final: fixed independent pre-start completion reserve — late admission
+regression RED, guard includes the additional five seconds, focused 25/25
+GREEN and full CI 1,096/1,096 GREEN. Native compatibility requires new hosted
+checks; no failed revision is accepted or bypassed.
