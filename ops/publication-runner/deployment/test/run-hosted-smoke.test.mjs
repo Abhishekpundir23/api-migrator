@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -11,6 +13,7 @@ import {
   parseNftCounterSnapshot,
   proveHostedListenerAbsence,
   resolveHostedNpmOrigin,
+  stopExactUnit,
   validateHostedSmokeAccounts,
 } from "../run-hosted-smoke.mjs";
 
@@ -446,4 +449,92 @@ test("runner source keeps the report boundary non-authorizing and table removal 
   assert.match(source, /LoadState !== "not-found"/);
   assert.match(source, /Result: "timeout", ExecMainCode: "2", ExecMainStatus: "15"/);
   assert.match(source, /Result: "signal", ExecMainCode: "2", ExecMainStatus: "9"/);
+});
+
+
+// The old implementation ignores injected dependencies. Its safe executable
+// fallback accepts an overdue stop without touching native host services.
+function stopMachine(t, { costs = [1000, 5000, 1000, 1000], absent = true, cgroup = true } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "hosted-stop-budget-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const unit = "api-migrator-fixture-gateway-budget.service";
+  const snapshot = (loaded) => [
+    `LoadState=${loaded ? "loaded" : "not-found"}`, `ActiveState=${loaded ? "active" : "inactive"}`,
+    `SubState=${loaded ? "running" : "dead"}`, `MainPID=${loaded ? "1234" : "0"}`,
+    "InvocationID=", `ControlGroup=${loaded ? `/system.slice/${unit}` : ""}`,
+    "Result=success", "ExecMainCode=0", "ExecMainStatus=0",
+  ].join("\n") + "\n";
+  const systemctl = join(root, "systemctl");
+  writeFileSync(systemctl, `#!/bin/sh\nif [ "$1" = show ]; then cat <<'SNAPSHOT'\n${snapshot(false)}SNAPSHOT\nfi\n`, { mode: 0o755 });
+  let elapsed = 0;
+  const calls = [];
+  const command = (path, args, options) => {
+    assert.equal(path, systemctl);
+    calls.push({ verb: args[0], timeoutMs: options?.timeoutMs });
+    elapsed += costs[calls.length - 1] ?? 0;
+    return { status: 0, stdout: args[0] === "show" ? snapshot(calls.length === 1 || !absent) : "", stderr: "" };
+  };
+  return { unit, tools: { systemctl }, calls, clock: () => elapsed,
+    dependencies: { command, elapsedNow: () => elapsed, sleep: async (milliseconds) => { elapsed += milliseconds; },
+      cgroupAbsent: (path) => { assert.equal(path, `/system.slice/${unit}`); return cgroup; } } };
+}
+
+test("execution stop spends one shrinking deadline on show, stop, reset and unload proof", async (t) => {
+  const f = stopMachine(t);
+  const result = await stopExactUnit(f.unit, f.tools, { timeoutMs: 15000, ...f.dependencies });
+  assert.equal(result.absent, true);
+  assert.equal(result.after.values.LoadState, "not-found");
+  assert.deepEqual(f.calls, [
+    { verb: "show", timeoutMs: 15000 }, { verb: "stop", timeoutMs: 14000 },
+    { verb: "reset-failed", timeoutMs: 9000 }, { verb: "show", timeoutMs: 8000 },
+  ]);
+});
+
+for (const [name, costs, verbs] of [
+  ["initial observation", [15000], ["show"]],
+  ["stop command", [1000, 14000], ["show", "stop"]],
+  ["reset command", [1000, 1000, 13000], ["show", "stop", "reset-failed"]],
+  ["late successful unload observation", [1000, 1000, 1000, 12000], ["show", "stop", "reset-failed", "show"]],
+]) test(`execution stop rejects an exhausted ${name} before later native work`, async (t) => {
+  const f = stopMachine(t, { costs });
+  await assert.rejects(stopExactUnit(f.unit, f.tools, { timeoutMs: 15000, ...f.dependencies }), /deadline|timed out/);
+  assert.deepEqual(f.calls.map((call) => call.verb), verbs);
+});
+
+test("stop polling expires on monotonic time despite a backward wall clock", async (t) => {
+  const f = stopMachine(t, { costs: [0, 0, 0, 0], absent: false });
+  let wall = 200000;
+  t.mock.method(Date, "now", () => wall -= 100000);
+  await assert.rejects(stopExactUnit(f.unit, f.tools, { timeoutMs: 250, ...f.dependencies }), /deadline|timed out/);
+  assert.equal(f.clock(), 250);
+  assert.equal(f.calls.filter((call) => call.verb === "show").length, 4);
+});
+
+test("stop rejects an unloaded unit whose exact cgroup still survives", async (t) => {
+  const f = stopMachine(t, { costs: [0, 0, 0, 0], cgroup: false });
+  await assert.rejects(stopExactUnit(f.unit, f.tools, { timeoutMs: 150, ...f.dependencies }), /deadline|timed out/);
+  assert.equal(f.clock(), 150);
+});
+
+test("cleanup stop remains available without the expired execution deadline", async (t) => {
+  const f = stopMachine(t, { costs: [20000, 20000, 20000, 0] });
+  const result = await stopExactUnit(f.unit, f.tools, f.dependencies);
+  assert.equal(result.absent, true);
+  assert.equal(f.clock(), 60000);
+  assert.deepEqual(f.calls.map((call) => call.timeoutMs), [undefined, 20000, undefined, undefined]);
+});
+
+test("invalid execution stop budgets are rejected before any native command", async (t) => {
+  for (const timeoutMs of [0, -1, NaN, Infinity, 1.5]) {
+    const f = stopMachine(t);
+    await assert.rejects(stopExactUnit(f.unit, f.tools, { timeoutMs, ...f.dependencies }), /budget|deadline/);
+    assert.deepEqual(f.calls, []);
+  }
+});
+
+
+test("cleanup polling rejects a successful unload observation completed after its wait deadline", async (t) => {
+  const f = stopMachine(t, { costs: [0, 0, 0, 20000] });
+  await assert.rejects(stopExactUnit(f.unit, f.tools, f.dependencies), /timed out/);
+  assert.deepEqual(f.calls.map((call) => call.verb), ["show", "stop", "reset-failed", "show"]);
 });

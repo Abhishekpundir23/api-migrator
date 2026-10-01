@@ -96,3 +96,65 @@ this cross-process property is not inferred from `process.uptime`.
 After the pre-start completion correction, focused tests passed 25/25 and
 full supported Node 22 CI passed 1,096/1,096, with zero failures, skips or
 cancellations. The complete deployment suite passed 293/293.
+
+
+## Continued DNS investigation and fixture timing
+
+At topic head `579ef075`, CI run 36870094410 and all 15 Linux smoke scenarios
+(run 36870094369) passed. Joined run 36870094375 passed install failure and
+cancellation, but success twice refused DNS admission: 18 valid subfloor
+answers over 90,006/90,005ms, floor 120s, cleanup successful. GitHub's synthetic
+merge `c483d624` has topic/main parents and the same tree as `579ef075`; these
+logs tested current bytes. Admission precedes plan creation and gateway
+startup. Neither plan aging nor native startup explains these failures.
+
+The joined workflow saved per-attempt DNS diagnostics but uploaded only the
+final report, which does not exist after admission failure. This diagnostic
+loss prevented a precise hosted cache-age diagnosis. The workflow now exports
+only that exact bounded diagnostic independently of report completion. Strict
+root-owned metadata/path checks and an allowlisted JSON parser precede upload;
+raw addresses, resolver addresses and adjacent evidence remain private.
+Meaningful missing-export and failed-probe regressions failed before the fix;
+43 workflow tests now pass. Explicit shell guards also reject malformed
+metadata on the local Bash version, whose errexit does not stop every failing
+conditional/arithmetic command.
+
+Two non-activating 150-second probes used pinned Node 22.23.2 and the existing
+cached Docker image, without image pulls or host resolver changes. Mac: 30
+valid replies, TTLs 2–298s, 150,003ms; default Docker bridge: 30 valid replies,
+constant TTL 274s, 150,008ms. Both observed the same 12-address set, stored only
+as a digest. Two discovered authoritative nameservers returned TTL 300s. Mac
+cache ages differed across replies; one sample met 120 before 90 seconds.
+Neither probe reproduced Ubuntu's failure. Pinned Node disables c-ares query
+caching, so recreating Resolver objects would not remedy that upstream
+behavior. [Node source](https://github.com/nodejs/node/blob/v22.23.2/src/cares_wrap.cc#L824-L844).
+Recursive resolvers can return a TTL below authority TTL, so authority 300s
+alone does not establish the hosted answer lifetime. [RFC 2181, section 8](https://www.rfc-editor.org/rfc/rfc2181.html#section-8).
+Local probe evidence: `/tmp/api-migrator-free-readiness/dns-investigation/`.
+The 120s floor, 90s acquisition budget, five-second retry cadence, default
+resolver and complete-answer minimum remain unchanged. The next instrumented
+hosted run is a discriminating experiment, not a blind retry.
+
+Independent timing review also identified two fixture correctness defects.
+Successful phase settlement checked freshness while rejected settlement could
+be converted to expected failure/cancellation after expiry. Four initial
+regressions reproduced rejected acceptance, wall/elapsed rollback, and stalled
+wall-time reuse. One wall/elapsed anchor now charges operations after
+construction, refuses invalid/reversing clocks, and applies the same completion
+check to success and rejection. The genuine native cancellation composition
+also failed when the old success-only check was restored; fresh native proof
+retains its original error identity. Focused lifecycle/cancellation checks
+passed 50/50, including exact floor-120 phase admission and setup age.
+This anchor does not claim to measure time before operations construction.
+
+Execution gateway stop previously admitted 15s but invoked independent 20/30s
+native commands and a wall-clock polling loop. Its commands and observations
+now consume one monotonic 15s budget; polling also rejects a truthy observation
+completed after its deadline. Eleven regressions demonstrated the old failures.
+Cleanup still makes its separate unconditional stop attempt after execution
+expiry and requires full native absence. The combined deployment suite passed
+351/351, zero failures/skips. Full supported Node 22 project CI passed
+1,154/1,154 tests, zero failures/skips/cancellations, with package builds,
+typechecks, existing Docker verification, pilot validation, console build and
+packaging checks. Log: `/tmp/api-migrator-free-readiness/full-ci-dns-investigation.log`.
+Fresh exact-revision review and instrumented hosted checks remain pending.

@@ -58,7 +58,7 @@ export function createFixtureNative({ resources, rendered, tools, docker, eviden
       atFixtureStage(`probe.${scenario}`, "evidence", () => evidence.write(`probe-${scenario}`, value.raw));
     },
     counters() { return host.captureTableCounters(resources, tools, evidence, "fixture-counters").counters; },
-    stopGateway: () => host.stopExactUnit(resources.gatewayUnit, tools),
+    stopGateway: () => host.stopExactUnit(resources.gatewayUnit, tools, { timeoutMs: 15000 }),
     idle,
     listenerAbsent: () => Boolean(host.proveHostedListenerAbsence(host.listenerSnapshot(tools.ss, 15443))),
     cleanup: () => cleanupNativeFixture(resources, { tools, docker, outputDir }),

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync, linkSync, symlinkSync, realpathSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { parseImageLifecycleFixtureCli, validateFixtureEnvironment } from "../run-image-lifecycle-fixture.mjs";
+import { parseImageLifecycleFixtureCli, validateFixtureEnvironment, resolveImageFixtureOrigin } from "../run-image-lifecycle-fixture.mjs";
 
 const workflow = readFileSync(new URL("../../../../.github/workflows/runner-lifecycle-fixture.yml", import.meta.url), "utf8");
 function script(name) {
@@ -79,4 +79,179 @@ test("each scenario still audits exact residual resources after cleanup fails", 
       assert.equal(config.scenario, scenario);
     }
   }
+});
+
+async function dnsDiagnostic(outcome = "accepted") {
+  let elapsed = 0, bytes;
+  const options = { now: () => 2_000_000_000_000 + elapsed, elapsedNow: () => elapsed,
+    sleep: async (ms) => { elapsed += ms; }, writeDiagnostics: (value) => { bytes = value; },
+    resolver: async () => {
+      if (outcome === "resolver_error") throw new Error("synthetic resolver secret");
+      if (outcome === "internal_error") elapsed = NaN;
+      if (outcome === "invalid_answer") return [{ address: "synthetic invalid address", ttl: 120 }];
+      if (outcome === "missing_or_excessive_answer") return Array(33).fill({ address: "104.16.0.34", ttl: 120 });
+      return [{ address: "104.16.0.34", ttl: outcome === "ttl_floor_exhausted" ? 119 : 120 },
+        { address: "104.16.1.34", ttl: 300 }];
+    } };
+  if (outcome === "resolver_timeout") Object.assign(options, {
+    resolver: () => new Promise(() => {}),
+    setTimer: (callback, ms) => { queueMicrotask(() => { elapsed += ms; callback(); }); return 1; },
+    clearTimer: () => {}, cancelResolver: () => {},
+  });
+  try { await resolveImageFixtureOrigin(options); }
+  catch (error) { assert.notEqual(outcome, "accepted", error.message); }
+  assert(bytes, "the actual DNS producer must persist diagnostics before returning or throwing");
+  assert.equal(JSON.parse(bytes).outcome, outcome);
+  return bytes;
+}
+
+function executeDnsExport(t, bytes, options = {}) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "fixture-dns-export-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sourceBase = join(root, "source"), output = join(sourceBase, "123-1-success"), evidence = join(output, "evidence");
+  mkdirSync(evidence, { recursive: true, mode: 0o700 });
+  chmodSync(sourceBase, 0o755);
+  chmodSync(output, 0o700);
+  mkdirSync(join(root, "bin"));
+  const source = join(evidence, "01-dns-diagnostics.txt"), log = join(root, "calls.jsonl"), githubOutput = join(root, "github-output");
+  writeFileSync(githubOutput, "");
+  if (bytes !== null) {
+    writeFileSync(source, bytes, { mode: 0o644 });
+    if (options.fileMode !== undefined) chmodSync(source, options.fileMode);
+    if (options.hardlink) linkSync(source, join(evidence, "hardlink.txt"));
+    if (options.symlink) { rmSync(source); symlinkSync("02-dns-window.txt", source); }
+  }
+  if (options.directoryMode !== undefined) chmodSync(evidence, options.directoryMode);
+  // Adjacent evidence is intentionally unsafe to publish; no directory or glob
+  // export may accidentally include it, even when the fixture report is absent.
+  writeFileSync(join(evidence, "02-dns-window.txt"), '{"addresses":["104.16.0.34"],"secret":"synthetic-never-export"}');
+  writeFileSync(join(root, "bin", "sudo"), `#!${process.execPath}
+const fs=require('fs'),cp=require('child_process'); const args=process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
+if(args[0]==='test') { const r=cp.spawnSync('/bin/test',args.slice(1)); process.exit(r.status ?? 1); }
+if(args[0]==='realpath') { try { process.stdout.write(fs.realpathSync(args.at(-1))+'\\n'); if(${options.realpathFailure === true}) process.exit(2); } catch { process.exit(1); } }
+else if(args[0]==='stat' && args[1]==='-c') {
+  const path=args.at(-1),s=fs.lstatSync(path); const file=path.endsWith('/01-dns-diagnostics.txt');
+  const values={u:file?${options.fileUid ?? 0}:0,g:file?${options.fileGid ?? 0}:0,a:file?${JSON.stringify(options.fileStatMode ?? null)}??(s.mode&0o7777).toString(8):(s.mode&0o7777).toString(8),h:s.nlink,s:s.size};
+  process.stdout.write(args[2].replace(/%([ugahs])/g,(_,k)=>String(values[k]))+'\\n');
+  if(${JSON.stringify(options.statFailure ?? null)} === (file?'file':path.endsWith('/evidence')?'evidence':'other')) process.exit(2);
+} else if(args[0]==='cat') process.stdout.write(fs.readFileSync(args.at(-1)));
+else throw new Error('unexpected privileged command');
+`, { mode: 0o755 });
+  // Only the unavailable Linux privilege/stat boundary is doubled. The actual
+  // workflow Bash, filesystem objects, jq parser/schema, and output bytes run.
+  const body = script("Export bounded sanitized DNS diagnostics only")
+    .replaceAll("/tmp/api-migrator-fixture-results", sourceBase)
+    .replaceAll("${{ github.run_id }}", "123").replaceAll("${{ github.run_attempt }}", "1")
+    .replaceAll("${{ matrix.scenario }}", "success");
+  const result = spawnSync("/bin/bash", ["-c", body], { encoding: "utf8", timeout: 10000,
+    env: { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, RUNNER_TEMP: root,
+      GITHUB_OUTPUT: githubOutput, GITHUB_TOKEN: "synthetic-env-secret-never-export" } });
+  const paths = readFileSync(githubOutput, "utf8").split("\n").filter((line) => line.startsWith("path=")).map((line) => line.slice(5));
+  const calls = readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+  return { result, paths, calls, root };
+}
+
+test("exports only actual sanitized DNS diagnostics when the fixture report is absent on success or failure", async (t) => {
+  for (const outcome of ["accepted", "ttl_floor_exhausted", "resolver_timeout", "resolver_error", "missing_or_excessive_answer", "invalid_answer", "internal_error"]) {
+    await t.test(outcome, async (t) => {
+      const bytes = await dnsDiagnostic(outcome), { result, paths, root } = executeDnsExport(t, bytes);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(paths.length, 1);
+      const exported = readFileSync(paths[0], "utf8");
+      assert.deepEqual(JSON.parse(exported), JSON.parse(bytes));
+      assert.doesNotMatch(exported, /104\.16\.|synthetic|addresses|resolvers|GITHUB_TOKEN/);
+      assert.equal(statSync(paths[0]).mode & 0o777, 0o440);
+      assert.equal(statSync(paths[0]).uid, process.getuid());
+      assert.equal(readdirSync(root).filter((name) => name.startsWith("fixture-dns-")).length, 1);
+      if (outcome === "accepted") {
+        const entry = JSON.parse(exported).entries[0];
+        assert.equal(entry.minimumTtlSeconds, 120);
+        assert.equal(entry.maximumTtlSeconds, 300);
+        assert.equal(entry.distinctTtlCount, 2);
+      }
+    });
+  }
+});
+
+test("missing pre-DNS evidence emits no artifact path", (t) => {
+  const { result, paths } = executeDnsExport(t, null);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(paths, []);
+});
+
+test("DNS export refuses substituted or unbounded evidence without publishing a path", async (t) => {
+  const bytes = await dnsDiagnostic();
+  const cases = [
+    ["symlink", { symlink: true }], ["hardlink", { hardlink: true }],
+    ["wrong owner", { fileUid: 12001 }], ["wrong group", { fileGid: 12001 }],
+    ["group writable", { fileMode: 0o664 }], ["world writable", { fileMode: 0o646 }],
+    // macOS removes these special bits on ordinary temporary files, so inject
+    // only the Linux metadata observation without changing local special modes.
+    ["executable", { fileMode: 0o744 }], ["special mode", { fileStatMode: "4644" }],
+    ["unreadable owner", { fileMode: 0o044 }], ["writable evidence directory", { directoryMode: 0o722 }],
+    ["empty", { bytes: "" }], ["oversized", { bytes: "x".repeat(65537) }],
+  ];
+  for (const [name, options] of cases) await t.test(name, (t) => {
+    const { result, paths, calls } = executeDnsExport(t, options.bytes ?? bytes, options);
+    assert.notEqual(result.status, 0, name);
+    assert.deepEqual(paths, []);
+    assert(!calls.some((args) => args[0] === "cat"), `${name}: unsafe source must be refused before reading diagnostic bytes`);
+  });
+});
+
+test("failed DNS path or metadata probes refuse even apparently valid partial output", async (t) => {
+  const bytes = await dnsDiagnostic();
+  for (const [name, options] of [["canonical path", { realpathFailure: true }],
+    ["directory metadata", { statFailure: "evidence" }], ["file metadata", { statFailure: "file" }]]) {
+    await t.test(name, (t) => {
+      const { result, paths, calls } = executeDnsExport(t, bytes, options);
+      assert.notEqual(result.status, 0, name);
+      assert.deepEqual(paths, []);
+      assert(!calls.some((args) => args[0] === "cat"), `${name}: failed observation must refuse before reading diagnostic bytes`);
+    });
+  }
+});
+
+test("DNS export strictly validates allowlisted JSON and strips duplicate-key shadow text", async (t) => {
+  const bytes = await dnsDiagnostic(), valid = JSON.parse(bytes);
+  const cases = [
+    ["invalid JSON", "synthetic parser secret"], ["multiple documents", `${bytes}\n${bytes}`],
+    ["raw address field", JSON.stringify({ ...valid, addresses: ["104.16.0.34"] })],
+    ["raw resolver field", JSON.stringify({ ...valid, runtime: { ...valid.runtime, servers: ["synthetic resolver secret"] } })],
+    ["raw entry field", JSON.stringify({ ...valid, entries: [{ ...valid.entries[0], address: "104.16.0.34" }] })],
+    ["unsafe version", JSON.stringify({ ...valid, runtime: { ...valid.runtime, cares: "synthetic version secret" } })],
+    ["weakened floor", JSON.stringify({ ...valid, requiredMinimumTtlSeconds: 119 })],
+    ["changed cadence", JSON.stringify({ ...valid, retryIntervalMs: 1 })],
+    ["changed budget", JSON.stringify({ ...valid, budgetMs: 90001 })],
+    ["authorization", JSON.stringify({ ...valid, activationBlocked: false })],
+    ["wrong attempts type", JSON.stringify({ ...valid, attempts: "1" })],
+    ["nonsequential attempt", JSON.stringify({ ...valid, entries: [{ ...valid.entries[0], attempt: 2 }] })],
+    ["unsafe digest", JSON.stringify({ ...valid, entries: [{ ...valid.entries[0], addressSetDigest: "synthetic digest secret" }] })],
+  ];
+  for (const [name, candidate] of cases) await t.test(name, (t) => {
+    const { result, paths } = executeDnsExport(t, candidate);
+    assert.notEqual(result.status, 0, name);
+    assert.deepEqual(paths, []);
+    assert.doesNotMatch(result.stdout + result.stderr, /synthetic|104\.16\./, "parser must not log raw evidence");
+  });
+  const shadowed = bytes.replace('"kind":', '"kind":"synthetic shadow secret","kind":');
+  const { result, paths } = executeDnsExport(t, shadowed);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(paths.length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(paths[0], "utf8")), valid);
+  assert.doesNotMatch(readFileSync(paths[0], "utf8"), /synthetic shadow secret/);
+});
+
+test("DNS upload runs independently of report completion and cannot mask lifecycle or cleanup failure", () => {
+  const exportBlock = workflow.split(/\n      - /).find((part) => part.startsWith("name: Export bounded sanitized DNS diagnostics only\n"));
+  assert(exportBlock);
+  assert.match(exportBlock, /if: always\(\) && steps\.runtime\.outputs\.sealed == 'true'/);
+  const uploadBlock = workflow.split(/\n      - /).find((part) => part.startsWith("name: Upload bounded sanitized DNS diagnostics\n"));
+  assert(uploadBlock);
+  assert.match(uploadBlock, /if: always\(\) && steps\.dns_diagnostics\.outcome == 'success' && steps\.dns_diagnostics\.outputs\.path != ''/);
+  assert.match(uploadBlock, /path: \$\{\{ steps\.dns_diagnostics\.outputs\.path \}\}/);
+  assert.doesNotMatch(uploadBlock, /steps\.result|evidence\/|\*/);
+  assert.doesNotMatch(workflow, /continue-on-error:/);
+  assert.match(workflow, /if: always\(\) && steps\.result\.outcome == 'success'/);
 });

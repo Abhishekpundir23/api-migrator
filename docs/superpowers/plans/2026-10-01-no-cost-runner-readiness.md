@@ -85,3 +85,13 @@ Final: fixed independent pre-start completion reserve — late admission
 regression RED, guard includes the additional five seconds, focused 25/25
 GREEN and full CI 1,096/1,096 GREEN. Native compatibility requires new hosted
 checks; no failed revision is accepted or bypassed.
+
+
+Continuation: preserve exact-head hosted failures and investigate their DNS
+answers. Add independent bounded sanitized diagnostic export; close proven
+joined-operation rollback/stall/rejected-settlement and execution-stop budget
+bugs without weakening the floor, cadence or reserves. Workflow 43/43,
+lifecycle/cancellation 50/50 and final deployment 351/351 passed. Full CI
+passed 1,154/1,154, zero failures/skips/cancellations. Fresh review, next
+instrumented hosted revision and release remain pending.
+No production gate is opened by these corrections.

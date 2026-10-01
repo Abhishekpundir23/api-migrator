@@ -106,27 +106,47 @@ export async function runImageFixtureScenario(operations, scenario) {
   return result;
 }
 
-export function createImageFixtureOperations({ plan, paths, image, native, execute, evidence, scenario, now = Date.now }) {
+export function createImageFixtureOperations({ plan, paths, image, native, execute, evidence, scenario, now = Date.now, elapsedNow = () => performance.now() }) {
   validatePublicationRunnerPlan(plan.plan);
   if (plan.plan.imageDigest !== image || !["success", "install_failure", "install_cancel"].includes(scenario)) throw new Error("fixture image or scenario substituted");
   const origin = plan.plan.egress.install.destinations[0];
   const phaseTimeout = 45000;
+  // One code-owned anchor charges elapsed work even if the wall clock stalls.
+  // Invalid/reversing samples close admission permanently; cleanup is ungated.
+  const anchorElapsed = elapsedNow(), anchorWall = now();
+  let lastElapsed = anchorElapsed, lastWall = anchorWall, clockFailed = false;
+  const fresh = (stage, timeoutMs) => {
+    const elapsed = elapsedNow(), wall = now();
+    const delta = Math.ceil(elapsed - anchorElapsed);
+    const projected = anchorWall + delta;
+    if (clockFailed || !Number.isSafeInteger(anchorWall) || !Number.isFinite(anchorElapsed) || anchorElapsed < 0 ||
+        !Number.isSafeInteger(wall) || wall < lastWall || !Number.isFinite(elapsed) || elapsed < lastElapsed ||
+        !Number.isSafeInteger(delta) || delta < 0 || !Number.isSafeInteger(projected)) {
+      clockFailed = true;
+      return assertFixtureFresh(plan, origin.resolutionExpiresAt, NaN, timeoutMs, stage);
+    }
+    lastWall = wall; lastElapsed = elapsed;
+    return assertFixtureFresh(plan, origin.resolutionExpiresAt, Math.max(wall, projected), timeoutMs, stage);
+  };
   const phases = createFixturePhaseOperations({ image, paths, plan, addresses: origin.addresses,
     installNetwork: "host", uid: 12001, gid: 12001, timeoutMs: phaseTimeout,
     execute: async (request) => {
-      assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), request.timeoutMs, `${request.phase}.launch`);
-      const output = await atFixtureStage(`${request.phase}.execute`, "unexpected", () => execute(request,
-        { cancelInstall: scenario === "install_cancel" && request.phase === "install" }), { commandBudgetMs: request.timeoutMs });
-      assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 1, `${request.phase}.complete`);
-      return output;
+      fresh(`${request.phase}.launch`, request.timeoutMs);
+      try {
+        return await atFixtureStage(`${request.phase}.execute`, "unexpected", () => execute(request,
+          { cancelInstall: scenario === "install_cancel" && request.phase === "install" }), { commandBudgetMs: request.timeoutMs });
+      } finally {
+        // Expected rejection/cancellation must obey the same expiry as success.
+        fresh(`${request.phase}.complete`, 1);
+      }
     } });
   let stage = 0, prepared, installed, migrated, installProof;
   const order = (expected) => {
     if (stage !== expected) throw new Error("fixture operation order rejected");
-    assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 15000, OPERATION_STAGES[expected]);
+    fresh(OPERATION_STAGES[expected], 15000);
   };
   const probe = (scenario) => {
-    assertFixtureFresh(plan, origin.resolutionExpiresAt, now(), 15000, `probe.${scenario}`);
+    fresh(`probe.${scenario}`, 15000);
     atFixtureStage(`probe.${scenario}`, "host_operation", () => native.probe(scenario));
   };
   const operations = {
@@ -202,7 +222,11 @@ export function createImageFixtureOperations({ plan, paths, image, native, execu
     async cleanup() { return native.cleanup(); },
   };
   return Object.fromEntries(Object.entries(operations).map(([name, operation]) => [name,
-    () => atFixtureStage(name, name === "cleanup" ? "cleanup" : "host_operation", operation)]));
+    () => atFixtureStage(name, name === "cleanup" ? "cleanup" : "host_operation", async () => {
+      const result = await operation();
+      if (name !== "cleanup") fresh(name, 1);
+      return result;
+    })]));
 }
 
 function writeOwnership(outputDir, resources) {

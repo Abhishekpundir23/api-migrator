@@ -529,19 +529,35 @@ function readOsRelease() {
   return values;
 }
 
-async function waitFor(predicate, label, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const value = await predicate();
-      if (value) return value;
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+async function waitFor(predicate, label, timeoutMs = 20_000, {
+  elapsedNow = () => performance.now(), expiresAt = Infinity,
+  sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
+} = {}) {
+  let observed = elapsedNow();
+  if (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0) {
+    throw new Error("hosted smoke elapsed clock is invalid");
   }
-  throw new Error(`hosted smoke timed out waiting for ${label}${lastError instanceof Error ? `: ${lastError.message}` : ""}`);
+  const deadline = Math.min(observed + timeoutMs, expiresAt);
+  const remaining = () => {
+    const current = elapsedNow();
+    if (typeof current !== "number" || !Number.isFinite(current) || current < observed) {
+      throw new Error("hosted smoke elapsed clock is invalid");
+    }
+    observed = current;
+    return deadline - current;
+  };
+  let lastError;
+  while (remaining() > 0) {
+    let value;
+    try { value = await predicate(); }
+    catch (error) { lastError = error; }
+    // A slow observation cannot turn an expired wait into success.
+    if (remaining() <= 0) break;
+    if (value) return value;
+    await sleep(Math.min(100, remaining()));
+  }
+  throw annotateFixtureFailure(new Error(`hosted smoke timed out waiting for ${label}${lastError instanceof Error ? `: ${lastError.message}` : ""}`),
+    { category: "deadline", timedOut: true, commandBudgetMs: timeoutMs });
 }
 
 function pidsForUid(uid) {
@@ -589,13 +605,13 @@ export function validateHostedSmokeAccounts(passwdText, groupText) {
   });
 }
 
-function unitSnapshot(systemctlPath, unit) {
-  const result = runCommand(systemctlPath, [
+function unitSnapshot(systemctlPath, unit, { command = runCommand, timeoutMs } = {}) {
+  const result = command(systemctlPath, [
     "show", unit, "--no-pager",
     "--property=LoadState", "--property=ActiveState", "--property=SubState",
     "--property=MainPID", "--property=InvocationID", "--property=ControlGroup",
     "--property=Result", "--property=ExecMainCode", "--property=ExecMainStatus",
-  ]);
+  ], { timeoutMs });
   const expectedNames = new Set([
     "LoadState", "ActiveState", "SubState", "MainPID", "InvocationID", "ControlGroup",
     "Result", "ExecMainCode", "ExecMainStatus",
@@ -1058,20 +1074,56 @@ async function runFaultScenario(name, resources, tools, evidence) {
   }));
 }
 
-async function stopExactUnit(unit, tools) {
-  const before = unitSnapshot(tools.systemctl, unit);
+async function stopExactUnit(unit, tools, {
+  timeoutMs, command = runCommand, elapsedNow = () => performance.now(),
+  sleep, cgroupAbsent = cgroupIsAbsent,
+} = {}) {
+  const bounded = timeoutMs !== undefined;
+  if (bounded && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1200000)) {
+    throw new Error("hosted smoke stop deadline budget is invalid");
+  }
+  let observed = bounded ? elapsedNow() : undefined;
+  if (bounded && (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0)) {
+    throw new Error("hosted smoke stop elapsed clock is invalid");
+  }
+  const expiresAt = bounded ? observed + timeoutMs : Infinity;
+  const remaining = () => {
+    const current = elapsedNow();
+    if (typeof current !== "number" || !Number.isFinite(current) || current < observed) {
+      throw new Error("hosted smoke stop elapsed clock is invalid");
+    }
+    observed = current;
+    if (current >= expiresAt) throw annotateFixtureFailure(new Error("hosted smoke stop deadline exceeded"),
+      { category: "deadline", timedOut: true, commandBudgetMs: timeoutMs });
+    return Math.max(1, Math.floor(expiresAt - current));
+  };
+  const snapshot = () => {
+    const value = unitSnapshot(tools.systemctl, unit, { command, timeoutMs: bounded ? remaining() : undefined });
+    if (bounded) remaining();
+    return value;
+  };
+  const before = snapshot();
   const expectedCgroup = `/system.slice/${unit}`;
   if (before.values.ControlGroup && before.values.ControlGroup !== expectedCgroup) {
     throw new Error(`hosted smoke ${unit} cgroup is substituted`);
   }
   if (before.values.LoadState && before.values.LoadState !== "not-found" && before.values.ActiveState !== "inactive") {
-    runCommand(tools.systemctl, ["stop", unit], { allowFailure: true, timeoutMs: 20_000 });
+    command(tools.systemctl, ["stop", unit], { allowFailure: true, timeoutMs: bounded ? Math.min(20_000, remaining()) : 20_000 });
+    if (bounded) remaining();
   }
-  runCommand(tools.systemctl, ["reset-failed", unit], { allowFailure: true });
-  const after = await waitFor(() => {
-    const snapshot = unitSnapshot(tools.systemctl, unit);
-    return snapshot.values.LoadState === "not-found" && cgroupIsAbsent(expectedCgroup) ? snapshot : false;
-  }, `${unit} unload and cgroup removal`, 20_000);
+  command(tools.systemctl, ["reset-failed", unit], { allowFailure: true, timeoutMs: bounded ? remaining() : undefined });
+  if (bounded) remaining();
+  let after;
+  try {
+    after = await waitFor(() => {
+      const value = snapshot();
+      return value.values.LoadState === "not-found" && cgroupAbsent(expectedCgroup) ? value : false;
+    }, `${unit} unload and cgroup removal`, 20_000, { elapsedNow, expiresAt, sleep });
+  } catch (error) {
+    if (bounded) remaining();
+    throw error;
+  }
+  if (bounded) remaining();
   return Object.freeze({ before, after, cgroup: expectedCgroup, absent: true });
 }
 

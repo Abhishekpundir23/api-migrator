@@ -218,6 +218,92 @@ jobs:
           jq -e '.securityDrill == false and .selfAttested == true and .releaseEvidenceEligible == false and .activationBlocked == true and .externalSigningEligible == false and .cleanup == "complete"' "$artifact"
           printf 'path=%s\n' "$artifact" >> "$GITHUB_OUTPUT"
 
+      - name: Export bounded sanitized DNS diagnostics only
+        id: dns_diagnostics
+        if: always() && steps.runtime.outputs.sealed == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          source_root=/tmp/api-migrator-fixture-results
+          output="${source_root}/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.scenario }}"
+          diagnostic="${output}/evidence/01-dns-diagnostics.txt"
+          # Setup can fail before DNS acquisition. Missing evidence produces no
+          # upload, while an existing substituted object fails closed.
+          if sudo test -e "$diagnostic"; then
+            :
+          else
+            status=$?; (( status == 1 )) || exit "$status"
+            if sudo test -L "$diagnostic"; then exit 1; else
+              status=$?; (( status == 1 )) || exit "$status"
+            fi
+            exit 0
+          fi
+          canonical_output=$(sudo realpath "$output") || exit 1
+          [[ "$canonical_output" == "$output" ]] || exit 1
+          for directory in "$source_root" "$output" "${output}/evidence"; do
+            sudo test -d "$directory"
+            sudo test ! -L "$directory"
+            expected_mode=700; [[ "$directory" != "$source_root" ]] || expected_mode=755
+            directory_metadata=$(sudo stat -c '%u:%g:%a' -- "$directory") || exit 1
+            [[ "$directory_metadata" == "0:0:${expected_mode}" ]] || exit 1
+          done
+          sudo test -f "$diagnostic"
+          sudo test ! -L "$diagnostic"
+          metadata=$(sudo stat -c '%u %g %a %h %s' -- "$diagnostic") || exit 1
+          read -r owner group mode links size <<< "$metadata"
+          [[ "$owner" == 0 && "$group" == 0 && "$links" == 1 && "$mode" =~ ^[0-7]{3,4}$ && "$size" =~ ^[0-9]+$ ]] || exit 1
+          (( (8#$mode & 0400) != 0 && (8#$mode & 07133) == 0 && size > 0 && size <= 65536 )) || exit 1
+          artifact=$(mktemp "${RUNNER_TEMP}/fixture-dns-${{ matrix.scenario }}.XXXXXX.json")
+          # Emit parsed allowlisted JSON, never source bytes or other evidence.
+          # Reserialization also removes values shadowed by duplicate keys.
+          if sudo cat "$diagnostic" | jq -ces '
+            def integer: type == "number" and floor == . and . >= 0 and . <= 9007199254740991;
+            def nullable_integer: . == null or integer;
+            def version: type == "string" and test("^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$");
+            def outcome: . == "accepted" or . == "ttl_floor_exhausted" or . == "resolver_timeout" or
+              . == "resolver_error" or . == "missing_or_excessive_answer" or . == "invalid_answer" or . == "internal_error";
+            def entry:
+              type == "object" and keys == (["attempt", "startedAfterMs", "completedAfterMs", "queryDurationMs", "outcome",
+                "answerCount", "uniqueAddressCount", "minimumTtlSeconds", "maximumTtlSeconds", "distinctTtlCount", "addressSetDigest"] | sort) and
+              (.attempt | integer) and .attempt >= 1 and .attempt <= 100 and
+              ([.startedAfterMs, .completedAfterMs, .queryDurationMs, .answerCount, .minimumTtlSeconds, .maximumTtlSeconds] | all(.[]; nullable_integer)) and
+              ([.uniqueAddressCount, .distinctTtlCount] | all(.[]; . == null or (integer and . >= 1 and . <= 32))) and
+              (.outcome | outcome or . == "ttl_below_minimum") and
+              (.addressSetDigest == null or (.addressSetDigest | type == "string" and test("^sha256:[a-f0-9]{64}$")));
+            def diagnostic:
+              type == "object" and keys == (["schemaVersion", "kind", "runtime", "requiredMinimumTtlSeconds", "budgetMs", "retryIntervalMs",
+                "attempts", "elapsedMs", "outcome", "entries", "releaseEvidenceEligible", "activationBlocked", "externalSigningEligible", "authorizationStatus"] | sort) and
+              .schemaVersion == 1 and .kind == "api_migrator_hosted_dns_diagnostics" and
+              .requiredMinimumTtlSeconds == 120 and .budgetMs == 90000 and .retryIntervalMs == 5000 and
+              .releaseEvidenceEligible == false and .activationBlocked == true and .externalSigningEligible == false and
+              .authorizationStatus == "non_authorizing_github_hosted_smoke_only" and
+              (.runtime | type == "object" and keys == ["cares", "node", "resolverServerCount"] and
+                .node == "22.23.2" and (.cares == null or (.cares | version)) and
+                (.resolverServerCount == null or (.resolverServerCount | integer and . <= 32))) and
+              (.attempts | integer) and .attempts <= 100 and (.elapsedMs | nullable_integer) and (.outcome | outcome) and
+              (.entries | type == "array") and (.entries | length) == .attempts and
+              (.entries | to_entries | all(.[]; (.value | entry) and .value.attempt == (.key + 1)));
+            if length == 1 and (.[0] | diagnostic) then .[0] else error("invalid diagnostic") end
+          ' > "$artifact" 2>/dev/null; then
+            chmod 0440 "$artifact"
+            printf 'path=%s\n' "$artifact" >> "$GITHUB_OUTPUT"
+          else
+            rm -f "$artifact"
+            echo "DNS diagnostic export validation failed" >&2
+            exit 1
+          fi
+
+      - name: Upload bounded sanitized DNS diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.dns_diagnostics.outcome == 'success' && steps.dns_diagnostics.outputs.path != ''
+        with:
+          name: joined-fixture-dns-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.scenario }}
+          path: ${{ steps.dns_diagnostics.outputs.path }}
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && steps.result.outcome == 'success'
         with:

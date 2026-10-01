@@ -283,3 +283,17 @@ exec /bin/sleep 3
   for (let attempt = 0; attempt < 40 && alive(); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(alive(), false, "cancelled Docker observation subprocess must be reaped");
 });
+
+
+test("native execution gateway stop bounds its real systemctl observation to the admitted lifetime", async () => {
+  const native = createFixtureNative({ resources: { gatewayUnit: "api-migrator-fixture-gateway-budget.service" },
+    tools: { systemctl: process.execPath } });
+  // Node rejects systemctl's fixed show argv without changing any service.
+  await assert.rejects(atFixtureStage("stopGateway", "host_operation", () => native.stopGateway()), (error) => {
+    const diagnostic = formatFixtureFailure(error);
+    const budget = Number(/commandBudgetMs=([0-9]+)/.exec(diagnostic)?.[1]);
+    assert.match(diagnostic, /stage=stopGateway, category=subprocess_exit/);
+    assert(budget > 0 && budget <= 15000, "the initial native observation must consume the execution stop budget");
+    return true;
+  });
+});

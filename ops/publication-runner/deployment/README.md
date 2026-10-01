@@ -262,8 +262,12 @@ that the worst-case lifecycle fits. The existing smoke retains its 65-second
 floor; both callers retain the same bounded 90-second acquisition window and
 5-second retry interval. Neither observed TTL nor observation time is extended
 or renewed. Each image phase still has a 45-second maximum and must fit before
-both plan and DNS expiry with a 30-second cleanup reserve. Freshness failures
-name the allowlisted stage, plan age, remaining plan/DNS lifetime, command
+both plan and DNS expiry with a 30-second cleanup reserve. One wall/elapsed
+anchor charges operations after construction; invalid or reversing clocks refuse
+admission. Phase completion is checked on both success and rejection before an
+expected install outcome can pass. Execution gateway stop consumes one shared
+15-second monotonic budget; cleanup keeps a separate unconditional stop attempt.
+Freshness failures name the allowlisted stage, plan age, remaining plan/DNS lifetime, command
 budget and cleanup reserve in bounded CLI output, including when cleanup also
 fails. Arbitrary error text, source and subprocess output are not printed.
 Other failures report fixed setup/operation/probe/phase stages and allowlisted
@@ -292,8 +296,12 @@ The three workflow scenarios are:
 
 The workflow seals its runtime, invokes it with an allowlisted environment, and
 runs `cleanup-image-lifecycle-fixture.mjs` plus a residual audit even after the
-main step fails. Only the bounded `fixture-report.json` summary is uploaded; the
-fixture checkout, raw source bundle and phase workspaces are not artifacts.
+main step fails. The bounded `fixture-report.json` summary and separately
+validated DNS diagnostics are uploaded. The DNS artifact survives admission
+failure before a final report exists and contains only allowlisted runtime,
+TTL, timing, count and digest fields. It cannot authorize execution or signing.
+The fixture checkout, raw source bundle, resolved addresses and phase
+workspaces are not artifacts.
 Every passing result fixes `securityDrill: false`, `selfAttested: true`,
 `releaseEvidenceEligible: false`, `activationBlocked: true`, and
 `externalSigningEligible: false`.
