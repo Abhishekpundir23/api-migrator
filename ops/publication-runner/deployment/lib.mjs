@@ -56,9 +56,9 @@ const SUCCESS_EVENTS = [
   "output_sealed",
   "containers_destroyed",
   "podman_cleanup_observed",
-  "nftables_policy_removed",
+  "nftables_policy_retained",
   "workspace_destroyed",
-  "wrapper_teardown_complete",
+  "wrapper_local_teardown_complete",
 ];
 
 const SENSITIVE_OBSERVER_ENV = [
@@ -524,10 +524,13 @@ export function parseWrapperEvents(eventsText, expected) {
       byName.offline_verification_started.detail !== "typecheck,test,lint,runtime") {
     throw new Error("wrapper phase policy evidence does not match the plan");
   }
-  for (const name of ["containers_destroyed", "podman_cleanup_observed", "nftables_policy_removed", "workspace_destroyed"]) {
+  for (const name of ["containers_destroyed", "podman_cleanup_observed", "workspace_destroyed"]) {
     if (byName[name].detail !== "status=0") throw new Error(`${name} did not report exact successful cleanup`);
   }
-  if (byName.wrapper_teardown_complete.detail !== "raw-events-require-control-plane-signature") {
+  if (byName.nftables_policy_retained.detail !== "pending-sealed-exec-stop-post") {
+    throw new Error("wrapper did not report exact retained containment pending sealed cleanup");
+  }
+  if (byName.wrapper_local_teardown_complete.detail !== "raw-events-require-control-plane-signature") {
     throw new Error("wrapper teardown terminal evidence is invalid");
   }
   return { events, byName, invocationId: events[0].systemdInvocation };
@@ -988,7 +991,7 @@ export function buildObservation(input) {
     expiresAt: plan.job.expiresAt,
     executionFinishedAt: parsedEvents.byName.output_sealed.observedAt,
   });
-  if (snapshot.teardown.observedAt < parsedEvents.byName.wrapper_teardown_complete.observedAt) {
+  if (snapshot.teardown.observedAt < parsedEvents.byName.wrapper_local_teardown_complete.observedAt) {
     throw new Error("independent teardown observation predates wrapper teardown");
   }
   if (profile.deploymentEvidence.observedAt > snapshot.capturedAt) {

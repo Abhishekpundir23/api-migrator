@@ -18,7 +18,6 @@ command -v nft >/dev/null 2>&1 || refuse "nft is unavailable"
 command -v pgrep >/dev/null 2>&1 || refuse "pgrep is unavailable"
 command -v ps >/dev/null 2>&1 || refuse "ps is unavailable"
 command -v find >/dev/null 2>&1 || refuse "find is unavailable"
-command -v grep >/dev/null 2>&1 || refuse "grep is unavailable"
 command -v readlink >/dev/null 2>&1 || refuse "readlink is unavailable"
 command -v stat >/dev/null 2>&1 || refuse "stat is unavailable"
 
@@ -76,31 +75,76 @@ gateway_table="api_migrator_gw_${job_id:11:16}"
 # paths. Containment remains installed until every job identity is idle and
 # the private workspace is gone.
 assert_job_boundary_idle() {
-  if pgrep -u "$runner_uid" >/dev/null 2>&1; then
-    refuse "dedicated runner UID still owns a process"
-  fi
-  if pgrep -u "$gateway_uid" >/dev/null 2>&1; then
-    refuse "dedicated gateway UID still owns a process"
-  fi
-  if ps -e -o uid= | awk -v first="$subuid_start" -v last="$subuid_end" \
-    '$1 >= first && $1 <= last { found = 1 } END { exit found ? 0 : 1 }'; then
-    refuse "runner subordinate UID range still owns a process"
-  fi
-  if find /var/tmp -mindepth 1 -maxdepth 1 -type d -name 'api-migrator-preview.*' -print -quit | grep -q .; then
-    refuse "a preview workspace survived cleanup"
-  fi
+  local probe_status=0 process_snapshot subuid_state workspace_snapshot
+  pgrep -u "$runner_uid" >/dev/null 2>&1 || probe_status=$?
+  case $probe_status in
+    0) refuse "dedicated runner UID still owns a process" ;;
+    1) ;;
+    *) refuse "dedicated runner UID could not be observed idle" ;;
+  esac
+  probe_status=0
+  pgrep -u "$gateway_uid" >/dev/null 2>&1 || probe_status=$?
+  case $probe_status in
+    0) refuse "dedicated gateway UID still owns a process" ;;
+    1) ;;
+    *) refuse "dedicated gateway UID could not be observed idle" ;;
+  esac
+  # Capture each command separately: a failed producer or parser cannot become
+  # the false condition of a pipeline and masquerade as an absent process.
+  process_snapshot=$(ps -e -o uid=) \
+    || refuse "process UID snapshot could not be observed"
+  subuid_state=$(awk -v first="$subuid_start" -v last="$subuid_end" '
+    NF != 1 || $1 !~ /^[0-9]+$/ { invalid = 1 }
+    $1 >= first && $1 <= last { found = 1 }
+    END { if (invalid || NR == 0) exit 2; print found ? "present" : "absent" }
+  ' <<<"$process_snapshot") || refuse "process UID snapshot could not be validated"
+  case $subuid_state in
+    absent) ;;
+    present) refuse "runner subordinate UID range still owns a process" ;;
+    *) refuse "runner subordinate UID absence could not be observed" ;;
+  esac
+  workspace_snapshot=$(find /var/tmp -mindepth 1 -maxdepth 1 -type d \
+    -name 'api-migrator-preview.*' -print -quit) \
+    || refuse "preview workspace absence could not be observed"
+  [[ -z $workspace_snapshot ]] || refuse "a preview workspace survived cleanup"
 }
 
 assert_job_boundary_idle
 
+# A failed exact-table lookup also returns nonzero when the table is absent.
+# Require a successful, well-formed complete inventory before interpreting it.
+exact_table_present() {
+  local snapshot table_state
+  snapshot=$(nft -j list tables) || refuse "nftables table inventory could not be observed"
+  table_state=$(jq -er --arg table "$1" '
+    if type != "object" or keys != ["nftables"] or (.nftables | type) != "array" then
+      error("invalid table inventory")
+    elif all(.nftables[];
+      type == "object" and (
+        (keys == ["metainfo"] and (.metainfo | type) == "object") or
+        (keys == ["table"] and (.table | type) == "object" and
+          (.table.family | type == "string" and length > 0) and
+          (.table.name | type == "string" and length > 0))
+      )
+    ) then
+      any(.nftables[]; .table?.family == "inet" and .table?.name == $table) | tostring
+    else error("invalid table inventory") end
+  ' <<<"$snapshot") || refuse "nftables table inventory could not be validated"
+  case $table_state in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) refuse "exact job nftables table absence could not be observed" ;;
+  esac
+}
+
 # Remove the legacy L3 table first so the stronger forced-gateway containment
 # remains installed until the last policy-removal step.
 for table in "$legacy_table" "$gateway_table"; do
-  if nft list table inet "$table" >/dev/null 2>&1; then
+  if exact_table_present "$table"; then
     nft delete table inet "$table" >/dev/null 2>&1 \
       || refuse "exact job nftables table could not be removed"
   fi
-  if nft list table inet "$table" >/dev/null 2>&1; then
+  if exact_table_present "$table"; then
     refuse "exact job nftables table survived cleanup"
   fi
 done

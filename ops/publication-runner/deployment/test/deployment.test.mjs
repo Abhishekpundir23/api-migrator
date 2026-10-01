@@ -217,9 +217,9 @@ function fixture() {
     output_sealed: result.artifactDigest,
     containers_destroyed: "status=0",
     podman_cleanup_observed: "status=0",
-    nftables_policy_removed: "status=0",
+    nftables_policy_retained: "pending-sealed-exec-stop-post",
     workspace_destroyed: "status=0",
-    wrapper_teardown_complete: "raw-events-require-control-plane-signature",
+    wrapper_local_teardown_complete: "raw-events-require-control-plane-signature",
   };
   const eventNames = Object.keys(details);
   const eventObjects = eventNames.map((event, index) => ({
@@ -768,6 +768,42 @@ test("refuses every incomplete independent teardown or weakened unit property", 
       snapshot.systemd[key] = value;
       assert.throws(() => build(fx, { snapshot }), /successful quiescent unit/, key);
     }
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("retained wrapper policy requires independent removal proof and remains unsigned", () => {
+  const fx = fixture();
+  try {
+    const events = structuredClone(fx.eventObjects);
+    for (const event of events) {
+      if (event.event === "nftables_policy_removed") {
+        event.event = "nftables_policy_retained";
+        event.detail = "pending-sealed-exec-stop-post";
+      }
+      if (event.event === "wrapper_teardown_complete") event.event = "wrapper_local_teardown_complete";
+    }
+    const eventsText = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+    const observation = build(fx, { eventsText });
+    assert.equal(observation.teardown.nftablesTableAbsent, true);
+    const request = buildUnsignedSigningRequest(observation).request;
+    assert.equal(request.unsigned, true);
+    assert.equal(request.eligibleForExternalSigning, false);
+    assert.equal(request.authorizationStatus, "blocked_pending_linux_gateway_lifecycle_drill");
+    const snapshot = structuredClone(fx.snapshot);
+    snapshot.teardown.nftablesTableAbsent = false;
+    assert.throws(() => build(fx, { eventsText, snapshot }), /teardown snapshot is incomplete/);
+    const inventedRemoval = structuredClone(events);
+    inventedRemoval.find((event) => event.event === "nftables_policy_retained").event = "nftables_policy_removed";
+    assert.throws(() => build(fx, {
+      eventsText: `${inventedRemoval.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    }), /order diverged/);
+    const falseRetention = structuredClone(events);
+    falseRetention.find((event) => event.event === "nftables_policy_retained").detail = "status=0";
+    assert.throws(() => build(fx, {
+      eventsText: `${falseRetention.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    }), /retained containment/);
   } finally {
     fx.cleanup();
   }

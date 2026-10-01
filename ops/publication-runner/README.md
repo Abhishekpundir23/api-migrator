@@ -168,9 +168,15 @@ explicit reviewed output.
 
 ## Teardown and failure semantics
 
-`EXIT`, `INT`, `TERM`, and `HUP` trigger best-effort container removal, nftables
-policy removal, evidence synchronization, and private-workspace deletion. The
-wrapper reports only that Podman cleanup was requested and the dedicated UID was
+`EXIT`, `INT`, `TERM`, and `HUP` trigger best-effort container removal, evidence
+synchronization, and private-workspace deletion. The wrapper and its deadline
+watchdog retain nftables containment. Only the sealed `ExecStopPost` helper may
+remove the exact job tables after successful observations establish runner,
+gateway and subordinate-UID quiescence and workspace absence. Probe errors,
+malformed observations and unknown nftables state refuse removal; they cannot
+stand in for absence. The wrapper reports only local-resource completion and
+retained policy pending sealed cleanup. It reports that Podman cleanup was
+requested and the dedicated UID was
 observed idle; it does **not** claim that the unit cgroup, subordinate-UID
 processes, or network namespaces were destroyed. SIGKILL, a blocked filesystem
 operation, kernel failure, or host loss cannot be bounded or proven by a shell

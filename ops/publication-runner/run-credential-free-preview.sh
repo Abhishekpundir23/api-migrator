@@ -212,12 +212,6 @@ WATCHDOG_PID=
 WORKSPACE=
 WORKSPACE_MOUNTED=0
 
-delete_nft_table() {
-  if nft list table inet "$TABLE" >/dev/null 2>&1; then
-    nft delete table inet "$TABLE" >/dev/null 2>&1
-  fi
-}
-
 early_cleanup() {
   local original_status=$? unmounted=0
   trap - EXIT INT TERM HUP
@@ -226,7 +220,6 @@ early_cleanup() {
     kill "$WATCHDOG_PID" >/dev/null 2>&1
     wait "$WATCHDOG_PID" >/dev/null 2>&1
   fi
-  delete_nft_table
   if (( WORKSPACE_MOUNTED == 1 )); then
     umount -- "$WORKSPACE" >/dev/null 2>&1
     unmounted=$?
@@ -241,13 +234,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-# This guard starts before plan-shape validation and staging. It revokes the
-# nftables table before signalling the foreground shell. systemd RuntimeMaxSec
-# is still required as the independent final kill/cleanup boundary.
+# This guard starts before plan-shape validation and staging. It signals the
+# foreground shell while retaining containment. The sealed systemd ExecStopPost
+# boundary alone may remove policy after every job identity and workspace is idle.
 (
   remaining_ms=$((RUN_DEADLINE_MS - $(date +%s%3N)))
   if (( remaining_ms > 0 )); then sleep "$((remaining_ms / 1000))"; fi
-  timeout 2 nft delete table inet "$TABLE" >/dev/null 2>&1 || true
   kill -TERM "$MAIN_PID" >/dev/null 2>&1 || true
 ) &
 WATCHDOG_PID=$!
@@ -504,12 +496,9 @@ cleanup() {
   run_as_job system migrate >/dev/null 2>&1
   [[ $? -eq 0 ]] || cleanup_status=1
   event "podman_cleanup_observed" "status=$cleanup_status" || cleanup_status=1
-  if nft list table inet "$TABLE" >/dev/null 2>&1; then
-    delete_nft_table
-    [[ $? -eq 0 ]] || cleanup_status=1
-  fi
-  if nft list table inet "$TABLE" >/dev/null 2>&1; then cleanup_status=1; fi
-  event "nftables_policy_removed" "status=$cleanup_status" || cleanup_status=1
+  # Process/workspace cleanup is local to this wrapper. Retain containment even
+  # on errors; only the sealed ExecStopPost helper owns final policy removal.
+  event "nftables_policy_retained" "pending-sealed-exec-stop-post" || cleanup_status=1
   if (( OUTPUT_CREATED == 1 && CLEANUP_COMPLETE == 0 )); then
     if [[ $OUTPUT_PATH == /* && -d $OUTPUT_PATH && ! -L $OUTPUT_PATH ]]; then
       rm -rf -- "$OUTPUT_PATH"
@@ -538,7 +527,7 @@ cleanup() {
   fi
   event "workspace_destroyed" "status=$cleanup_status" || cleanup_status=1
   if (( original_status == 0 && cleanup_status == 0 && CLEANUP_COMPLETE == 1 )); then
-    event "wrapper_teardown_complete" "raw-events-require-control-plane-signature" \
+    event "wrapper_local_teardown_complete" "raw-events-require-control-plane-signature" \
       || cleanup_status=1
   else
     event "wrapper_failed" "raw-events-must-not-be-signed" || cleanup_status=1
