@@ -250,3 +250,50 @@ test("check returns the validated wall timestamp for finish-time trust selection
     assert.equal(budget.check(), 2_000_000_000_007);
   } finally { budget.close(); }
 });
+
+for (const change of [
+  "synchronous cap expiry", "close", "wall expiry", "monotonic expiry",
+  "wall rollback", "monotonic rollback",
+] as const) {
+  test(`queued callback does not start after ${change}`, async () => {
+    let wall = 1_000;
+    let monotonic = 50;
+    const activeTimeouts = () => process.getActiveResourcesInfo()
+      .filter((resource) => resource === "Timeout").length;
+    const timersBefore = activeTimeouts();
+    const budget = createRunnerEvidenceDeadline(
+      { wallNow: () => wall, monotonicNow: () => monotonic },
+      wall + 60_000,
+    );
+    let started = 0;
+    let disposed = 0;
+    try {
+      const pending = budget.run(async () => {
+        started += 1;
+        return { close() { disposed += 1; } };
+      }, (value) => value.close());
+      // Change the budget synchronously, before the operation's microtask.
+      if (change === "synchronous cap expiry") {
+        assert.throws(() => budget.cap(wall), assertExpired);
+      } else if (change === "close") {
+        budget.close();
+      } else if (change === "wall expiry") {
+        wall += 60_000;
+      } else if (change === "monotonic expiry") {
+        monotonic += 10_000;
+      } else if (change === "wall rollback") {
+        wall -= 1;
+      } else {
+        monotonic -= 1;
+      }
+      await assert.rejects(pending, assertExpired);
+      assert.equal(started, 0, "an invalid budget must prevent the operation from starting");
+      assert.equal(disposed, 0, "a skipped operation creates no resource to dispose");
+      assert.equal(budget.signal.aborted, true);
+      assert.equal(getEventListeners(budget.signal, "abort").length, 0);
+      assert.equal(activeTimeouts(), timersBefore);
+    } finally {
+      budget.close();
+    }
+  });
+}
