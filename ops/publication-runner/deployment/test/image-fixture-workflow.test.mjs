@@ -7,6 +7,8 @@ import test from "node:test";
 import { parseImageLifecycleFixtureCli, validateFixtureEnvironment, resolveImageFixtureOrigin } from "../run-image-lifecycle-fixture.mjs";
 
 const workflow = readFileSync(new URL("../../../../.github/workflows/runner-lifecycle-fixture.yml", import.meta.url), "utf8");
+const pinnedProducerNodeVersion = /^  NODE_VERSION: ([0-9]+\.[0-9]+\.[0-9]+)$/m.exec(workflow)?.[1];
+assert(pinnedProducerNodeVersion, "joined fixture must pin its sealed Node producer");
 function script(name) {
   const block = workflow.split(/\n      - /).find((part) => part.startsWith(`name: ${name}\n`));
   assert(block, name);
@@ -102,7 +104,15 @@ async function dnsDiagnostic(outcome = "accepted") {
   catch (error) { assert.notEqual(outcome, "accepted", error.message); }
   assert(bytes, "the actual DNS producer must persist diagnostics before returning or throwing");
   assert.equal(JSON.parse(bytes).outcome, outcome);
-  return bytes;
+  const diagnostic = JSON.parse(bytes);
+  assert.equal(diagnostic.requiredMinimumTtlSeconds, 120);
+  assert.equal(diagnostic.budgetMs, 125000);
+  assert.equal(diagnostic.retryIntervalMs, 5000);
+  assert.equal(diagnostic.runtime.node, process.versions.node);
+  // Exercise real acquisition diagnostics, then model the sealed workflow's
+  // runtime provenance. The unit-test process can use another Node 22 patch.
+  diagnostic.runtime.node = pinnedProducerNodeVersion;
+  return JSON.stringify(diagnostic);
 }
 
 function executeDnsExport(t, bytes, options = {}) {
@@ -152,7 +162,7 @@ else throw new Error('unexpected privileged command');
   return { result, paths, calls, root };
 }
 
-test("exports only actual sanitized DNS diagnostics when the fixture report is absent on success or failure", async (t) => {
+test("exports sanitized DNS outcomes from the sealed producer model without a fixture report", async (t) => {
   for (const outcome of ["accepted", "ttl_floor_exhausted", "resolver_timeout", "resolver_error", "missing_or_excessive_answer", "invalid_answer", "internal_error"]) {
     await t.test(outcome, async (t) => {
       const bytes = await dnsDiagnostic(outcome), { result, paths, root } = executeDnsExport(t, bytes);
@@ -171,6 +181,21 @@ test("exports only actual sanitized DNS diagnostics when the fixture report is a
         assert.equal(entry.distinctTtlCount, 2);
       }
     });
+  }
+});
+
+test("valid DNS artifacts model the sealed producer independently of the ambient Node 22 patch", async (t) => {
+  const descriptor = Object.getOwnPropertyDescriptor(process.versions, "node");
+  try {
+    Object.defineProperty(process.versions, "node", { ...descriptor, value: "22.23.3" });
+    const bytes = await dnsDiagnostic();
+    assert.equal(JSON.parse(bytes).runtime.node, "22.23.2", "valid fixture must describe the sealed producer, not the test process");
+    const { result, paths } = executeDnsExport(t, bytes);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(paths.length, 1);
+    assert.equal(JSON.parse(readFileSync(paths[0], "utf8")).runtime.node, "22.23.2");
+  } finally {
+    Object.defineProperty(process.versions, "node", descriptor);
   }
 });
 
@@ -221,9 +246,11 @@ test("DNS export strictly validates allowlisted JSON and strips duplicate-key sh
     ["raw resolver field", JSON.stringify({ ...valid, runtime: { ...valid.runtime, servers: ["synthetic resolver secret"] } })],
     ["raw entry field", JSON.stringify({ ...valid, entries: [{ ...valid.entries[0], address: "104.16.0.34" }] })],
     ["unsafe version", JSON.stringify({ ...valid, runtime: { ...valid.runtime, cares: "synthetic version secret" } })],
+    ["wrong producer Node patch", JSON.stringify({ ...valid, runtime: { ...valid.runtime, node: "22.23.3" } })],
     ["weakened floor", JSON.stringify({ ...valid, requiredMinimumTtlSeconds: 119 })],
     ["changed cadence", JSON.stringify({ ...valid, retryIntervalMs: 1 })],
-    ["changed budget", JSON.stringify({ ...valid, budgetMs: 90001 })],
+    ["changed budget", JSON.stringify({ ...valid, budgetMs: 125001 })],
+    ["hosted smoke budget", JSON.stringify({ ...valid, budgetMs: 90000 })],
     ["authorization", JSON.stringify({ ...valid, activationBlocked: false })],
     ["wrong attempts type", JSON.stringify({ ...valid, attempts: "1" })],
     ["nonsequential attempt", JSON.stringify({ ...valid, entries: [{ ...valid.entries[0], attempt: 2 }] })],

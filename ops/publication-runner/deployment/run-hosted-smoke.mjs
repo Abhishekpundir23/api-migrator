@@ -63,6 +63,9 @@ const PLAN_MIN_MS = 60_000;
 const DNS_PLAN_CREATION_BUDGET_MS = 5_000;
 const DNS_MIN_TTL_SECONDS = (PLAN_MIN_MS + DNS_PLAN_CREATION_BUDGET_MS) / 1000;
 const DNS_REFRESH_WAIT_MAX_MS = 90_000;
+// A subfloor joined answer has an integer residual TTL at most 119s. Allow
+// expiry plus the unchanged 5s retry alignment before creating any plan.
+const JOINED_DNS_REFRESH_WAIT_MAX_MS = 125_000;
 const DNS_RETRY_INTERVAL_MS = 5_000;
 const DNS_MAX_ATTEMPTS = 100;
 const DNS_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
@@ -162,6 +165,13 @@ export async function resolveHostedNpmOrigin(options = {}) {
     ? DNS_MIN_TTL_SECONDS : options.requiredMinimumTtlSeconds;
   if (!Number.isSafeInteger(requiredMinimumTtlSeconds) || requiredMinimumTtlSeconds < DNS_MIN_TTL_SECONDS ||
       requiredMinimumTtlSeconds > 1800) throw new Error("hosted smoke npm DNS TTL requirement is invalid");
+  const acquisitionProfile = options.acquisitionProfile ?? "hosted-smoke";
+  if (!["hosted-smoke", "joined-image"].includes(acquisitionProfile) ||
+      (acquisitionProfile === "joined-image" && requiredMinimumTtlSeconds !== 120)) {
+    throw new Error("hosted smoke npm DNS acquisition profile is invalid");
+  }
+  const acquisitionBudgetMs = acquisitionProfile === "joined-image"
+    ? JOINED_DNS_REFRESH_WAIT_MAX_MS : DNS_REFRESH_WAIT_MAX_MS;
   const nativeResolver = options.resolver === undefined ? new Resolver() : null;
   const resolver = options.resolver ?? ((...args) => nativeResolver.resolve4(...args));
   const cancelResolver = options.cancelResolver ?? (() => nativeResolver?.cancel());
@@ -175,6 +185,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
   const entries = [];
   let startedAt = null;
   let lastElapsed = null;
+  let clockFailure;
   let activeAttempt = null;
   let currentAnswerCount = null;
   let outcome = "internal_error";
@@ -184,9 +195,12 @@ export async function resolveHostedNpmOrigin(options = {}) {
   let highestObservedTtlSeconds = null;
   let lastAnswerCount = 0;
   const readElapsedNow = () => {
+    if (clockFailure) throw clockFailure;
     const value = elapsedNow();
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new Error("hosted smoke npm DNS elapsed clock is invalid");
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 ||
+        (lastElapsed !== null && value < lastElapsed)) {
+      clockFailure = new Error("hosted smoke npm DNS elapsed clock is invalid");
+      throw clockFailure;
     }
     lastElapsed = value;
     return value;
@@ -250,7 +264,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
 
   try {
     startedAt = readElapsedNow();
-    const deadline = startedAt + DNS_REFRESH_WAIT_MAX_MS;
+    const deadline = startedAt + acquisitionBudgetMs;
     while (true) {
       const attemptStartedAt = readElapsedNow();
       if (attempts > 0 && attemptStartedAt >= deadline) {
@@ -365,7 +379,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
             resolverServerCount,
           },
           requiredMinimumTtlSeconds,
-          budgetMs: DNS_REFRESH_WAIT_MAX_MS,
+          budgetMs: acquisitionBudgetMs,
           retryIntervalMs: DNS_RETRY_INTERVAL_MS,
           attempts,
           elapsedMs: milliseconds(lastElapsed, startedAt),

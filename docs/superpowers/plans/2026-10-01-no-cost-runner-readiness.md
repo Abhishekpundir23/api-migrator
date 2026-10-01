@@ -95,3 +95,19 @@ lifecycle/cancellation 50/50 and final deployment 351/351 passed. Full CI
 passed 1,154/1,154, zero failures/skips/cancellations. Fresh review, next
 instrumented hosted revision and release remain pending.
 No production gate is opened by these corrections.
+
+
+Causal continuation: hosted diagnostic TTL104->18 places cache expiry beyond
+90s. Joined-only fixed125s acquisition (floor120, cadence5s unchanged) closes
+that opportunity gap; defaultsmoke90 remains. Ten DNS boundary tests pass.
+Portable sealed-runtime diagnostic tests pass46/46, ownership fix passes12/12
+and focused87/87. New combinedCI and hostedverification pending. One Important
+native-stop shared-clock finding remains blocked by repeated approval rejection;
+no merge is permitted until it is corrected and freshly verified.
+
+
+Permitted continuation verification: full Node22.23.2 CI passed1,176/1,176,
+zero failures/skips/cancellations (deployment373/373). The native stop-clock
+edit remains stopped after two explicit automatic-review denials. Draft push
+and exact-head verification of unaffected changes may proceed; merge stays
+blocked until the Important finding is corrected with valid authorization.

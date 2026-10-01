@@ -275,7 +275,7 @@ jobs:
               type == "object" and keys == (["schemaVersion", "kind", "runtime", "requiredMinimumTtlSeconds", "budgetMs", "retryIntervalMs",
                 "attempts", "elapsedMs", "outcome", "entries", "releaseEvidenceEligible", "activationBlocked", "externalSigningEligible", "authorizationStatus"] | sort) and
               .schemaVersion == 1 and .kind == "api_migrator_hosted_dns_diagnostics" and
-              .requiredMinimumTtlSeconds == 120 and .budgetMs == 90000 and .retryIntervalMs == 5000 and
+              .requiredMinimumTtlSeconds == 120 and .budgetMs == 125000 and .retryIntervalMs == 5000 and
               .releaseEvidenceEligible == false and .activationBlocked == true and .externalSigningEligible == false and
               .authorizationStatus == "non_authorizing_github_hosted_smoke_only" and
               (.runtime | type == "object" and keys == ["cares", "node", "resolverServerCount"] and

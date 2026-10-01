@@ -37,9 +37,17 @@ export function validateFixtureOwnership(marker, resources) {
 export async function cleanupFixtureResources(resources, host) {
   fixtureOwnership(resources);
   host.validateOwnership();
-  const tablePresent = host.tableExists();
-  await host.removeContainers();
-  await host.stopGateway();
+  let tablePresent;
+  const failures = [];
+  try {
+    tablePresent = host.tableExists();
+    await host.removeContainers();
+  } catch (error) { failures.push(error); }
+  // Once exact ownership is validated, stop independently of earlier failures.
+  try { await host.stopGateway(); }
+  catch (error) { failures.push(error); }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "fixture cleanup failed; containment retained");
   if (!host.containersAbsent() || !host.quiescent()) throw new Error("fixture cleanup live resources; containment retained");
   if (host.tableExists() !== tablePresent) throw new Error("fixture containment changed during cleanup");
   host.removeTrees();

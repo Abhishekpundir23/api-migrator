@@ -21,7 +21,7 @@ const safeInteger = (value) => Number.isSafeInteger(value) ? value : null;
 export async function resolveImageFixtureOrigin(options = {}) {
   let diagnostic;
   try {
-    return await host.resolveHostedNpmOrigin({ ...options, requiredMinimumTtlSeconds: 120,
+    return await host.resolveHostedNpmOrigin({ ...options, acquisitionProfile: "joined-image", requiredMinimumTtlSeconds: 120,
       writeDiagnostics(bytes) {
         diagnostic = JSON.parse(bytes);
         options.writeDiagnostics?.(bytes);

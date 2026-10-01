@@ -258,7 +258,7 @@ test("joined acquisition failure stays actionable through cleanup without raw di
   const diagnostic = fixture.formatFixtureFailure(new AggregateError([
     failure, new Error("SECRET source=/private/source token=credential"),
   ], "SECRET cleanup stderr"));
-  assert.match(diagnostic, /fixture DNS admission failed \(reason=ttl_floor_exhausted, attempts=18, elapsedMs=90000, requiredMinimumTtlSeconds=120/);
+  assert.match(diagnostic, /fixture DNS admission failed \(reason=ttl_floor_exhausted, attempts=25, elapsedMs=125000, requiredMinimumTtlSeconds=120/);
   for (const fault of [
     { resolver: async () => { throw new Error("SECRET credential 104.16.0.34"); } },
     { resolver: async () => [{ address: "104.16.0.34", ttl: 120 }],

@@ -259,9 +259,12 @@ cleanup or failed evidence write cannot produce a passing result.
 The joined fixture admits only DNS answers with a complete-answer minimum TTL
 of at least 120 seconds. This is stronger admission headroom, not a guarantee
 that the worst-case lifecycle fits. The existing smoke retains its 65-second
-floor; both callers retain the same bounded 90-second acquisition window and
-5-second retry interval. Neither observed TTL nor observation time is extended
-or renewed. Each image phase still has a 45-second maximum and must fit before
+floor and 90-second acquisition window. Joined acquisition has a fixed
+125-second window so a rejected cached answer with integer residual TTL up to
+119 seconds can expire before a retry. Both retain the 5-second retry interval.
+This provides a refresh opportunity; persistent short TTLs, slow queries and
+failed refresh still refuse admission. Neither accepted TTL nor its observation
+time is extended or renewed. Each image phase still has a 45-second maximum and must fit before
 both plan and DNS expiry with a 30-second cleanup reserve. One wall/elapsed
 anchor charges operations after construction; invalid or reversing clocks refuse
 admission. Phase completion is checked on both success and rejection before an

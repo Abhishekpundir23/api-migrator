@@ -16,7 +16,7 @@ The user authorized sustained free local work and API Migrator commits, draft PR
 - [x] Retain containment on failed/unknown production cleanup observations and remove premature wrapper policy deletion.
 - [x] Verify local credential-free four-phase image integration.
 - [x] Run combined Node 22 workspace CI, including real Docker verification, console build and packaging checks.
-- [x] Complete independent whole-change review and fix demonstrated findings.
+- [ ] Complete independent whole-change review and fix every remaining significant finding.
 - [ ] Verify exact PR revision's hosted checks, then permitted merge and post-merge state.
 - [x] Preserve and behavior-test the unconditional three-action console/publication gate.
 
@@ -158,3 +158,69 @@ expiry and requires full native absence. The combined deployment suite passed
 typechecks, existing Docker verification, pilot validation, console build and
 packaging checks. Log: `/tmp/api-migrator-free-readiness/full-ci-dns-investigation.log`.
 Fresh exact-revision review and instrumented hosted checks remain pending.
+
+
+## Causal cache-refresh correction and remaining review gate
+
+The new diagnostic at `eb5769b` identified the hosted acquisition failure.
+Joined run 36878032078 passed success and cancellation; install failure observed
+18 valid 12-record answers with one stable address digest and 1–4ms query
+latency. Uniform TTLs counted down 104,98,93,...18 seconds at offsets
+0.004,...85.093s. Their inferred cache expiry is about 103–104s, beyond the
+90s acquisition window. Successful workers admitted TTLs 223 and 141 at their
+first queries. These observations identify an upstream cache-age/acquisition
+window mismatch, before any plan or gateway exists. They do not identify the
+exact upstream caching layer or guarantee the next answer will meet the floor.
+Artifact: `joined-fixture-dns-36878032078-1-install_failure`.
+
+The joined caller now forces a fixed `joined-image` profile with a 125s
+acquisition ceiling and unchanged 120s floor. Every rejected integer residual
+TTL is at most 119s; expiry plus the existing 5s retry alignment fits within the
+new opportunity bound. Generic/default smoke retains its original 90s budget,
+even when a generic caller strengthens its floor to 120. There is no arbitrary
+caller-controlled wait budget, resolver override, host DNS mutation or change
+to complete-answer minimum, accepted observation time, canonical plan expiry,
+5s cadence or diagnostic size/attempt caps. Seven of eight initial regressions
+failed under the old implementation. Ten final DNS cases pass, including
+104/119s countdown refresh, permanent 119/60s refusal, exact 125s completion
+refusal, mixed119/300 complete-answer refusal and elapsed rollback. Slow or
+stuck resolution still consumes only the remaining overall budget and fails
+closed. This is a test acquisition correction, not an extension of an admitted
+plan or DNS lifetime.
+
+Linux CI at `eb5769b` exposed test data tied to the local runtime patch: the
+workflow's general Node 22 selector installed 22.23.3, while the sealed fixture
+export correctly requires 22.23.2. Tests now explicitly model the sealed
+producer's runtime provenance after checking the actual producer metadata;
+non-pinned producer artifacts remain rejected. The production runtime/schema
+pin is unchanged. Real CI failure and controlled 22.23.3 metadata regression
+reproduced the issue; workflow tests passed 46/46 on both local and controlled
+ambient metadata, including the exact 125s export profile.
+
+Fresh immutable whole-branch review found two Important issues and no Critical
+or Minor findings. The first is now corrected: authenticated table observation
+or container teardown failure must still attempt independent gateway stop;
+sole/falsy errors retain identity, paired failures aggregate, and final table
+removal requires all unchanged proofs. Actual repository RED had 6 failures of
+12; ownership GREEN 12/12 and focused cleanup/cancellation/container/lifecycle
+GREEN 87/87. Invalid ownership still performs no native actions.
+
+The second issue remains a release blocker: native stop's separate clock
+validators can swallow a transient invalid/reversing predicate sample, then
+accept absence after recovery; cross-reader rollback can also evade separate
+high-water marks. It requires one shared permanently failing clock reader for
+all stop/poll reads. The delegated worker's regression edit was rejected twice
+by automatic approval review because it retained the original read-only scope;
+no edit was applied to that target. The parent has requested direct user
+permission in this task. That action is stopped, and release must remain blocked
+even if unaffected changes pass their checks. No alternate worker or write path
+is used to bypass the rejection.
+
+
+After these permitted corrections, supported Node22.23.2 full project CI passed
+1,176/1,176 tests (373 deployment), zero failures/skips/cancellations, with
+builds/typechecks, existing Docker verification, pilot validation, console build
+and packaging. Log: `/tmp/api-migrator-free-readiness/full-ci-cache-refresh.log`.
+The denied native stop-clock section and its test target remain unchanged.
+This local success does not clear that Important review gate. New exact-head
+hosted tests and review of the permitted delta remain pending.
