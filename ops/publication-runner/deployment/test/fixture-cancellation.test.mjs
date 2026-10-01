@@ -4,13 +4,14 @@ import test from "node:test";
 import * as native from "../fixture-native.mjs";
 import * as fixture from "../run-image-lifecycle-fixture.mjs";
 import { cleanupFixtureResources, deriveFixtureResources } from "../fixture-ownership.mjs";
+import { createPublicationRunnerPlan } from "../../../../packages/app/dist/runner-internal.js";
 
 const image = `sha256:${"a".repeat(64)}`, jobId = `previewjob_${"b".repeat(64)}`;
 const containerId = "c".repeat(64);
 const input = { runId: "123", runAttempt: 1, scenario: "success", jobId, image, planDigest: `sha256:${"d".repeat(64)}` };
 
 function boundary(fault = {}) {
-  const resources = deriveFixtureResources(input), events = [];
+  const resources = deriveFixtureResources({ ...input, jobId: fault.jobId ?? jobId }), events = [];
   let paused = false, present = true, running = true, unit = true, trees = true, table = true, reads = 0;
   const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
   child.kill = (signal) => {
@@ -42,7 +43,7 @@ function boundary(fault = {}) {
       return { status: 0, stderr: "", stdout: JSON.stringify([{
         Id: fault.badId && !paused ? "not-an-id" : fault.substituted && paused ? "e".repeat(64) : containerId,
         Name: `/${resources.containers.install}`, Image: image,
-        Config: { User: "12001:12001", Labels: { "api-migrator.fixture-job": jobId } },
+        Config: { User: "12001:12001", Labels: { "api-migrator.fixture-job": resources.jobId } },
         HostConfig: { NetworkMode: "host", UsernsMode: "", Privileged: false },
         State: { Running: !(fault.stopped && paused), Paused: fault.alreadyPaused || (fault.unpaused && retained ? false : paused), Pid: fault.pid && paused ? 4321 : 1234 },
       }]) };
@@ -57,7 +58,7 @@ function boundary(fault = {}) {
     cancelInstall: true, evidence: { write(label, bytes) {
       events.push(`evidence:${label}`);
       if (fault.evidence) throw new Error("SECRET evidence failure");
-      assert.deepEqual(JSON.parse(bytes), { jobId, image, containerId, uidObserved: true, containerPaused: true, clientSignal: "SIGKILL", containerRetained: true });
+      assert.deepEqual(JSON.parse(bytes), { jobId: resources.jobId, image, containerId, uidObserved: true, containerPaused: true, clientSignal: "SIGKILL", containerRetained: true });
     } } });
   const operations = Object.fromEntries(["installPolicy", "prepare", "startGateway", "probeOnline", "stopGateway", "assertOffline", "migrate", "verify"]
     .map((name) => [name, async () => { events.push(name); return { phaseIntegration: "passed" }; }]));
@@ -137,4 +138,57 @@ test("cancellation scenario owns a distinct resource namespace and round trips t
   assert.notEqual(resources.suffix, deriveFixtureResources(input).suffix);
   assert.notEqual(resources.suffix, deriveFixtureResources({ ...input, scenario: "install_failure" }).suffix);
   assert.equal(fixture.parseImageLifecycleFixtureCli(["--image", image, "--output-dir", "/tmp/api-migrator-fixture-results/123-install_cancel", "--scenario", "install_cancel"]).scenario, "install_cancel");
+});
+
+
+test("joined operation guard preserves genuine cancellation only while its original plan is fresh", async () => {
+  for (const stale of [false, true]) {
+    const base = 1800000000000;
+    const plan = createPublicationRunnerPlan({ pilotId: "pilot_fixture", repository: { slug: "owner/repo", id: 1, ownerId: 2 },
+      base: { branch: "main", sha: "b".repeat(40) }, sourceArchiveDigest: image, manifestDigest: image, imageDigest: image,
+      migrationInstallEgress: [{ host: "registry.npmjs.org", protocol: "tcp", port: 443, tls: true,
+        addresses: ["104.16.1.35"], resolutionEvidenceDigest: image, resolutionObservedAt: base, resolutionExpiresAt: base + 120000 }],
+      now: base, expiresAt: base + 120000 });
+    const value = boundary({ jobId: plan.plan.job.id });
+    let wall = base, routes = 0, upstream = 0, rejected = 0;
+    const counters = () => ({ redirect: routes, runnerV4: routes, runnerV6: routes,
+      gatewayV4: upstream, gatewayV6: 0, gatewayDownstreamV4: upstream, gatewayDownstreamV6: 0,
+      gatewayReject: rejected, runnerReject: routes });
+    const operations = fixture.createImageFixtureOperations({ plan, image, scenario: "install_cancel",
+      paths: Object.fromEntries(["planPath", "sourcePath", "installation", "dependencies", "output", "result"]
+        .map((name) => [name, `/tmp/joined-cancellation-${name}`])),
+      now: () => wall, elapsedNow: () => 0, evidence: { write() {} },
+      native: {
+        installPolicy() {}, startGateway: async () => ({ uid: 12002, listeners: ["127.0.0.1", "::1"] }),
+        counters, probe(name) { routes += 1;
+          if (["correct_sni", "correct_sni_ipv6", "direct_bypass"].includes(name)) upstream += 1;
+          if (name === "non_npm") rejected += 1;
+        }, cleanup: value.operations.cleanup,
+      },
+      execute: async (request) => {
+        if (request.phase === "prepare") return `runner_phase=prepare status=passed prepared_state_digest=${image}\n`;
+        assert.equal(request.phase, "install");
+        try { return await value.execute(); }
+        catch (error) {
+          assert.equal(native.getFixtureInstallCancellation(error).jobId, plan.plan.job.id,
+            "the original error must carry actual native cancellation proof for this plan");
+          if (stale) wall += 120000;
+          throw error;
+        }
+      },
+    });
+    if (stale) {
+      await assert.rejects(fixture.runImageFixtureScenario(operations, "install_cancel"), (error) => {
+        assert.equal(native.getFixtureInstallCancellation(error), undefined);
+        assert.match(fixture.formatFixtureFailure(error), /stage=install.complete/);
+        return true;
+      });
+    } else {
+      const result = await fixture.runImageFixtureScenario(operations, "install_cancel");
+      assert.equal(result.phaseIntegration, "expected_install_cancellation");
+      assert.equal(result.cancellationProof.jobId, plan.plan.job.id);
+    }
+    assert.equal(value.residual(), false, "cleanup must remove the retained paused container in both outcomes");
+    assert.equal(value.events.at(-1), "table");
+  }
 });

@@ -27,6 +27,7 @@ import { annotateFixtureFailure } from "./fixture-diagnostics.mjs";
 import {
   canonicalJson,
   renderGatewayDeployment,
+  validateGatewayDeploymentRecord,
 } from "../gateway/gateway-contract.mjs";
 import {
   HOSTED_SMOKE_EVENT_ORDER,
@@ -62,10 +63,16 @@ const PLAN_MIN_MS = 60_000;
 const DNS_PLAN_CREATION_BUDGET_MS = 5_000;
 const DNS_MIN_TTL_SECONDS = (PLAN_MIN_MS + DNS_PLAN_CREATION_BUDGET_MS) / 1000;
 const DNS_REFRESH_WAIT_MAX_MS = 90_000;
+// A subfloor joined answer has an integer residual TTL at most 119s. Allow
+// expiry plus the unchanged 5s retry alignment before creating any plan.
+const JOINED_DNS_REFRESH_WAIT_MAX_MS = 125_000;
 const DNS_RETRY_INTERVAL_MS = 5_000;
 const DNS_MAX_ATTEMPTS = 100;
 const DNS_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
 const DNS_RESOLUTION_TIMEOUT = Symbol("hosted smoke DNS resolution timeout");
+const GATEWAY_START_COMMAND_TIMEOUT_MS = 5_000;
+const GATEWAY_START_JOB_TIMEOUT_MS = 5_000;
+const GATEWAY_ACTIVATION_AND_SHUTDOWN_RESERVE_MS = 20_000;
 const HOSTED_SMOKE_RUNNER_ACCOUNT = "api-migrator-smoke-runner";
 const HOSTED_SMOKE_GATEWAY_ACCOUNT = "api-migrator-smoke-gateway";
 const TOOL_SPECS = Object.freeze({
@@ -158,6 +165,13 @@ export async function resolveHostedNpmOrigin(options = {}) {
     ? DNS_MIN_TTL_SECONDS : options.requiredMinimumTtlSeconds;
   if (!Number.isSafeInteger(requiredMinimumTtlSeconds) || requiredMinimumTtlSeconds < DNS_MIN_TTL_SECONDS ||
       requiredMinimumTtlSeconds > 1800) throw new Error("hosted smoke npm DNS TTL requirement is invalid");
+  const acquisitionProfile = options.acquisitionProfile ?? "hosted-smoke";
+  if (!["hosted-smoke", "joined-image"].includes(acquisitionProfile) ||
+      (acquisitionProfile === "joined-image" && requiredMinimumTtlSeconds !== 120)) {
+    throw new Error("hosted smoke npm DNS acquisition profile is invalid");
+  }
+  const acquisitionBudgetMs = acquisitionProfile === "joined-image"
+    ? JOINED_DNS_REFRESH_WAIT_MAX_MS : DNS_REFRESH_WAIT_MAX_MS;
   const nativeResolver = options.resolver === undefined ? new Resolver() : null;
   const resolver = options.resolver ?? ((...args) => nativeResolver.resolve4(...args));
   const cancelResolver = options.cancelResolver ?? (() => nativeResolver?.cancel());
@@ -171,6 +185,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
   const entries = [];
   let startedAt = null;
   let lastElapsed = null;
+  let clockFailure;
   let activeAttempt = null;
   let currentAnswerCount = null;
   let outcome = "internal_error";
@@ -180,9 +195,12 @@ export async function resolveHostedNpmOrigin(options = {}) {
   let highestObservedTtlSeconds = null;
   let lastAnswerCount = 0;
   const readElapsedNow = () => {
+    if (clockFailure) throw clockFailure;
     const value = elapsedNow();
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new Error("hosted smoke npm DNS elapsed clock is invalid");
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 ||
+        (lastElapsed !== null && value < lastElapsed)) {
+      clockFailure = new Error("hosted smoke npm DNS elapsed clock is invalid");
+      throw clockFailure;
     }
     lastElapsed = value;
     return value;
@@ -246,7 +264,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
 
   try {
     startedAt = readElapsedNow();
-    const deadline = startedAt + DNS_REFRESH_WAIT_MAX_MS;
+    const deadline = startedAt + acquisitionBudgetMs;
     while (true) {
       const attemptStartedAt = readElapsedNow();
       if (attempts > 0 && attemptStartedAt >= deadline) {
@@ -361,7 +379,7 @@ export async function resolveHostedNpmOrigin(options = {}) {
             resolverServerCount,
           },
           requiredMinimumTtlSeconds,
-          budgetMs: DNS_REFRESH_WAIT_MAX_MS,
+          budgetMs: acquisitionBudgetMs,
           retryIntervalMs: DNS_RETRY_INTERVAL_MS,
           attempts,
           elapsedMs: milliseconds(lastElapsed, startedAt),
@@ -525,19 +543,35 @@ function readOsRelease() {
   return values;
 }
 
-async function waitFor(predicate, label, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const value = await predicate();
-      if (value) return value;
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+async function waitFor(predicate, label, timeoutMs = 20_000, {
+  elapsedNow = () => performance.now(), expiresAt = Infinity,
+  sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
+} = {}) {
+  let observed = elapsedNow();
+  if (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0) {
+    throw new Error("hosted smoke elapsed clock is invalid");
   }
-  throw new Error(`hosted smoke timed out waiting for ${label}${lastError instanceof Error ? `: ${lastError.message}` : ""}`);
+  const deadline = Math.min(observed + timeoutMs, expiresAt);
+  const remaining = () => {
+    const current = elapsedNow();
+    if (typeof current !== "number" || !Number.isFinite(current) || current < observed) {
+      throw new Error("hosted smoke elapsed clock is invalid");
+    }
+    observed = current;
+    return deadline - current;
+  };
+  let lastError;
+  while (remaining() > 0) {
+    let value;
+    try { value = await predicate(); }
+    catch (error) { lastError = error; }
+    // A slow observation cannot turn an expired wait into success.
+    if (remaining() <= 0) break;
+    if (value) return value;
+    await sleep(Math.min(100, remaining()));
+  }
+  throw annotateFixtureFailure(new Error(`hosted smoke timed out waiting for ${label}${lastError instanceof Error ? `: ${lastError.message}` : ""}`),
+    { category: "deadline", timedOut: true, commandBudgetMs: timeoutMs });
 }
 
 function pidsForUid(uid) {
@@ -585,13 +619,13 @@ export function validateHostedSmokeAccounts(passwdText, groupText) {
   });
 }
 
-function unitSnapshot(systemctlPath, unit) {
-  const result = runCommand(systemctlPath, [
+function unitSnapshot(systemctlPath, unit, { command = runCommand, timeoutMs } = {}) {
+  const result = command(systemctlPath, [
     "show", unit, "--no-pager",
     "--property=LoadState", "--property=ActiveState", "--property=SubState",
     "--property=MainPID", "--property=InvocationID", "--property=ControlGroup",
     "--property=Result", "--property=ExecMainCode", "--property=ExecMainStatus",
-  ]);
+  ], { timeoutMs });
   const expectedNames = new Set([
     "LoadState", "ActiveState", "SubState", "MainPID", "InvocationID", "ControlGroup",
     "Result", "ExecMainCode", "ExecMainStatus",
@@ -780,8 +814,11 @@ function nativeValidate(rendered, tools, evidence) {
   });
 }
 
-function installPolicy(rendered, resources, tools, evidence) {
-  runCommand(tools.nft, ["-f", rendered.nftablesPolicyPath]);
+function installPolicy(rendered, resources, tools, evidence, { now = Date.now, command = runCommand } = {}) {
+  // Native validation can consume the bound answer's lifetime. Refuse the next
+  // host mutation unless the exact contract still has a usable launch window.
+  gatewayStartWindow(rendered, now);
+  command(tools.nft, ["-f", rendered.nftablesPolicyPath]);
   const snapshot = tableSnapshot(tools.nft, resources.nftTable);
   if (sha256Bytes(Buffer.from(rendered.deployment.nftablesPolicy, "utf8")) !== rendered.deployment.nftablesPolicyDigest) {
     throw new Error("hosted smoke rendered nftables policy digest drifted before install");
@@ -789,15 +826,69 @@ function installPolicy(rendered, resources, tools, evidence) {
   return evidence.write("nftables-policy-installed", snapshot.text);
 }
 
-function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSeconds } = {}) {
+function gatewayStartWindow(rendered, now, maximumRuntimeSeconds) {
   if (maximumRuntimeSeconds !== undefined && (!Number.isSafeInteger(maximumRuntimeSeconds) || maximumRuntimeSeconds < 1 || maximumRuntimeSeconds > 840)) {
     throw new Error("fixture gateway maximum lifetime is invalid");
   }
+  const { contract } = validateGatewayDeploymentRecord(rendered?.deployment);
+  const observedAt = now();
+  const expiresAt = Math.min(contract.plan.expiresAt, contract.origin.resolutionExpiresAt);
+  if (!Number.isSafeInteger(observedAt) || observedAt < contract.plan.createdAt || observedAt >= expiresAt) {
+    throw new Error("hosted gateway startup lifetime clock is invalid or outside its active window");
+  }
+  // RuntimeMaxSec starts at activation, not command submission. Allow for the
+  // bounded client command and queued job, then reserve five seconds for final
+  // activation and fifteen for stop/kill (TimeoutStopSec is ten seconds).
+  // Floor seconds with an additional strict expiry margin.
+  const seconds = Math.floor((expiresAt - observedAt - GATEWAY_START_COMMAND_TIMEOUT_MS -
+    GATEWAY_START_JOB_TIMEOUT_MS - GATEWAY_ACTIVATION_AND_SHUTDOWN_RESERVE_MS - 1) / 1000);
+  if (seconds < 1) throw new Error("hosted gateway startup window lacks a complete bounded lifetime");
+  return { observedAt, expiresAt, maximumRuntimeSeconds: Math.min(seconds, maximumRuntimeSeconds ?? seconds) };
+}
+
+function gatewayAdmissionClock(monotonicNow) {
+  const value = monotonicNow();
+  if (typeof value !== "bigint" || value < 0n) {
+    throw new Error("hosted gateway native monotonic admission clock is invalid");
+  }
+  return value;
+}
+
+function gatewayNativeAdmissionGuard(window, admittedAt) {
+  // systemd re-arms TimeoutStartSec independently for ExecStartPre and the
+  // main start. Reserve the rest of pre-start even after its clock read.
+  const reserveMs = window.maximumRuntimeSeconds * 1000 + GATEWAY_START_JOB_TIMEOUT_MS +
+    GATEWAY_ACTIVATION_AND_SHUTDOWN_RESERVE_MS;
+  const expiresAt = admittedAt + BigInt(window.expiresAt - window.observedAt) * 1_000_000n;
+  const queueDeadline = admittedAt + BigInt(GATEWAY_START_COMMAND_TIMEOUT_MS + GATEWAY_START_JOB_TIMEOUT_MS) * 1_000_000n;
+  // Linux Node uses the same kernel monotonic clock across processes. Run this
+  // in the native unit before Envoy, so a queued job cannot start after expiry
+  // even when the controller exits. All interpolated values are canonical
+  // integers; no caller command, path, environment or source is evaluated.
+  return `const w=Date.now(),m=process.hrtime.bigint();if(!Number.isSafeInteger(w)||w<${window.observedAt}||w+${reserveMs}>=${window.expiresAt}||m<${admittedAt}n||m>=${queueDeadline}n||m+${BigInt(reserveMs) * 1_000_000n}n>=${expiresAt}n)process.exit(1);`;
+}
+
+function gatewaySystemdArguments(resources, rendered, tools, {
+  maximumRuntimeSeconds, now = Date.now, monotonicNow = () => process.hrtime.bigint(),
+} = {}) {
+  const admittedAt = gatewayAdmissionClock(monotonicNow);
+  const window = gatewayStartWindow(rendered, now, maximumRuntimeSeconds);
+  return gatewayArguments(resources, rendered, tools, window, admittedAt);
+}
+
+function gatewayArguments(resources, rendered, tools, window, admittedAt) {
+  if (typeof tools.node !== "string" || !/^\/[A-Za-z0-9._/-]+$/.test(tools.node)) {
+    throw new Error("hosted gateway sealed native Node path is invalid");
+  }
+  const admission = gatewayNativeAdmissionGuard(window, admittedAt);
   return [
     `--unit=${resources.gatewayUnit}`,
     "--collect",
     "--quiet",
     "--property=Type=exec",
+    `--property=JobRunningTimeoutSec=${GATEWAY_START_JOB_TIMEOUT_MS / 1000}s`,
+    `--property=ExecStartPre=${tools.node} --jitless --no-expose-wasm --eval ${JSON.stringify(admission)}`,
+    `--property=TimeoutStartSec=${GATEWAY_START_JOB_TIMEOUT_MS / 1000}s`,
     `--property=User=${HOSTED_SMOKE_GATEWAY_UID}`,
     `--property=Group=${HOSTED_SMOKE_GATEWAY_UID}`,
     "--property=NoNewPrivileges=yes",
@@ -812,7 +903,7 @@ function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSec
     "--property=TimeoutStopSec=10s",
     "--property=StandardOutput=journal",
     "--property=StandardError=journal",
-    ...(maximumRuntimeSeconds === undefined ? [] : [`--property=RuntimeMaxSec=${maximumRuntimeSeconds}s`]),
+    `--property=RuntimeMaxSec=${window.maximumRuntimeSeconds}s`,
     tools.envoy,
     "--disable-hot-restart",
     "--concurrency", "1",
@@ -822,8 +913,34 @@ function gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSec
   ];
 }
 
-async function startGateway(resources, rendered, tools, evidence, options) {
-  runCommand(tools.systemdRun, gatewaySystemdArguments(resources, rendered, tools, options));
+async function startGateway(resources, rendered, tools, evidence, {
+  maximumRuntimeSeconds, now = Date.now, elapsedNow = () => performance.now(),
+  monotonicNow = () => process.hrtime.bigint(), command = runCommand,
+} = {}) {
+  const admittedAt = gatewayAdmissionClock(monotonicNow);
+  const elapsedStartedAt = elapsedNow();
+  if (typeof elapsedStartedAt !== "number" || !Number.isFinite(elapsedStartedAt)) {
+    throw new Error("hosted gateway startup elapsed clock is invalid");
+  }
+  const window = gatewayStartWindow(rendered, now, maximumRuntimeSeconds);
+  const assertCurrent = (reservedCommandMs) => {
+    const wall = now(), elapsed = elapsedNow();
+    const age = elapsed - elapsedStartedAt;
+    const startupPending = reservedCommandMs !== undefined;
+    const selectedLifetimeMs = window.maximumRuntimeSeconds * 1000 + GATEWAY_START_JOB_TIMEOUT_MS +
+      GATEWAY_ACTIVATION_AND_SHUTDOWN_RESERVE_MS + (reservedCommandMs ?? 0);
+    if (!Number.isSafeInteger(wall) || wall < window.observedAt || wall >= window.expiresAt ||
+        typeof elapsed !== "number" || !Number.isFinite(elapsed) || age < 0 ||
+        age >= window.expiresAt - window.observedAt ||
+        (startupPending && (age >= GATEWAY_START_COMMAND_TIMEOUT_MS ||
+          selectedLifetimeMs >= window.expiresAt - wall))) {
+      throw new Error("hosted gateway startup clock or lifetime budget was exhausted");
+    }
+  };
+  const args = gatewayArguments(resources, rendered, tools, window, admittedAt);
+  assertCurrent(GATEWAY_START_COMMAND_TIMEOUT_MS);
+  command(tools.systemdRun, args, { timeoutMs: GATEWAY_START_COMMAND_TIMEOUT_MS });
+  assertCurrent(0);
   const identity = await waitFor(() => {
     const snapshot = unitSnapshot(tools.systemctl, resources.gatewayUnit);
     if (snapshot.values.ActiveState !== "active" || snapshot.values.SubState !== "running") return false;
@@ -842,6 +959,7 @@ async function startGateway(resources, rendered, tools, evidence, options) {
     const namespace = readlinkSync(`/proc/${pid}/ns/net`);
     return Object.freeze({ pid, cgroup, namespace, invocationId: snapshot.values.InvocationID, snapshot });
   }, "the exact gateway process");
+  assertCurrent();
   const digest = evidence.write("gateway-start", canonicalJson({
     unit: resources.gatewayUnit,
     pid: identity.pid,
@@ -970,20 +1088,56 @@ async function runFaultScenario(name, resources, tools, evidence) {
   }));
 }
 
-async function stopExactUnit(unit, tools) {
-  const before = unitSnapshot(tools.systemctl, unit);
+async function stopExactUnit(unit, tools, {
+  timeoutMs, command = runCommand, elapsedNow = () => performance.now(),
+  sleep, cgroupAbsent = cgroupIsAbsent,
+} = {}) {
+  const bounded = timeoutMs !== undefined;
+  if (bounded && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1200000)) {
+    throw new Error("hosted smoke stop deadline budget is invalid");
+  }
+  let observed = bounded ? elapsedNow() : undefined;
+  if (bounded && (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0)) {
+    throw new Error("hosted smoke stop elapsed clock is invalid");
+  }
+  const expiresAt = bounded ? observed + timeoutMs : Infinity;
+  const remaining = () => {
+    const current = elapsedNow();
+    if (typeof current !== "number" || !Number.isFinite(current) || current < observed) {
+      throw new Error("hosted smoke stop elapsed clock is invalid");
+    }
+    observed = current;
+    if (current >= expiresAt) throw annotateFixtureFailure(new Error("hosted smoke stop deadline exceeded"),
+      { category: "deadline", timedOut: true, commandBudgetMs: timeoutMs });
+    return Math.max(1, Math.floor(expiresAt - current));
+  };
+  const snapshot = () => {
+    const value = unitSnapshot(tools.systemctl, unit, { command, timeoutMs: bounded ? remaining() : undefined });
+    if (bounded) remaining();
+    return value;
+  };
+  const before = snapshot();
   const expectedCgroup = `/system.slice/${unit}`;
   if (before.values.ControlGroup && before.values.ControlGroup !== expectedCgroup) {
     throw new Error(`hosted smoke ${unit} cgroup is substituted`);
   }
   if (before.values.LoadState && before.values.LoadState !== "not-found" && before.values.ActiveState !== "inactive") {
-    runCommand(tools.systemctl, ["stop", unit], { allowFailure: true, timeoutMs: 20_000 });
+    command(tools.systemctl, ["stop", unit], { allowFailure: true, timeoutMs: bounded ? Math.min(20_000, remaining()) : 20_000 });
+    if (bounded) remaining();
   }
-  runCommand(tools.systemctl, ["reset-failed", unit], { allowFailure: true });
-  const after = await waitFor(() => {
-    const snapshot = unitSnapshot(tools.systemctl, unit);
-    return snapshot.values.LoadState === "not-found" && cgroupIsAbsent(expectedCgroup) ? snapshot : false;
-  }, `${unit} unload and cgroup removal`, 20_000);
+  command(tools.systemctl, ["reset-failed", unit], { allowFailure: true, timeoutMs: bounded ? remaining() : undefined });
+  if (bounded) remaining();
+  let after;
+  try {
+    after = await waitFor(() => {
+      const value = snapshot();
+      return value.values.LoadState === "not-found" && cgroupAbsent(expectedCgroup) ? value : false;
+    }, `${unit} unload and cgroup removal`, 20_000, { elapsedNow, expiresAt, sleep });
+  } catch (error) {
+    if (bounded) remaining();
+    throw error;
+  }
+  if (bounded) remaining();
   return Object.freeze({ before, after, cgroup: expectedCgroup, absent: true });
 }
 

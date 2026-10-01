@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { validateFixtureContainer, assertFixtureDockerDaemon, executeNativeFixturePhase, createFixtureNative } from "../fixture-native.mjs";
 import { gatewaySystemdArguments, runCommand } from "../run-hosted-smoke.mjs";
+import { renderGatewayDeployment } from "../../gateway/gateway-contract.mjs";
 import { atFixtureStage } from "../fixture-diagnostics.mjs";
 import { formatFixtureFailure } from "../run-image-lifecycle-fixture.mjs";
 import { EventEmitter } from "node:events";
@@ -85,16 +86,18 @@ test("host UID attribution refuses rootless/user-remapped or remote daemon profi
   }
 });
 
-test("fixture gateway enforces a systemd deadline while legacy smoke arguments stay unchanged", () => {
+test("fixture runtime remains an upper cap on the mandatory hosted gateway deadline", () => {
   const resources = { gatewayUnit: "api-migrator-fixture-gateway-a.service" };
-  const rendered = { envoyConfigPath: "/run/exact/envoy.json" };
-  const tools = { envoy: "/usr/local/libexec/exact/envoy" };
-  const original = gatewaySystemdArguments(resources, rendered, tools);
-  assert(!original.some((arg) => arg.includes("RuntimeMaxSec")));
-  const bounded = gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSeconds: 45 });
+  const contract = JSON.parse(readFileSync(new URL("../../gateway/examples/gateway-contract.example.json", import.meta.url), "utf8"));
+  const rendered = { deployment: renderGatewayDeployment(contract), envoyConfigPath: "/run/exact/envoy.json" };
+  const tools = { node: "/usr/local/libexec/exact/node", envoy: "/usr/local/libexec/exact/envoy" };
+  const now = () => contract.plan.createdAt;
+  const original = gatewaySystemdArguments(resources, rendered, tools, { now });
+  assert(original.includes("--property=RuntimeMaxSec=569s"));
+  const bounded = gatewaySystemdArguments(resources, rendered, tools, { now, maximumRuntimeSeconds: 45 });
   assert(bounded.includes("--property=RuntimeMaxSec=45s"));
   assert(bounded.indexOf("--property=RuntimeMaxSec=45s") < bounded.indexOf(tools.envoy));
-  for (const seconds of [0, -1, 1000, NaN]) assert.throws(() => gatewaySystemdArguments(resources, rendered, tools, { maximumRuntimeSeconds: seconds }));
+  for (const seconds of [0, -1, 1000, NaN]) assert.throws(() => gatewaySystemdArguments(resources, rendered, tools, { now, maximumRuntimeSeconds: seconds }));
 });
 
 test("native execution requires live host UID evidence, bounded output and settled container identity", async () => {
@@ -279,4 +282,18 @@ exec /bin/sleep 3
   const alive = () => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; } };
   for (let attempt = 0; attempt < 40 && alive(); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(alive(), false, "cancelled Docker observation subprocess must be reaped");
+});
+
+
+test("native execution gateway stop bounds its real systemctl observation to the admitted lifetime", async () => {
+  const native = createFixtureNative({ resources: { gatewayUnit: "api-migrator-fixture-gateway-budget.service" },
+    tools: { systemctl: process.execPath } });
+  // Node rejects systemctl's fixed show argv without changing any service.
+  await assert.rejects(atFixtureStage("stopGateway", "host_operation", () => native.stopGateway()), (error) => {
+    const diagnostic = formatFixtureFailure(error);
+    const budget = Number(/commandBudgetMs=([0-9]+)/.exec(diagnostic)?.[1]);
+    assert.match(diagnostic, /stage=stopGateway, category=subprocess_exit/);
+    assert(budget > 0 && budget <= 15000, "the initial native observation must consume the execution stop budget");
+    return true;
+  });
 });

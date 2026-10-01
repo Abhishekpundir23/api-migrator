@@ -114,7 +114,10 @@ export function createRunnerEvidenceDeadline(
           // Cleanup is best effort and never exposes a raw resource error.
         }
       };
-      const pending = Promise.resolve().then(() => operation(controller.signal));
+      const pending = Promise.resolve().then(() => {
+        check();
+        return operation(controller.signal);
+      });
       void pending.then(
         (value) => { if (controller.signal.aborted) void dispose(value); },
         () => undefined,

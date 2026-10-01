@@ -35,6 +35,17 @@ Until that sequence exists and passes a disposable-Linux drill:
 - every unsigned request has `eligibleForExternalSigning: false` and
   `authorizationStatus: blocked_pending_linux_gateway_lifecycle_drill`.
 
+The observation contract now records two separate stages. The first retains
+successful `active/exited` execution facts and the exact invocation/cgroup after
+`wrapper_local_teardown_complete`. A later completed-stop record must prove
+`inactive/dead`, successful sealed `ExecStopPost`, the same invocation/cgroup,
+and final cgroup absence. Teardown observations follow that stop, before plan
+expiry. This avoids claiming that an active `RemainAfterExit=yes` unit already
+ran its stop cleanup. The schema fixtures exercise these bindings only; a
+trusted independent two-stage producer is still missing. Both the live CLI and
+exported one-point collector refuse execution, and the observer unit template
+remains a blocked candidate. These records cannot authorize signing.
+
 `lifecycle-drill.mjs` cross-binds one reference v2 job, host profile, canonical
 plan, and rendered gateway. Its scenario matrix defines 17 **independent**
 disposable-host jobs; it does not claim those jobs ran. Its aggregate validator
@@ -194,6 +205,30 @@ are unchanged. Diagnostic capture does not fix intermittent upstream DNS
 freshness failures. Inspect an instrumented hosted run before choosing a
 functional retry or resolver change.
 
+Every hosted and joined-fixture gateway launch requires a canonical rendered
+contract and an independent systemd `RuntimeMaxSec` bound. Native validation
+delay is checked before policy installation; setup age is checked again at
+launch and consumes the original earliest plan/DNS expiry. Startup reserves
+five seconds for the client command, five seconds for the queued job, five
+seconds for service activation, and fifteen seconds for stop/kill (including
+the ten-second `TimeoutStopSec`). Whole-second runtime is rounded down to finish
+strictly before expiry. The command uses the same five-second timeout;
+The supported `JobRunningTimeoutSec` bounds a job once it runs; it cannot bound
+waiting in the queue by itself. A native `ExecStartPre` guard uses the sealed
+Node executable with JIT/Wasm disabled under `MemoryDenyWriteExecute`. Before
+Envoy can start, it rejects admission at or after the combined ten-second
+client/queue allowance and requires the full selected runtime plus 25 seconds
+for pre-start completion, main activation and shutdown to fit both canonical wall expiry and the same Linux kernel
+monotonic clock. This guard remains effective if the controller exits.
+`TimeoutStartSec` separately bounds native startup phases.
+An optional joined-fixture runtime is an additional upper cap. Invalid,
+expired, or insufficient windows refuse the relevant host mutation, and
+the selected runtime must still fit at command submission and completion;
+readiness after clock rollback or budget expiry fails.
+Systemd retains its independent deadline if the JavaScript controller exits.
+These guards strengthen lifetime enforcement; they do not fix upstream
+short-TTL admission failures or establish native enforcement from unit tests.
+
 ## Joined runner-image fixture
 
 [`runner-lifecycle-fixture.yml`](../../../.github/workflows/runner-lifecycle-fixture.yml)
@@ -224,11 +259,18 @@ cleanup or failed evidence write cannot produce a passing result.
 The joined fixture admits only DNS answers with a complete-answer minimum TTL
 of at least 120 seconds. This is stronger admission headroom, not a guarantee
 that the worst-case lifecycle fits. The existing smoke retains its 65-second
-floor; both callers retain the same bounded 90-second acquisition window and
-5-second retry interval. Neither observed TTL nor observation time is extended
-or renewed. Each image phase still has a 45-second maximum and must fit before
-both plan and DNS expiry with a 30-second cleanup reserve. Freshness failures
-name the allowlisted stage, plan age, remaining plan/DNS lifetime, command
+floor and 90-second acquisition window. Joined acquisition has a fixed
+125-second window so a rejected cached answer with integer residual TTL up to
+119 seconds can expire before a retry. Both retain the 5-second retry interval.
+This provides a refresh opportunity; persistent short TTLs, slow queries and
+failed refresh still refuse admission. Neither accepted TTL nor its observation
+time is extended or renewed. Each image phase still has a 45-second maximum and must fit before
+both plan and DNS expiry with a 30-second cleanup reserve. One wall/elapsed
+anchor charges operations after construction; invalid or reversing clocks refuse
+admission. Phase completion is checked on both success and rejection before an
+expected install outcome can pass. Execution gateway stop consumes one shared
+15-second monotonic budget; cleanup keeps a separate unconditional stop attempt.
+Freshness failures name the allowlisted stage, plan age, remaining plan/DNS lifetime, command
 budget and cleanup reserve in bounded CLI output, including when cleanup also
 fails. Arbitrary error text, source and subprocess output are not printed.
 Other failures report fixed setup/operation/probe/phase stages and allowlisted
@@ -257,8 +299,12 @@ The three workflow scenarios are:
 
 The workflow seals its runtime, invokes it with an allowlisted environment, and
 runs `cleanup-image-lifecycle-fixture.mjs` plus a residual audit even after the
-main step fails. Only the bounded `fixture-report.json` summary is uploaded; the
-fixture checkout, raw source bundle and phase workspaces are not artifacts.
+main step fails. The bounded `fixture-report.json` summary and separately
+validated DNS diagnostics are uploaded. The DNS artifact survives admission
+failure before a final report exists and contains only allowlisted runtime,
+TTL, timing, count and digest fields. It cannot authorize execution or signing.
+The fixture checkout, raw source bundle, resolved addresses and phase
+workspaces are not artifacts.
 Every passing result fixes `securityDrill: false`, `selfAttested: true`,
 `releaseEvidenceEligible: false`, `activationBlocked: true`, and
 `externalSigningEligible: false`.

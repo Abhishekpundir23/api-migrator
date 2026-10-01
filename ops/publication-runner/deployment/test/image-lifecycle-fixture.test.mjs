@@ -90,9 +90,10 @@ function adapter(t, fault = {}) {
   const plan = createPublicationRunnerPlan({ pilotId: "pilot_fixture", repository: { slug: "owner/repo", id: 1, ownerId: 2 },
     base: { branch: "main", sha: "b".repeat(40) }, sourceArchiveDigest: image, manifestDigest: image, imageDigest: image,
     migrationInstallEgress: [{ host: "registry.npmjs.org", protocol: "tcp", port: 443, tls: true,
-      addresses: ["104.16.1.35"], resolutionEvidenceDigest: image, resolutionObservedAt: now, resolutionExpiresAt: now + 300000 }],
-    now, expiresAt: now + 300000 });
+      addresses: ["104.16.1.35"], resolutionEvidenceDigest: image, resolutionObservedAt: now, resolutionExpiresAt: now + (fault.ttlMs ?? 300000) }],
+    now, expiresAt: now + (fault.ttlMs ?? 300000) });
   const events = [], commands = [], writes = [];
+  const clock = fault.clock ?? { wallMs: 0, elapsedMs: 0 };
   let n = 0, upstream = 0, rejected = 0, online = false, elapsed = 0;
   const counters = () => ({ redirect: n, runnerV4: n, runnerV6: n,
     gatewayV4: upstream, gatewayV6: 0, gatewayDownstreamV4: upstream,
@@ -123,6 +124,7 @@ function adapter(t, fault = {}) {
   const digest = `sha256:${createHash("sha256").update(evidenceText).digest("hex")}`;
   const execute = async (request, options) => {
     commands.push({ ...request, ...options }); events.push(request.phase);
+    fault.afterExecute?.(request.phase);
     if (request.phase === "install") {
       if (fault.protocol) {
         assert(request.dockerArgs.includes(`sha256:${"0".repeat(64)}`));
@@ -138,7 +140,8 @@ function adapter(t, fault = {}) {
       verify: `runner_phase=verify status=passed evidence_digest=${digest} preflight_id=pf_${"d".repeat(64)}\n` }[request.phase];
   };
   const operations = createImageFixtureOperations({ plan, paths, image, native, execute,
-    now: () => fault.expired ? now + 300001 : now + elapsed,
+    now: () => fault.expired ? now + 300001 : now + elapsed + clock.wallMs,
+    elapsedNow: () => elapsed + clock.elapsedMs,
     evidence: { write: (label) => {
       if ((fault.write && label === "install-forced-route") || label === fault.writeLabel) throw new Error("evidence write failed");
       writes.push(label); return image;
@@ -255,7 +258,7 @@ test("joined acquisition failure stays actionable through cleanup without raw di
   const diagnostic = fixture.formatFixtureFailure(new AggregateError([
     failure, new Error("SECRET source=/private/source token=credential"),
   ], "SECRET cleanup stderr"));
-  assert.match(diagnostic, /fixture DNS admission failed \(reason=ttl_floor_exhausted, attempts=18, elapsedMs=90000, requiredMinimumTtlSeconds=120/);
+  assert.match(diagnostic, /fixture DNS admission failed \(reason=ttl_floor_exhausted, attempts=25, elapsedMs=125000, requiredMinimumTtlSeconds=120/);
   for (const fault of [
     { resolver: async () => { throw new Error("SECRET credential 104.16.0.34"); } },
     { resolver: async () => [{ address: "104.16.0.34", ttl: 120 }],
@@ -349,4 +352,63 @@ test("probe correlation boundaries retain the inner freshness diagnostic", async
   assert.deepEqual(commands.map((command) => command.phase), ["prepare"]);
   assert.deepEqual(events.slice(-2), ["gateway", "cleanup"]);
   assert.deepEqual(writes, []);
+});
+
+
+test("rejected install settlement cannot become expected failure after expiry", async (t) => {
+  for (const cleanup of [false, true]) {
+    const clock = { wallMs: 0, elapsedMs: 0 };
+    const value = adapter(t, { clock, scenario: "install_failure", protocol: true, cleanup,
+      afterExecute(phase) { if (phase === "install") clock.wallMs = 300000; } });
+    await assert.rejects(fixture.runImageFixtureScenario(value.operations, "install_failure"), (error) => {
+      assert.match(fixture.formatFixtureFailure(error), /stage=install.complete/);
+      assert.match(fixture.formatFixtureFailure(error), new RegExp(`cleanupFailed=${cleanup}`));
+      return true;
+    });
+    assert.equal(value.events.at(-1), "cleanup");
+    assert(!value.events.includes("migrate"));
+  }
+});
+
+for (const clockName of ["wallMs", "elapsedMs"]) {
+  test(`fixture refuses ${clockName} rollback after a previous operation`, async (t) => {
+    const clock = { wallMs: 0, elapsedMs: 0 };
+    const value = adapter(t, { clock });
+    await value.operations.installPolicy();
+    clock.wallMs = 20000; clock.elapsedMs = 20000;
+    await value.operations.prepare();
+    clock[clockName] = 19999;
+    await assert.rejects(value.operations.startGateway(), /clock|expired|lifetime/);
+    assert(!value.events.includes("gateway"));
+    await value.operations.cleanup();
+    assert.equal(value.events.at(-1), "cleanup");
+  });
+}
+
+test("stalled wall time cannot reuse the elapsed lifetime between phases", async (t) => {
+  const clock = { wallMs: 0, elapsedMs: 0 };
+  const value = adapter(t, { clock, ttlMs: 120000,
+    afterExecute(phase) { if (phase === "prepare") clock.elapsedMs = 45000; } });
+  await assert.rejects(runFixtureLifecycle(value.operations), /lifetime/);
+  assert.deepEqual(value.commands.map(({ phase }) => phase), ["prepare"]);
+  assert.equal(value.events.at(-1), "cleanup");
+});
+
+test("floor-120 phase admission charges setup age and the entire unchanged command budget", async (t) => {
+  for (const age of [44999, 45000]) {
+    const clock = { wallMs: 17, elapsedMs: 0 };
+    const value = adapter(t, { clock, ttlMs: 120000, afterProbesMs: age - 17 });
+    if (age === 44999) {
+      const result = await runFixtureLifecycle(value.operations);
+      assert.equal(result.phaseIntegration, "passed");
+      assert.deepEqual(value.commands.map(({ phase }) => phase), ["prepare", "install", "migrate", "verify"]);
+    } else {
+      await assert.rejects(runFixtureLifecycle(value.operations), (error) => {
+        assert.match(fixture.formatFixtureFailure(error), /stage=install.launch/);
+        return true;
+      });
+      assert.deepEqual(value.commands.map(({ phase }) => phase), ["prepare"]);
+    }
+    assert.equal(value.events.at(-1), "cleanup");
+  }
 });
