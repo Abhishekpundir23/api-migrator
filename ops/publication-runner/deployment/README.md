@@ -35,6 +35,17 @@ Until that sequence exists and passes a disposable-Linux drill:
 - every unsigned request has `eligibleForExternalSigning: false` and
   `authorizationStatus: blocked_pending_linux_gateway_lifecycle_drill`.
 
+The observation contract now records two separate stages. The first retains
+successful `active/exited` execution facts and the exact invocation/cgroup after
+`wrapper_local_teardown_complete`. A later completed-stop record must prove
+`inactive/dead`, successful sealed `ExecStopPost`, the same invocation/cgroup,
+and final cgroup absence. Teardown observations follow that stop, before plan
+expiry. This avoids claiming that an active `RemainAfterExit=yes` unit already
+ran its stop cleanup. The schema fixtures exercise these bindings only; a
+trusted independent two-stage producer is still missing. Both the live CLI and
+exported one-point collector refuse execution, and the observer unit template
+remains a blocked candidate. These records cannot authorize signing.
+
 `lifecycle-drill.mjs` cross-binds one reference v2 job, host profile, canonical
 plan, and rendered gateway. Its scenario matrix defines 17 **independent**
 disposable-host jobs; it does not claim those jobs ran. Its aggregate validator

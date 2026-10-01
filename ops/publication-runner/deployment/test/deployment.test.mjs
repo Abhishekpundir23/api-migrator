@@ -18,6 +18,7 @@ import {
   buildObservation,
   buildUnsignedSigningRequest,
   canonicalJson,
+  collectLiveSnapshot,
   computeNormalizedTreeDigest,
   computeRunnerOutputIdentity,
   deriveRunnerContainerSet,
@@ -248,6 +249,14 @@ function fixture() {
     schemaVersion: 1,
     kind: "api_migrator_runner_live_snapshot",
     capturedAt: NOW + 20_000,
+    executionObservedAt: NOW + 18_000,
+    stop: {
+      unitName: "api-migrator-runner.service", invocationId: INVOCATION,
+      controlGroup: "/system.slice/api-migrator-runner.service",
+      activeState: "inactive", subState: "dead", result: "success",
+      execStopPostCode: 1, execStopPostStatus: 0, cgroupAbsent: true,
+      observedAt: NOW + 18_500,
+    },
     systemd: {
       unitName: "api-migrator-runner.service",
       invocationId: INVOCATION,
@@ -894,4 +903,78 @@ test("parses only finite exact systemd duration output", () => {
   assert.throws(() => parseSystemdDurationUSec("infinity"), /not finite/);
   assert.throws(() => parseSystemdDurationUSec("1.5s"), /unsupported/);
   assert.throws(() => parseSystemdDurationUSec("10 min"), /unsupported/);
+});
+
+function completedStopSnapshot(fx) {
+  const snapshot = structuredClone(fx.snapshot);
+  snapshot.executionObservedAt = NOW + 18_000;
+  snapshot.stop = {
+    unitName: "api-migrator-runner.service", invocationId: INVOCATION,
+    controlGroup: "/system.slice/api-migrator-runner.service",
+    activeState: "inactive", subState: "dead", result: "success",
+    execStopPostCode: 1, execStopPostStatus: 0, cgroupAbsent: true,
+    observedAt: NOW + 18_500,
+  };
+  return snapshot;
+}
+
+test("active exited execution alone cannot claim completed sealed cleanup", () => {
+  const fx = fixture();
+  try {
+    const singleStage = structuredClone(fx.snapshot);
+    delete singleStage.executionObservedAt;
+    delete singleStage.stop;
+    assert.throws(() => build(fx, { snapshot: singleStage }), /independent live snapshot/);
+    singleStage.teardown.nftablesTableAbsent = false;
+    assert.throws(() => build(fx, { snapshot: singleStage }), /independent live snapshot/);
+    singleStage.systemd.activeState = "inactive";
+    singleStage.systemd.subState = "dead";
+    singleStage.teardown.nftablesTableAbsent = true;
+    assert.throws(() => build(fx, { snapshot: singleStage }), /independent live snapshot/);
+  } finally { fx.cleanup(); }
+});
+
+test("completed stop is separate from the successful execution invocation and remains unsigned", () => {
+  const fx = fixture();
+  try {
+    const observation = build(fx, { snapshot: completedStopSnapshot(fx) });
+    assert.equal(observation.systemd.activeState, "active");
+    assert.equal(observation.systemd.subState, "exited");
+    assert.equal(observation.executionObservedAt, NOW + 18_000);
+    assert.equal(observation.stop.activeState, "inactive");
+    assert.equal(observation.stop.subState, "dead");
+    assert.equal(observation.stop.invocationId, observation.systemdInvocation);
+    const request = buildUnsignedSigningRequest(observation).request;
+    assert.equal(request.unsigned, true);
+    assert.equal(request.eligibleForExternalSigning, false);
+    assert.equal(deploymentSchemaValidator().validate(
+      "https://api-migrator.invalid/schemas/runner-unsigned-signing-request-v1.json", request), true);
+  } finally { fx.cleanup(); }
+});
+
+test("completed stop refuses substituted identities, pending or failed cleanup and invalid ordering", () => {
+  const fx = fixture();
+  try {
+    for (const [field, value] of [
+      ["unitName", "other.service"], ["invocationId", "f".repeat(32)],
+      ["controlGroup", "/system.slice/other.service"],
+      ["activeState", "active"], ["subState", "exited"], ["result", "exit-code"],
+      ["execStopPostCode", 2], ["execStopPostStatus", 1], ["cgroupAbsent", false],
+      ["observedAt", NOW + 17_999], ["observedAt", NOW + 19_001],
+    ]) {
+      const snapshot = completedStopSnapshot(fx);
+      snapshot.stop[field] = value;
+      assert.throws(() => build(fx, { snapshot }), /stop|timeline/, field);
+    }
+    const beforeLocalCleanup = completedStopSnapshot(fx);
+    beforeLocalCleanup.executionObservedAt = NOW + 17_999;
+    assert.throws(() => build(fx, { snapshot: beforeLocalCleanup }), /wrapper teardown/);
+    const incomplete = completedStopSnapshot(fx);
+    incomplete.teardown.nftablesTableAbsent = false;
+    assert.throws(() => build(fx, { snapshot: incomplete }), /teardown snapshot is incomplete/);
+  } finally { fx.cleanup(); }
+});
+
+test("one-point live collector refuses until independent two-stage stop evidence exists", () => {
+  assert.throws(() => collectLiveSnapshot({}), /live runner observation is disabled/);
 });

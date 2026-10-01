@@ -4,7 +4,7 @@
   "title": "API Migrator independent runner observation v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "kind", "unsigned", "linuxDrillRequired", "observationMode", "jobId", "planDigest", "systemdInvocation", "observedAt", "host", "systemd", "execution", "output", "teardown"],
+  "required": ["schemaVersion", "kind", "unsigned", "linuxDrillRequired", "observationMode", "jobId", "planDigest", "systemdInvocation", "observedAt", "host", "systemd", "execution", "output", "teardown", "executionObservedAt", "stop"],
   "properties": {
     "schemaVersion": { "const": 1 },
     "kind": { "const": "api_migrator_runner_observation" },
@@ -27,6 +27,8 @@
       }
     },
     "systemd": { "$ref": "#/$defs/systemd" },
+    "executionObservedAt": { "$ref": "#/$defs/timestamp" },
+    "stop": { "$ref": "#/$defs/stop" },
     "execution": {
       "type": "object",
       "additionalProperties": false,
@@ -146,6 +148,56 @@
         "timeoutStopFailureMode": { "const": "kill" },
         "controlGroup": { "type": "string", "pattern": "^/[^\\u0000-\\u001f\\u007f]{1,500}$" },
         "cgroupEmpty": { "const": true }
+      }
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unitName",
+        "invocationId",
+        "controlGroup",
+        "activeState",
+        "subState",
+        "result",
+        "execStopPostCode",
+        "execStopPostStatus",
+        "cgroupAbsent",
+        "observedAt"
+      ],
+      "properties": {
+        "unitName": {
+          "const": "api-migrator-runner.service"
+        },
+        "invocationId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "controlGroup": {
+          "type": "string",
+          "pattern": "^/[^\\u0000-\\u001f\\u007f]{1,500}$"
+        },
+        "activeState": {
+          "const": "inactive"
+        },
+        "subState": {
+          "const": "dead"
+        },
+        "result": {
+          "const": "success"
+        },
+        "execStopPostCode": {
+          "const": 1
+        },
+        "execStopPostStatus": {
+          "const": 0
+        },
+        "cgroupAbsent": {
+          "const": true
+        },
+        "observedAt": {
+          "$ref": "#/$defs/timestamp"
+        }
       }
     },
     "teardown": {

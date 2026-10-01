@@ -61,57 +61,6 @@ const SUCCESS_EVENTS = [
   "wrapper_local_teardown_complete",
 ];
 
-const SENSITIVE_OBSERVER_ENV = [
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
-  "GH_APP_ID",
-  "GH_APP_PRIVATE_KEY",
-  "GH_APP_PRIVATE_KEY_PATH",
-  "GH_APP_INSTALLATION_ID",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SESSION_TOKEN",
-  "GOOGLE_CLOUD_PROJECT",
-  "AZURE_CLIENT_ID",
-  "OPERATOR_APPROVAL_SECRET",
-  "AWS_SECRET_ACCESS_KEY",
-  "AZURE_CLIENT_SECRET",
-  "AZURE_TENANT_ID",
-  "GOOGLE_APPLICATION_CREDENTIALS",
-  "DATABASE_URL",
-  "API_MIGRATOR_DB_PATH",
-  "API_MIGRATOR_OWNER_KEY_REGISTRY_PATH",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "ALL_PROXY",
-  "NO_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "all_proxy",
-  "no_proxy",
-  "NPM_CONFIG_PROXY",
-  "NPM_CONFIG_HTTPS_PROXY",
-  "NPM_CONFIG_USERCONFIG",
-  "npm_config_proxy",
-  "npm_config_https_proxy",
-  "npm_config_userconfig",
-  "GIT_CONFIG_COUNT",
-  "GIT_CONFIG_GLOBAL",
-  "GIT_CONFIG_SYSTEM",
-  "NODE_OPTIONS",
-  "NODE_PATH",
-  "DOCKER_HOST",
-  "CONTAINER_HOST",
-  "BASH_ENV",
-  "ENV",
-  "LD_PRELOAD",
-  "LD_LIBRARY_PATH",
-  "PYTHONPATH",
-  "PYTHONHOME",
-  "SSH_AUTH_SOCK",
-  "KUBECONFIG",
-  "RUNNER_ATTESTATION_PRIVATE_KEY",
-  "ATTESTATION_SIGNING_KEY",
-];
 
 export function canonicalJson(value) {
   return encodeCanonical(value, new Set());
@@ -624,11 +573,12 @@ export function parseRunnerResult(resultText, expected = undefined) {
 
 export function validateLiveSnapshot(value, expected) {
   const root = record(value, "independent live snapshot");
-  exactKeys(root, ["schemaVersion", "kind", "capturedAt", "systemd", "teardown"], "independent live snapshot");
+  exactKeys(root, ["schemaVersion", "kind", "capturedAt", "executionObservedAt", "systemd", "stop", "teardown"], "independent live snapshot");
   if (root.schemaVersion !== 1 || root.kind !== "api_migrator_runner_live_snapshot") {
     throw new Error("independent live snapshot profile is unsupported");
   }
   const capturedAt = timestamp(root.capturedAt, "independent snapshot capture");
+  const executionObservedAt = timestamp(root.executionObservedAt, "independent execution observation");
   const systemd = record(root.systemd, "independent systemd snapshot");
   exactKeys(systemd, [
     "unitName", "invocationId", "serviceType", "remainAfterExit", "activeState", "subState",
@@ -652,6 +602,20 @@ export function validateLiveSnapshot(value, expected) {
       systemd.timeoutStopUSec !== 20_000_000) {
     throw new Error("systemd timeouts do not match the rendered fail-closed limits");
   }
+  // RemainAfterExit preserves execution facts in active/exited. ExecStopPost
+  // runs only after a separate stop, so final teardown cannot share that state.
+  const stop = record(root.stop, "independent completed stop snapshot");
+  exactKeys(stop, [
+    "unitName", "invocationId", "controlGroup", "activeState", "subState", "result",
+    "execStopPostCode", "execStopPostStatus", "cgroupAbsent", "observedAt",
+  ], "independent completed stop snapshot");
+  if (stop.unitName !== systemd.unitName || stop.invocationId !== systemd.invocationId ||
+      stop.controlGroup !== systemd.controlGroup || stop.activeState !== "inactive" ||
+      stop.subState !== "dead" || stop.result !== "success" ||
+      stop.execStopPostCode !== 1 || stop.execStopPostStatus !== 0 || stop.cgroupAbsent !== true) {
+    throw new Error("independent completed stop snapshot does not prove exact successful sealed cleanup");
+  }
+  const stopObservedAt = timestamp(stop.observedAt, "independent completed stop observation");
   const teardown = record(root.teardown, "independent teardown snapshot");
   exactKeys(teardown, [
     "runnerUidIdle", "containersAbsent", "networkNamespacesAbsent", "nftablesTableAbsent",
@@ -663,7 +627,8 @@ export function validateLiveSnapshot(value, expected) {
     throw new Error("independent teardown snapshot is incomplete");
   }
   const teardownObservedAt = timestamp(teardown.observedAt, "independent teardown observation");
-  if (teardownObservedAt > capturedAt || teardownObservedAt < expected.executionFinishedAt ||
+  if (executionObservedAt < expected.executionFinishedAt || stopObservedAt < executionObservedAt ||
+      teardownObservedAt < stopObservedAt || teardownObservedAt > capturedAt ||
       capturedAt >= expected.expiresAt) {
     throw new Error("independent teardown snapshot timeline is invalid");
   }
@@ -991,8 +956,8 @@ export function buildObservation(input) {
     expiresAt: plan.job.expiresAt,
     executionFinishedAt: parsedEvents.byName.output_sealed.observedAt,
   });
-  if (snapshot.teardown.observedAt < parsedEvents.byName.wrapper_local_teardown_complete.observedAt) {
-    throw new Error("independent teardown observation predates wrapper teardown");
+  if (snapshot.executionObservedAt < parsedEvents.byName.wrapper_local_teardown_complete.observedAt) {
+    throw new Error("independent execution observation predates wrapper teardown");
   }
   if (profile.deploymentEvidence.observedAt > snapshot.capturedAt) {
     throw new Error("host deployment evidence was observed after the runner snapshot");
@@ -1016,6 +981,8 @@ export function buildObservation(input) {
       deploymentEvidenceDigest: profile.deploymentEvidence.digest,
     },
     systemd: snapshot.systemd,
+    executionObservedAt: snapshot.executionObservedAt,
+    stop: snapshot.stop,
     execution: {
       startedAt: parsedEvents.byName.offline_preparation_started.observedAt,
       finishedAt: parsedEvents.byName.output_sealed.observedAt,
@@ -1073,80 +1040,11 @@ export function buildUnsignedSigningRequest(observation) {
   return { request, canonicalJson: serialized, observationCanonicalJson: canonicalObservation };
 }
 
-export function collectLiveSnapshot(input) {
-  if (process.platform !== "linux" || typeof process.getuid !== "function" || process.getuid() !== 0) {
-    throw new Error("live runner observation requires Linux root execution");
-  }
-  for (const name of SENSITIVE_OBSERVER_ENV) {
-    if (Object.hasOwn(process.env, name)) throw new Error("observer environment contains forbidden signing or credential material");
-  }
-  const job = validateJobDescriptor(input.job);
-  const profile = validateHostProfile(input.profile);
-  verifyRootSealedJobFiles(input.jobDescriptorPath, job);
-  verifyBoundFiles(profile);
-  const systemctl = profile.executables.systemctl.path;
-  const properties = parseSystemctlProperties(runChecked(systemctl, [
-    "show", RUNNER_UNIT, "--no-pager",
-    "--property=Id", "--property=InvocationID", "--property=Type", "--property=RemainAfterExit",
-    "--property=ActiveState", "--property=SubState", "--property=Result", "--property=ExecMainCode",
-    "--property=ExecMainStatus", "--property=KillMode", "--property=OOMPolicy", "--property=Delegate",
-    "--property=TimeoutStartUSec", "--property=TimeoutStartFailureMode", "--property=TimeoutStopUSec",
-    "--property=TimeoutStopFailureMode", "--property=ControlGroup",
-  ]));
-  const controlGroup = properties.ControlGroup;
-  if (typeof controlGroup !== "string" || !/^\/[A-Za-z0-9_.@/-]+$/.test(controlGroup)) {
-    throw new Error("systemd returned an invalid runner control group");
-  }
-  const cgroupPath = `/sys/fs/cgroup${controlGroup}`;
-  const cgroupProcs = readFileSync(join(cgroupPath, "cgroup.procs"), "utf8").trim();
-  const cgroupEvents = readFileSync(join(cgroupPath, "cgroup.events"), "utf8");
-  if (cgroupProcs !== "" || !/(?:^|\n)populated 0(?:\n|$)/.test(cgroupEvents)) {
-    throw new Error("runner control group is not independently quiescent");
-  }
-  const uid = profile.runner.uid;
-  const runnerUidIdle = !uidOwnsProcess(uid);
-  const table = `api_migrator_${job.jobId.slice(11, 27)}`;
-  const nftables = JSON.parse(runChecked(profile.executables.nft.path, ["-j", "list", "tables"]));
-  if (!Array.isArray(nftables.nftables)) throw new Error("nft returned an invalid tables document");
-  const nftablesTableAbsent = !nftables.nftables.some((entry) =>
-    entry?.table?.family === "inet" && entry.table.name === table
-  );
-  const workspaceAbsent = !readdirSync("/var/tmp").some((name) => name.startsWith("api-migrator-preview."));
-  const networkNamespacesAbsent = networkNamespaceDirectoriesEmpty(uid);
-  const now = input.now ?? Date.now();
-  return {
-    schemaVersion: 1,
-    kind: "api_migrator_runner_live_snapshot",
-    capturedAt: now,
-    systemd: {
-      unitName: properties.Id,
-      invocationId: properties.InvocationID,
-      serviceType: properties.Type,
-      remainAfterExit: properties.RemainAfterExit === "yes",
-      activeState: properties.ActiveState,
-      subState: properties.SubState,
-      result: properties.Result,
-      execMainCode: Number(properties.ExecMainCode),
-      execMainStatus: Number(properties.ExecMainStatus),
-      killMode: properties.KillMode,
-      oomPolicy: properties.OOMPolicy,
-      delegate: properties.Delegate === "yes",
-      timeoutStartUSec: parseSystemdDurationUSec(properties.TimeoutStartUSec, "systemd activation timeout"),
-      timeoutStartFailureMode: properties.TimeoutStartFailureMode,
-      timeoutStopUSec: parseSystemdDurationUSec(properties.TimeoutStopUSec, "systemd stop timeout"),
-      timeoutStopFailureMode: properties.TimeoutStopFailureMode,
-      controlGroup,
-      cgroupEmpty: true,
-    },
-    teardown: {
-      runnerUidIdle,
-      containersAbsent: runnerUidIdle && cgroupProcs === "",
-      networkNamespacesAbsent,
-      nftablesTableAbsent,
-      workspaceAbsent,
-      observedAt: now,
-    },
-  };
+export function collectLiveSnapshot() {
+  // The former one-point collector cannot retain successful execution facts
+  // and independently observe completed ExecStopPost. A trusted two-stage
+  // producer is required before any native collector can be enabled.
+  throw new Error("live runner observation is disabled pending independent two-stage stop evidence");
 }
 
 export function readDeploymentInputs(jobPath) {
@@ -1200,65 +1098,6 @@ function assertNoExtendedMetadata(path, pythonPath) {
   if (result.status !== 0) throw new Error("sealed output contains links or extended metadata");
 }
 
-function verifyBoundFiles(profile) {
-  const bindings = [
-    ...Object.values(profile.executables),
-    { path: profile.artifacts.wrapperPath, digest: profile.artifacts.wrapperDigest },
-    { path: profile.artifacts.cleanupPath, digest: profile.artifacts.cleanupDigest },
-    { path: profile.artifacts.observerPath, digest: profile.artifacts.observerDigest },
-  ];
-  for (const binding of bindings) {
-    const info = lstatSync(binding.path);
-    if (!info.isFile() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022) !== 0 ||
-        sha256(readFileSync(binding.path)) !== binding.digest) {
-      throw new Error(`deployed host file does not match its root-sealed profile: ${basename(binding.path)}`);
-    }
-  }
-  const storage = lstatSync(profile.runner.storageRoot);
-  if (!storage.isDirectory() || storage.isSymbolicLink() || storage.uid !== profile.runner.uid ||
-      (storage.mode & 0o077) !== 0) {
-    throw new Error("runner storage root does not match its dedicated identity profile");
-  }
-}
-
-function uidOwnsProcess(uid) {
-  for (const name of readdirSync("/proc")) {
-    if (!/^[1-9][0-9]*$/.test(name)) continue;
-    try {
-      if (statSync(`/proc/${name}`).uid === uid) return true;
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-  }
-  return false;
-}
-
-function networkNamespaceDirectoriesEmpty(uid) {
-  for (const path of ["/run/netns", `/run/user/${uid}/netns`]) {
-    if (!existsSync(path)) continue;
-    if (readdirSync(path).length !== 0) return false;
-  }
-  return true;
-}
-
-function parseSystemctlProperties(text) {
-  const output = {};
-  for (const line of text.trimEnd().split("\n")) {
-    const offset = line.indexOf("=");
-    if (offset <= 0) throw new Error("systemctl returned malformed property output");
-    const key = line.slice(0, offset);
-    if (Object.hasOwn(output, key)) throw new Error("systemctl returned a duplicate property");
-    output[key] = line.slice(offset + 1);
-  }
-  const expected = [
-    "Id", "InvocationID", "Type", "RemainAfterExit", "ActiveState", "SubState", "Result",
-    "ExecMainCode", "ExecMainStatus", "KillMode", "OOMPolicy", "Delegate", "TimeoutStartUSec",
-    "TimeoutStartFailureMode", "TimeoutStopUSec", "TimeoutStopFailureMode", "ControlGroup",
-  ];
-  exactKeys(output, expected, "systemctl property output");
-  return output;
-}
-
 export function parseSystemdDurationUSec(value, label = "systemd duration") {
   if (typeof value !== "string" || value === "" || value === "infinity") {
     throw new Error(`${label} is not finite`);
@@ -1284,19 +1123,6 @@ export function parseSystemdDurationUSec(value, label = "systemd duration") {
   }
   if (total <= 0) throw new Error(`${label} must be positive`);
   return total;
-}
-
-function runChecked(command, args) {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-    env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" },
-  });
-  if (result.status !== 0 || result.error) {
-    throw new Error(`trusted host command failed: ${basename(command)}`);
-  }
-  return result.stdout;
 }
 
 export function readBoundedFile(path, maxBytes, label) {

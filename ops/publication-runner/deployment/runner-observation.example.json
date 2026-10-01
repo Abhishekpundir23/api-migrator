@@ -88,5 +88,18 @@
     "nftablesTableAbsent": true,
     "workspaceAbsent": true,
     "observedAt": 2000000099000
+  },
+  "executionObservedAt": 2000000098000,
+  "stop": {
+    "unitName": "api-migrator-runner.service",
+    "invocationId": "0123456789abcdef0123456789abcdef",
+    "controlGroup": "/system.slice/api-migrator-runner.service",
+    "activeState": "inactive",
+    "subState": "dead",
+    "result": "success",
+    "execStopPostCode": 1,
+    "execStopPostStatus": 0,
+    "cgroupAbsent": true,
+    "observedAt": 2000000098500
   }
 }
