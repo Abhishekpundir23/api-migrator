@@ -65,12 +65,21 @@ function now(clock: JobClock): number {
 }
 
 export function prepareRunnerJob(store: JobStore, value: unknown, clock: JobClock): Readonly<JobRecord> {
+  return prepareRunnerJobWithSource(store, value, clock).job;
+}
+
+/** Source-internal: retain the one bundle used to derive the committed job. */
+export function prepareRunnerJobWithSource(store: JobStore, value: unknown, clock: JobClock,
+  maxSourceBytes?: number): { job: Readonly<JobRecord>; sourceBundle: Buffer } {
   const input = snapshotInput(value);
   store.observeTime(now(clock));
   let source: PreviewSourceIdentity;
+  let sourceBundle: Buffer;
   try {
     const bundle = createSourceBundle({ checkoutPath: input.checkoutPath, repository: input.repository,
       base: input.base, manifestJson: input.manifestJson });
+    if (maxSourceBytes !== undefined && bundle.bytes.length > maxSourceBytes) throw new Error("source exceeds handoff limit");
+    sourceBundle = bundle.bytes;
     const parsed = parseSourceBundle(bundle.bytes);
     source = {
       repository: parsed.header.repository,
@@ -108,7 +117,7 @@ export function prepareRunnerJob(store: JobStore, value: unknown, clock: JobCloc
       source: existing.source, plan: existing.plan });
     if (canonicalJson(intent) !== canonicalJson(existingIntent)) throw new RunnerJobError("job_conflict");
     checkRunnerJobCurrent(store, existing, clock);
-    return existing;
+    return { job: existing, sourceBundle };
   }
   let plan: ReturnType<typeof createPublicationRunnerPlan>;
   try { plan = createPublicationRunnerPlan(planInput); }
@@ -125,5 +134,5 @@ export function prepareRunnerJob(store: JobStore, value: unknown, clock: JobCloc
     throw new RunnerJobError("job_conflict");
   }
   checkRunnerJobCurrent(store, winner, clock);
-  return winner;
+  return { job: winner, sourceBundle };
 }

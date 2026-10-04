@@ -10,8 +10,8 @@ import { createRunnerEvidenceClientWithDependencies } from "../../src/runner-evi
 import { selectRunnerKey } from "../../src/runner-key-registry.js";
 import { publicationRunnerAttestation } from "./publication-runner-fixture.js";
 
-export function createJobFixture() {
-  const sourceFixture = runnerEvidenceFixture(2_000_000_000_000);
+export function createJobFixture(sourceContent?: string) {
+  const sourceFixture = runnerEvidenceFixture(2_000_000_000_000, sourceContent);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "runner-job-service-test-")));
   const directory = join(root, "store");
   mkdirSync(directory, { mode: 0o700 });

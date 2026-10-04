@@ -29,16 +29,18 @@ test("the package root exposes no write-capable repository or campaign executor"
 
 test("built job subpaths expose only their documented APIs and cannot leak test or custody access", async () => {
   assert.deepEqual(Object.keys(await import("@api-migrator/app/runner-job-record-internal")), ["createRunnerJobService"]);
-  assert.deepEqual(Object.keys(await import("@api-migrator/db/runner-job-store-internal")), ["JobStoreError", "initializeJobStore", "openJobStore"]);
+  assert.deepEqual(Object.keys(await import("@api-migrator/db/runner-job-store-internal")),
+    ["JobStoreError", "MAX_JOB_SOURCE_BYTES", "initializeJobStore", "openJobSourceStore", "openJobStore"]);
   const hidden = ["createRunnerJobService", "createRunnerJobServiceForTest", "initializeJobStore", "openJobStore",
-    "createJobStoreTestAccess", "setJobStoreTransactionTestHook", "prepareRunnerJob", "recordRunnerJobReview", "acquireRunnerJobEvidence"];
+    "createJobStoreTestAccess", "setJobStoreTransactionTestHook", "prepareRunnerJob", "recordRunnerJobReview", "acquireRunnerJobEvidence",
+    "openJobSourceStore", "createJobSourceStoreTestAccess", "prepareRunnerJobWithSource", "prepareRunnerJobHandoff", "readRunnerJobHandoff"];
   for (const name of ["@api-migrator/app", "@api-migrator/app/console-internal", "@api-migrator/app/preview-evidence", "@api-migrator/app/runner-internal", "@api-migrator/db", "@api-migrator/runner"]) {
     const api = await import(name);
     for (const key of hidden) assert.equal(key in api, false, `${name}: ${key}`);
   }
   for (const [pkg, modules] of [
-    ["app", ["runner-job-record", "runner-job-record-contract", "runner-job-producer", "runner-job-service-core", "runner-job-evidence", "test/helpers/runner-job-process"]],
-    ["db", ["runner-job-store-sqlite", "runner-job-store-path", "runner-job-store-contract", "test/runner-job-store-process"]],
+    ["app", ["runner-job-record", "runner-job-record-contract", "runner-job-producer", "runner-job-service-core", "runner-job-evidence", "runner-job-handoff", "test/helpers/runner-job-process"]],
+    ["db", ["runner-job-store-sqlite", "runner-job-store-path", "runner-job-store-contract", "runner-job-source-store", "test/runner-job-store-process"]],
   ] as const) for (const module of modules) {
     for (const path of [module, `src/${module}.js`, `dist/${module}.js`]) {
       await assert.rejects(import(`@api-migrator/${pkg}/${path}`), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
@@ -75,6 +77,7 @@ test("built job factory does no filesystem or network I/O until explicit open", 
     assert.deepEqual(create(config, policy, {}), { ok: false, source: 'job', code: 'input_invalid' });
     const factory = create(config, policy);
     assert.equal(factory.ok, true);
+    assert.equal(create({ ...config, handoffDirectory: directory + '-sources' }, policy).ok, true);
     assert.equal(io, 0);
     for (const item of traps) item.mock.restore();
     syncBuiltinESMExports();

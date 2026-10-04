@@ -1,6 +1,6 @@
 import { dirname, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openJobStore, type JobStore, type StorePolicy } from "@api-migrator/db/runner-job-store-internal";
+import { openJobStore, openJobSourceStore, type JobSourceStore, type JobStore, type StorePolicy } from "@api-migrator/db/runner-job-store-internal";
 import { createRunnerEvidenceClient } from "./runner-evidence.js";
 import { detachRunnerEvidenceData, type RunnerEvidenceClient, type RunnerEvidenceConfig,
   type RunnerEvidenceWorkspacePolicy } from "./runner-evidence-contract.js";
@@ -8,14 +8,18 @@ import { acquireRunnerJobEvidence, runnerJobFailure } from "./runner-job-evidenc
 import { assertJobCurrent, RunnerJobError, type JobRecord, type JobResult } from "./runner-job-record-contract.js";
 import { prepareRunnerJob, type JobClock } from "./runner-job-producer.js";
 import { inspectRunnerJob, recordRunnerJobReview, snapshotJobKey, validateStoredJob } from "./runner-job-service-core.js";
+import { prepareRunnerJobHandoff, readRunnerJobHandoff, type RunnerJobHandoff } from "./runner-job-handoff.js";
 
 const APPLICATION_CHECKOUT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-export type RunnerJobConfig = { directory: string; expectedStoreId: string; evidence: RunnerEvidenceConfig | null };
+export type RunnerJobConfig = { directory: string; expectedStoreId: string; evidence: RunnerEvidenceConfig | null;
+  handoffDirectory?: string };
 export interface RunnerJobSession {
   inspect(key: unknown): JobResult<Readonly<JobRecord>>;
   prepare(input: unknown): JobResult<Readonly<JobRecord>>;
+  prepareHandoff(input: unknown): JobResult<RunnerJobHandoff>;
+  readHandoff(key: unknown): JobResult<RunnerJobHandoff>;
   recordReviewedOutput(key: unknown, output: unknown, completedAt: unknown): JobResult<Readonly<JobRecord>>;
   acquireEvidence(key: unknown): Promise<JobResult<Readonly<JobRecord>>>;
   close(): void;
@@ -26,6 +30,7 @@ type TestDependencies = {
   clock: JobClock;
   client: RunnerEvidenceClient | null;
   openStore(directory: string, expectedStoreId: string, policy: StorePolicy): JobStore;
+  openSources?(directory: string, expectedStoreId: string, policy: StorePolicy): JobSourceStore;
 };
 
 /** No IO until open. Clocks, checkout exclusion, transport and trust are server-owned. */
@@ -54,7 +59,7 @@ function configuration(config: unknown, policy: unknown) {
   try {
     const input = detachRunnerEvidenceData(config) as Record<string, unknown>;
     const workspace = detachRunnerEvidenceData(policy) as Record<string, unknown>;
-    if (!input || Array.isArray(input) || Object.keys(input).sort().join(",") !== "directory,evidence,expectedStoreId" ||
+    if (!input || Array.isArray(input) || !["directory,evidence,expectedStoreId", "directory,evidence,expectedStoreId,handoffDirectory"].includes(Object.keys(input).sort().join(",")) ||
       typeof input.expectedStoreId !== "string" || !UUID.test(input.expectedStoreId) ||
       !workspace || Array.isArray(workspace) || Object.keys(workspace).join(",") !== "migrationWorkspaceRoots" ||
       !Array.isArray(workspace.migrationWorkspaceRoots) || workspace.migrationWorkspaceRoots.length < 1 ||
@@ -62,6 +67,7 @@ function configuration(config: unknown, policy: unknown) {
     const roots = workspace.migrationWorkspaceRoots.map(path);
     if (new Set(roots).size !== roots.length) throw new RunnerJobError("input_invalid");
     return { directory: path(input.directory), expectedStoreId: input.expectedStoreId,
+      handoffDirectory: Object.hasOwn(input, "handoffDirectory") ? path(input.handoffDirectory) : null,
       evidence: input.evidence, policy: Object.freeze({ migrationWorkspaceRoots: Object.freeze(roots) }) };
   } catch { throw new RunnerJobError("input_invalid"); }
 }
@@ -77,17 +83,22 @@ function construct(config: unknown, policy: unknown, testDependencies?: TestDepe
     }
     const clock = testDependencies?.clock ?? { wallNow: () => Date.now(), monotonicNow: () => performance.now() };
     const openStore = testDependencies?.openStore ?? openJobStore;
+    const openSources = testDependencies?.openSources ?? openJobSourceStore;
     if (testDependencies) client = testDependencies.client;
     const storePolicy: StorePolicy = Object.freeze({ applicationCheckout: APPLICATION_CHECKOUT,
       migrationWorkspaceRoots: validated.policy.migrationWorkspaceRoots });
     return { ok: true, value: Object.freeze({ open: (): JobResult<RunnerJobSession> => {
       let store: JobStore | undefined;
+      let sources: JobSourceStore | undefined;
       try {
         store = openStore(validated.directory, validated.expectedStoreId, storePolicy);
         for (const row of store.list()) validateStoredJob(row, store.storeId);
         store.observeTime(clock.wallNow());
-        return { ok: true, value: session(store, clock, client) };
+        if (validated.handoffDirectory !== null) sources = openSources(validated.handoffDirectory, store.storeId,
+          { ...storePolicy, migrationWorkspaceRoots: [...storePolicy.migrationWorkspaceRoots, validated.directory] });
+        return { ok: true, value: session(store, clock, client, sources ?? null) };
       } catch (error) {
+        try { sources?.close(); } catch { /* Preserve only the original sanitized failure. */ }
         try { store?.close(); } catch { /* Preserve only the original sanitized failure. */ }
         return runnerJobFailure(error);
       }
@@ -95,16 +106,24 @@ function construct(config: unknown, policy: unknown, testDependencies?: TestDepe
   } catch (error) { return runnerJobFailure(error); }
 }
 
-function session(store: JobStore, clock: JobClock, client: RunnerEvidenceClient | null): RunnerJobSession {
+function session(store: JobStore, clock: JobClock, client: RunnerEvidenceClient | null, sources: JobSourceStore | null): RunnerJobSession {
   let closed = false;
   const guard = () => { if (closed) throw new RunnerJobError("store_unavailable"); };
-  const run = (operation: () => Readonly<JobRecord>): JobResult<Readonly<JobRecord>> => {
+  const run = <T>(operation: () => T): JobResult<T> => {
     try { guard(); return { ok: true, value: operation() }; }
     catch (error) { return runnerJobFailure(error); }
   };
   return Object.freeze({
     inspect: (key: unknown) => run(() => inspectRunnerJob(store, key)),
     prepare: (input: unknown) => run(() => prepareRunnerJob(store, input, clock)),
+    prepareHandoff: (input: unknown) => run(() => {
+      if (!sources) throw new RunnerJobError("input_invalid");
+      return prepareRunnerJobHandoff(store, sources, input, clock);
+    }),
+    readHandoff: (key: unknown) => run(() => {
+      if (!sources) throw new RunnerJobError("input_invalid");
+      return readRunnerJobHandoff(store, sources, key, clock);
+    }),
     recordReviewedOutput: (key: unknown, output: unknown, completedAt: unknown) =>
       run(() => recordRunnerJobReview(store, key, output, completedAt, clock)),
     acquireEvidence: async (key: unknown): Promise<JobResult<Readonly<JobRecord>>> => {
@@ -123,7 +142,7 @@ function session(store: JobStore, clock: JobClock, client: RunnerEvidenceClient 
     close: () => {
       if (closed) return;
       closed = true;
-      try { store.close(); } catch (error) {
+      try { try { sources?.close(); } finally { store.close(); } } catch (error) {
         const failure = runnerJobFailure(error);
         throw new RunnerJobError(!failure.ok && failure.source === "job" ? failure.code : "store_unavailable");
       }

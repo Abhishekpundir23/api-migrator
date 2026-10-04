@@ -51,7 +51,7 @@ function git(path: string, args: string[], createdAt: number): string {
   return output;
 }
 
-export function runnerEvidenceFixture(now: number): {
+export function runnerEvidenceFixture(now: number, sourceContent = "export const fixture = 1;\n"): {
   checkoutPath: string;
   context: RunnerEvidenceContext;
   bundle: SourceBundleRecord;
@@ -65,7 +65,7 @@ export function runnerEvidenceFixture(now: number): {
   const path = mkdtempSync(join(tmpdir(), "api-migrator-runner-evidence-test-"));
   try {
     git(path, ["init", "--initial-branch=main"], createdAt);
-    writeFileSync(join(path, "index.ts"), "export const fixture = 1;\n");
+    writeFileSync(join(path, "index.ts"), sourceContent);
     git(path, ["add", "index.ts"], createdAt);
     git(path, ["commit", "-m", "runner evidence fixture"], createdAt);
     const baseSha = git(path, ["rev-parse", "HEAD"], createdAt);
