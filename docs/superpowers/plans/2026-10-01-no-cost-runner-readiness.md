@@ -111,3 +111,14 @@ zero failures/skips/cancellations (deployment373/373). The native stop-clock
 edit remains stopped after two explicit automatic-review denials. Draft push
 and exact-head verification of unaffected changes may proceed; merge stays
 blocked until the Important finding is corrected with valid authorization.
+
+October 4 continuation: user directly requested the reported blockers be fixed.
+Shared sticky stop-clock validation reproduced 13 RED regressions, then 40/40
+focused GREEN. A Linux process-exit probe reproduced ESRCH from a retained
+proc-status descriptor; observer handles this like ENOENT without minting UID
+proof. Regression RED then GREEN, container/cancellation 32/32. Sanitized UID
+reasons now distinguish future failures; the prior hosted failure's exact errno
+remains unknown. Full supported Node 22 CI passes 1,191/1,191, no failures/skips/
+cancellations, including 388 deployment tests. Fresh Docker build/configuration/
+four-phase integration passes. Fresh whole-branch review and exact-head hosted
+checks remain release gates; production activation is unchanged and disabled.

@@ -50,6 +50,7 @@ function boundary(fault = {}) {
     },
     status() {
       reads += 1; events.push("uid");
+      if (fault.esrch) throw Object.assign(new Error("SECRET departed proc /private/source"), { code: "ESRCH" });
       return `Uid:\t${fault.uid && reads > 1 ? "0\t0\t0\t0" : "12001\t12001\t12001\t12001"}\n`;
     },
   };
@@ -101,7 +102,7 @@ test("only native cancellation plus successful cleanup produces the non-authoriz
   assert.equal(value.events.at(-1), "table"); assert.equal(value.residual(), false);
 });
 
-for (const fault of ["badId", "alreadyPaused", "pause", "substituted", "pid", "stopped", "uid", "naturalClose", "kill", "signal", "unpaused", "evidence", "slowPause", "close"]) {
+for (const fault of ["badId", "alreadyPaused", "pause", "substituted", "pid", "stopped", "uid", "esrch", "naturalClose", "kill", "signal", "unpaused", "evidence", "slowPause", "close"]) {
   test(`cancellation refuses ${fault} failure without minting expected evidence`, async () => {
     const value = boundary({ [fault]: true });
     let error;

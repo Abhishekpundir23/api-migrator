@@ -12,6 +12,8 @@ const stages = new Set([
 const categories = new Set(["deadline", "spawn", "subprocess_exit", "inspection", "identity", "uid_evidence", "output_limit", "protocol", "evidence", "host_operation", "cleanup", "unexpected", "freshness", "dns_admission"]);
 const signals = new Set(["SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL", "SIGSEGV", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGUSR1", "SIGUSR2", "SIGXCPU", "SIGXFSZ"]);
 const dnsReasons = new Set(["ttl_floor_exhausted", "resolver_timeout", "resolver_error", "missing_or_excessive_answer", "invalid_answer", "diagnostic_or_internal_failure"]);
+const uidReasons = new Set(["read_error", "empty_status", "malformed_status", "unexpected_uid"]);
+const uidReadErrors = new Set(["ENOENT", "ESRCH", "EACCES", "EPERM", "other"]);
 const details = new WeakMap(), cleanupFailures = new WeakSet();
 const integer = (value) => Number.isSafeInteger(value) ? value : null;
 
@@ -52,6 +54,14 @@ export function annotateFixtureFailure(error, input) {
     safe.reason = dnsReasons.has(input.reason) ? input.reason : "diagnostic_or_internal_failure";
     for (const key of ["attempts", "elapsedMs", "requiredMinimumTtlSeconds"]) safe[key] = integer(input[key]);
   }
+  if (safe.category === "uid_evidence" && uidReasons.has(input.uidReason)) {
+    safe.uidReason = input.uidReason;
+    if (input.uidReason === "read_error" && uidReadErrors.has(input.uidReadError)) safe.uidReadError = input.uidReadError;
+    if (input.uidReason === "unexpected_uid" && Array.isArray(input.uidTuple) && input.uidTuple.length === 4 &&
+        input.uidTuple.every((uid) => Number.isSafeInteger(uid) && uid >= 0 && uid <= 4294967295)) {
+      safe.uidTuple = input.uidTuple.join(":");
+    }
+  }
   details.set(error, { ...safe, ...details.get(error) }); // Preserve the originating boundary.
   return error;
 }
@@ -90,7 +100,7 @@ export function formatFixtureFailure(error) {
   } else if (diagnostic.category === "dns_admission") {
     prefix = "fixture DNS admission failed";
     fields = ["reason", "attempts", "elapsedMs", "requiredMinimumTtlSeconds"];
-  } else fields = ["stage", "category", "exitStatus", "signal", "timedOut", "commandBudgetMs"];
+  } else fields = ["stage", "category", "uidReason", "uidReadError", "uidTuple", "exitStatus", "signal", "timedOut", "commandBudgetMs"];
   const values = fields.filter((key) => Object.hasOwn(diagnostic, key)).map((key) => `${key}=${diagnostic[key]}`);
   return `${prefix} (${[...values, `cleanupFailed=${cleanupFailed}`].join(", ")})`.slice(0, 512);
 }

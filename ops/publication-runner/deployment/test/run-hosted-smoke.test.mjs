@@ -538,3 +538,51 @@ test("cleanup polling rejects a successful unload observation completed after it
   await assert.rejects(stopExactUnit(f.unit, f.tools, f.dependencies), /timed out/);
   assert.deepEqual(f.calls.map((call) => call.verb), ["show", "stop", "reset-failed", "show"]);
 });
+
+// A clock fault inside the polling predicate must not become an ordinary
+// transient observation error that permits a later successful absence proof.
+for (const [label, value] of [
+  ["NaN", NaN], ["infinite", Infinity], ["negative", -1],
+  ["non-number", "100"], ["rollback", 50],
+]) {
+  for (const sample of [10, 11]) {
+    test(`stop permanently rejects ${label} clock at predicate sample ${sample}`, async (t) => {
+      const f = stopMachine(t, { costs: [0, 0, 0, 0] });
+      let reads = 0;
+      const elapsedNow = () => ++reads === sample ? value : 100;
+      await assert.rejects(stopExactUnit(f.unit, f.tools, {
+        timeoutMs: 15000, ...f.dependencies, elapsedNow,
+      }), /elapsed clock is invalid/);
+      assert.equal(reads, sample, "an invalid clock must never be sampled again");
+      assert.equal(f.calls.length, sample === 10 ? 3 : 4, "no native work after the fault");
+    });
+  }
+}
+
+for (const [label, samples, lastRead, commandCount] of [
+  ["poll to predicate", { 9: 200, 10: 150 }, 10, 3],
+  ["predicate to poll", { 10: 200, 11: 200, 12: 150 }, 12, 4],
+]) {
+  test(`stop rejects a clock reversal across ${label} readers`, async (t) => {
+    const f = stopMachine(t, { costs: [0, 0, 0, 0] });
+    let reads = 0;
+    const elapsedNow = () => { reads += 1; return samples[reads] ?? (reads < 10 ? 100 : 200); };
+    await assert.rejects(stopExactUnit(f.unit, f.tools, {
+      timeoutMs: 15000, ...f.dependencies, elapsedNow,
+    }), /elapsed clock is invalid/);
+    assert.equal(reads, lastRead);
+    assert.equal(f.calls.length, commandCount);
+  });
+}
+
+test("stop retains a thrown predicate clock failure even if the source would recover", async (t) => {
+  const f = stopMachine(t, { costs: [0, 0, 0, 0] });
+  const failure = new Error("clock source unavailable");
+  let reads = 0;
+  const elapsedNow = () => { if (++reads === 10) throw failure; return 100; };
+  await assert.rejects(stopExactUnit(f.unit, f.tools, {
+    timeoutMs: 15000, ...f.dependencies, elapsedNow,
+  }), (error) => error === failure);
+  assert.equal(reads, 10);
+  assert.equal(f.calls.length, 3);
+});

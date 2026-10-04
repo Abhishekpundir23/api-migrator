@@ -174,10 +174,22 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
       return atFixtureStage(`${phase}.inspect`, "identity", () => validateFixtureContainer(values[0], resources, phase));
     });
     const readUid = async (pid) => {
-      const status = await atFixtureStage(`${phase}.uid`, "uid_evidence", () => processStatus(pid, { signal: cancellation.signal }));
+      let status;
+      try {
+        status = await atFixtureStage(`${phase}.uid`, "uid_evidence", () => processStatus(pid, { signal: cancellation.signal }));
+      } catch (error) {
+        const code = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "code")?.value : undefined;
+        throw annotateFixtureFailure(error, { stage: `${phase}.uid`, category: "uid_evidence",
+          uidReason: "read_error", uidReadError: ["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(code) ? code : "other" });
+      }
       remaining();
       const ids = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m.exec(status);
-      if (!ids || ids.slice(1).some((id) => id !== "12001")) throw annotateFixtureFailure(new Error("fixture workload host UID evidence mismatched"), { stage: `${phase}.uid`, category: "uid_evidence" });
+      const tuple = ids?.slice(1).map(Number);
+      const validTuple = tuple?.every((uid) => Number.isSafeInteger(uid) && uid >= 0 && uid <= 4294967295);
+      if (!ids || !validTuple) throw annotateFixtureFailure(new Error("fixture workload host UID evidence mismatched"),
+        { stage: `${phase}.uid`, category: "uid_evidence", uidReason: status.length === 0 ? "empty_status" : "malformed_status" });
+      if (ids.slice(1).some((id) => id !== "12001")) throw annotateFixtureFailure(new Error("fixture workload host UID evidence mismatched"),
+        { stage: `${phase}.uid`, category: "uid_evidence", uidReason: "unexpected_uid", uidTuple: tuple });
     };
     const cancelLiveInstall = (value) => atFixtureStage("install.cancel", "host_operation", async () => {
       const id = value.Id, pid = value.State.Pid;
@@ -217,7 +229,7 @@ export function executeNativeFixturePhase(request, { resources, docker, evidence
       const value = await inspect(false);
       if (!settled && !childClosed && value?.State.Running && value.State.Pid > 1) {
         const pid = value.State.Pid;
-        try { await readUid(pid); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+        try { await readUid(pid); } catch (error) { if (error.code === "ENOENT" || error.code === "ESRCH") return; throw error; }
         if (settled || childClosed) return;
         uidObserved = true;
         if (cancelInstall) await cancelLiveInstall(value);

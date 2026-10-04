@@ -130,7 +130,10 @@ test("native execution requires live host UID evidence, bounded output and settl
         assert.deepEqual(args, ["container", "inspect", resources.containers.install]);
         return { status: 0, stdout: JSON.stringify([{ ...observed, State: { Running: running, Pid: running ? 1234 : 0 } }]), stderr: "" };
       },
-      status: () => `Uid:\t${fault.uid ? "0\t0\t0\t0" : "12001\t12001\t12001\t12001"}\n`,
+      status: () => {
+        if (fault.statusError) throw fault.statusError;
+        return fault.status ?? `Uid:\t${fault.uid ? "0\t0\t0\t0" : "12001\t12001\t12001\t12001"}\n`;
+      },
     };
     const promise = executeNativeFixturePhase({ ...request, timeoutMs: fault.timeout ? 5 : 1000 }, {
       resources, docker: "/usr/bin/docker", evidence: { write() { if (fault.write) throw new Error("evidence write failed"); } }, processes });
@@ -138,7 +141,31 @@ test("native execution requires live host UID evidence, bounded output and settl
   }
   assert.equal(await run(), "trusted status\n");
   await assert.rejects(run({ fast: true }), /UID evidence missing/);
+  await assert.rejects(run({ statusError: Object.assign(new Error("SECRET departed proc /private/source"), { code: "ESRCH" }) }),
+    (error) => {
+      assert.match(error.message, /UID evidence missing/);
+      assert.match(formatFixtureFailure(error), /stage=install.uid, category=uid_evidence/);
+      return true;
+    });
   await assert.rejects(run({ uid: true }), /UID evidence mismatched/);
+  for (const [fault, expected] of [
+    [{ uid: true }, /uidReason=unexpected_uid, uidTuple=0:0:0:0/],
+    [{ status: "" }, /uidReason=empty_status/],
+    [{ status: "SECRET malformed proc body /private/source" }, /uidReason=malformed_status/],
+    [{ statusError: Object.assign(new Error("SECRET proc error /private/source"), { code: "EACCES" }) },
+      /uidReason=read_error, uidReadError=EACCES/],
+    [{ statusError: Object.assign(new Error("SECRET proc error /private/source"), { code: "EWEIRD" }) },
+      /uidReason=read_error, uidReadError=other/],
+  ]) {
+    await assert.rejects(run(fault), (error) => {
+      const diagnostic = formatFixtureFailure(error);
+      assert.match(diagnostic, /stage=install.uid, category=uid_evidence/);
+      assert.match(diagnostic, expected);
+      assert.doesNotMatch(diagnostic, /SECRET|private|source|EWEIRD/);
+      assert(Buffer.byteLength(diagnostic) <= 512);
+      return true;
+    });
+  }
   await assert.rejects(run({ timeout: true }), /deadline/);
   await assert.rejects(run({ timeout: true, slowSpawn: true }), /deadline/);
   await assert.rejects(run({ excessive: true }), /output exceeded/);
@@ -165,6 +192,31 @@ test("native execution requires live host UID evidence, bounded output and settl
       return true;
     });
   }
+});
+
+test("ESRCH while reading a departed prepare process does not forge UID proof or fail the phase", async () => {
+  const name = `api-migrator-fixture-${jobId}-prepare`;
+  const owned = { ...resources, containers: { ...resources.containers, prepare: name } };
+  const value = { ...observed, Name: `/${name}`,
+    HostConfig: { ...observed.HostConfig, NetworkMode: "none" } };
+  const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  let running = true, reads = 0, inspections = 0, killed = false;
+  child.kill = () => { killed = true; return true; };
+  const writes = [];
+  const output = await executeNativeFixturePhase({ phase: "prepare", dockerArgs: ["run", "--name", name, image], timeoutMs: 1000 },
+    { resources: owned, docker: "/usr/bin/docker", evidence: { write(label, bytes) { writes.push([label, JSON.parse(bytes)]); } },
+      processes: {
+        spawn() { setTimeout(() => { running = false; child.stdout.emit("data", "trusted status\n"); child.emit("close", 0); }, 150); return child; },
+        command(_path, args) {
+          assert.deepEqual(args, ["container", "inspect", name]); inspections += 1;
+          return { status: 0, stdout: JSON.stringify([{ ...value, State: { Running: running, Pid: running ? 1234 : 0 } }]), stderr: "" };
+        },
+        status() { reads += 1; throw Object.assign(new Error("SECRET departed proc /private/source"), { code: "ESRCH" }); },
+      } });
+  assert.equal(output, "trusted status\n");
+  assert.equal(killed, false);
+  assert.equal(reads, 1); assert.equal(inspections, 2);
+  assert.deepEqual(writes, [["prepare-execution", { phase: "prepare", image, jobId, uid: 12001, uidObserved: false, code: 0 }]]);
 });
 
 for (const inspection of ["active", "final"]) {

@@ -1096,17 +1096,30 @@ async function stopExactUnit(unit, tools, {
   if (bounded && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1200000)) {
     throw new Error("hosted smoke stop deadline budget is invalid");
   }
-  let observed = bounded ? elapsedNow() : undefined;
-  if (bounded && (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0)) {
-    throw new Error("hosted smoke stop elapsed clock is invalid");
-  }
-  const expiresAt = bounded ? observed + timeoutMs : Infinity;
-  const remaining = () => {
-    const current = elapsedNow();
-    if (typeof current !== "number" || !Number.isFinite(current) || current < observed) {
-      throw new Error("hosted smoke stop elapsed clock is invalid");
+  let observed;
+  let clockFailed = false;
+  let clockFailure;
+  // The predicate and its poller must share both the high-water mark and
+  // permanent failure state: waitFor retries ordinary observation errors.
+  const readElapsedNow = () => {
+    if (clockFailed) throw clockFailure;
+    try {
+      const current = elapsedNow();
+      if (typeof current !== "number" || !Number.isFinite(current) || current < 0 ||
+          (observed !== undefined && current < observed)) {
+        throw new Error("hosted smoke stop elapsed clock is invalid");
+      }
+      observed = current;
+      return current;
+    } catch (error) {
+      clockFailed = true;
+      clockFailure = error;
+      throw error;
     }
-    observed = current;
+  };
+  const expiresAt = bounded ? readElapsedNow() + timeoutMs : Infinity;
+  const remaining = () => {
+    const current = readElapsedNow();
     if (current >= expiresAt) throw annotateFixtureFailure(new Error("hosted smoke stop deadline exceeded"),
       { category: "deadline", timedOut: true, commandBudgetMs: timeoutMs });
     return Math.max(1, Math.floor(expiresAt - current));
@@ -1132,7 +1145,7 @@ async function stopExactUnit(unit, tools, {
     after = await waitFor(() => {
       const value = snapshot();
       return value.values.LoadState === "not-found" && cgroupAbsent(expectedCgroup) ? value : false;
-    }, `${unit} unload and cgroup removal`, 20_000, { elapsedNow, expiresAt, sleep });
+    }, `${unit} unload and cgroup removal`, 20_000, { elapsedNow: readElapsedNow, expiresAt, sleep });
   } catch (error) {
     if (bounded) remaining();
     throw error;

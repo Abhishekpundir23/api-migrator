@@ -1,7 +1,7 @@
 # No-cost runner readiness verification
 
 Date: 2026-10-01. Baseline main: bdb1e8c542cab951f6dda9fcec4e9556cc68e99e.
-Branch: codex/no-cost-runner-readiness. Status: local implementation and hosted compatibility correction verified; new exact-head hosted release checks pending.
+Branch: codex/no-cost-runner-readiness. Latest continuation: 2026-10-04. Status: stop-clock and process-exit corrections pass full local CI; fresh review and exact-head hosted release verification pending. Historical results below are not current release approval.
 
 ## Authorized boundary
 
@@ -224,3 +224,49 @@ and packaging. Log: `/tmp/api-migrator-free-readiness/full-ci-cache-refresh.log`
 The denied native stop-clock section and its test target remain unchanged.
 This local success does not clear that Important review gate. New exact-head
 hosted tests and review of the permitted delta remain pending.
+
+## October 4 authorized continuation
+
+Following the status report naming both blockers, the user directly requested
+implementation. The earlier read-only delegation restriction is no longer the
+scope of this repair; production activation and unrelated professional assets
+remain excluded.
+
+The native stop-clock issue was reproduced with 13 new regressions, all failing
+because the operation could recover after invalid, reversing, or thrown clock
+reads. One permanently failing reader now supplies both command budget and
+polling reads with a shared high-water mark. Focused tests pass 40/40 and the
+deployment suite at that point passes 386/386, without skips. Execution and
+cleanup retain their existing separate deadlines and authority boundaries.
+
+The previous hosted failure at 3e669d81 was `prepare.uid`, not DNS admission;
+its diagnostic did not retain the underlying errno or UID tuple. A controlled
+network-disabled Linux container probe reproduced `ESRCH`: open a child
+process's `/proc/PID/status`, wait for its exit, then read the original file
+descriptor. The observer previously handled only `ENOENT`. Both indicate a
+departed process and now leave `uidObserved` false; final exact container
+inspection remains mandatory, install without prior live UID proof still
+fails, and cancellation cannot mint proof from either error. Incorrect UIDs,
+malformed status and other read errors remain fatal. A failing prepare regression
+passed after this narrow change. Container/cancellation tests pass 32/32.
+This reproduces and fixes a real process-exit race; the historical run's exact
+cause remains unproven, so it is not claimed retrospectively as confirmed.
+
+Future UID failures expose only fixed reason/errno classifications and, for an
+unexpected UID, a bounded four-integer tuple. Raw process data, paths and error
+text are not exported. Diagnostic regressions failed before implementation;
+the existing 512-byte limit and error provenance are preserved.
+
+The checksum-verified official Node 22.23.2 toolchain is used locally. Docker
+Desktop was initially stopped, then started normally. Fresh runner image build,
+configuration verification and four-phase integration passed. This remains
+functional Docker evidence with `securityDrill: false`, not production host or
+independent observer evidence. Full CI, fresh whole-branch review and exact-head
+hosted results must still pass before merge.
+
+Combined Node 22.23.2 `npm run ci` with `API_MIGRATOR_DOCKER_TEST=1`
+completed successfully after both corrections: 1,191/1,191 tests, no failures,
+skips or cancellations (388 deployment tests), package builds/typechecks,
+pilot validation, console production build and packaging. Local logs are in
+`/tmp/api-migrator-pr23-tu9IS0/`; exact-head hosted runs are the durable shared
+release record. Review and hosted results are still pending at this commit.
