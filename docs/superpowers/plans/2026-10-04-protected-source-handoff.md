@@ -51,13 +51,15 @@
 - [x] Run `node --import tsx --test packages/app/test/runner-job-handoff.test.ts`; expected RED: handoff operations unavailable.
 - [x] Refactor the internal producer to preserve its one generated bundle; existing `prepare` discards bytes as before. Wire source storage only when explicitly configured; include the configured DB directory in its protected path exclusions. Commit before put, validate fully and re-read current job/time after put/read. Keep test-only injection source-internal.
 - [x] Run all job/store tests, build, and full `API_MIGRATOR_DOCKER_TEST=1 npm run ci` with a disposable database under Node 22; expected exit 0, zero failures/skips.
-- [ ] Get fresh whole-branch review, fix important findings with RED/GREEN tests, retain verified results, commit with identity verification, push a topic branch and open a PR. Leave merging and live deployment separate.
+- [x] Get fresh whole-branch review, fix important findings with RED/GREEN tests and retain verified results.
+- [ ] Commit with identity verification, push a topic branch and open a PR; record live release status in the PR. Leave merging and live deployment separate.
 
 ## Verification record
 
 - Storage RED: 17 tests failed on missing behavior; GREEN: 18/18 including simultaneous processes and writer death.
-- Service RED: 15 tests failed on unavailable handoff operations; GREEN: 21/21 including the real runner input loader.
-- Full local CI under Node 22.23.2 with Docker enabled: 1,230 tests passed, zero failures, cancellations or skips; all builds/typechecks and console packaging passed.
+- Service RED: 15 tests failed on unavailable handoff operations; final GREEN: 23/23 including the real runner input loader and both checkout-overlap regressions.
+- Final local CI under Node 22.23.2 with Docker enabled after review fixes: 1,232 tests passed, zero failures, cancellations or skips; all builds/typechecks and console packaging passed.
 - The first full run caught the old internal export allowlist. It now explicitly lists the two new normal storage exports and rejects the additional private implementation/test paths; all six package-surface tests pass.
-- Fresh Docker image build and configuration verification passed. Image integration and independent review are recorded in the PR when complete.
+- Independent whole-branch review found one Important issue: storage inside an actual checkout omitted from declared migration roots. Both direct and aliased regression tests failed before the fix and pass afterward; canonical overlap is rejected before insertion. No Critical or Minor findings were reported.
+- Fresh Docker image build, configuration verification and four-phase integration passed after that fix. Image ID: `sha256:1b8057e259c237fd279debdef97353243c3c037770ac658d6cc88b3719aeefd0`; `securityDrill:false` remains explicit.
 - These results establish local input custody and compatibility, not deployed execution or signing authority.

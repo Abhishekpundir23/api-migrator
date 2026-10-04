@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { createJobSourceStoreTestAccess } from "../../db/src/runner-job-source-store.js";
@@ -256,3 +256,29 @@ test("handoff bytes and canonical plan are accepted by the actual credential-fre
   assert.equal(inputs.manifest.transformSet, "inngest-v3-to-v4");
   assert.equal(inputs.source.entries[0]!.content.toString(), "export const fixture = 1;\n");
 });
+
+for (const alias of [false, true]) {
+  test(`retained input inside the actual checkout is rejected before persistence (${alias ? "aliased" : "direct"})`, (t) => {
+    const f = createJobFixture();
+    t.after(() => f.close());
+    const checkout = realpathSync(f.input.checkoutPath);
+    const directory = join(checkout, ".git", "retained-inputs");
+    mkdirSync(directory, { mode: 0o700 });
+    if (alias) {
+      const link = join(dirname(f.directory), "checkout-alias");
+      symlinkSync(checkout, link);
+      f.input.checkoutPath = link;
+    }
+    const service = value(createRunnerJobServiceForTest({ directory: f.directory,
+      expectedStoreId: f.storeId, evidence: null, handoffDirectory: directory },
+    { migrationWorkspaceRoots: f.policy.migrationWorkspaceRoots }, {
+      clock: f.clock, client: null, openStore: f.access.open,
+      openSources: createJobSourceStoreTestAccess(checkout).open,
+    }));
+    const session = value(service.open());
+    t.after(() => session.close());
+    assert.deepEqual(session.prepareHandoff(f.input), { ok: false, source: "job", code: "store_unsafe" });
+    assert.equal(f.store.list().length, 0);
+    assert.deepEqual(readdirSync(directory), []);
+  });
+}

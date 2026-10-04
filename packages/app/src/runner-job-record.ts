@@ -96,7 +96,7 @@ function construct(config: unknown, policy: unknown, testDependencies?: TestDepe
         store.observeTime(clock.wallNow());
         if (validated.handoffDirectory !== null) sources = openSources(validated.handoffDirectory, store.storeId,
           { ...storePolicy, migrationWorkspaceRoots: [...storePolicy.migrationWorkspaceRoots, validated.directory] });
-        return { ok: true, value: session(store, clock, client, sources ?? null) };
+        return { ok: true, value: session(store, clock, client, sources ?? null, validated.handoffDirectory) };
       } catch (error) {
         try { sources?.close(); } catch { /* Preserve only the original sanitized failure. */ }
         try { store?.close(); } catch { /* Preserve only the original sanitized failure. */ }
@@ -106,7 +106,8 @@ function construct(config: unknown, policy: unknown, testDependencies?: TestDepe
   } catch (error) { return runnerJobFailure(error); }
 }
 
-function session(store: JobStore, clock: JobClock, client: RunnerEvidenceClient | null, sources: JobSourceStore | null): RunnerJobSession {
+function session(store: JobStore, clock: JobClock, client: RunnerEvidenceClient | null,
+  sources: JobSourceStore | null, handoffDirectory: string | null): RunnerJobSession {
   let closed = false;
   const guard = () => { if (closed) throw new RunnerJobError("store_unavailable"); };
   const run = <T>(operation: () => T): JobResult<T> => {
@@ -117,8 +118,8 @@ function session(store: JobStore, clock: JobClock, client: RunnerEvidenceClient 
     inspect: (key: unknown) => run(() => inspectRunnerJob(store, key)),
     prepare: (input: unknown) => run(() => prepareRunnerJob(store, input, clock)),
     prepareHandoff: (input: unknown) => run(() => {
-      if (!sources) throw new RunnerJobError("input_invalid");
-      return prepareRunnerJobHandoff(store, sources, input, clock);
+      if (!sources || handoffDirectory === null) throw new RunnerJobError("input_invalid");
+      return prepareRunnerJobHandoff(store, sources, input, clock, handoffDirectory);
     }),
     readHandoff: (key: unknown) => run(() => {
       if (!sources) throw new RunnerJobError("input_invalid");

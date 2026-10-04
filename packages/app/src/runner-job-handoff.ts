@@ -34,8 +34,8 @@ export function readRunnerJobHandoff(store: JobStore, sources: JobSourceStore, k
 }
 
 export function prepareRunnerJobHandoff(store: JobStore, sources: JobSourceStore, input: unknown,
-  clock: JobClock): RunnerJobHandoff {
-  const { job, sourceBundle } = prepareRunnerJobWithSource(store, input, clock, MAX_JOB_SOURCE_BYTES);
+  clock: JobClock, handoffDirectory: string): RunnerJobHandoff {
+  const { job, sourceBundle } = prepareRunnerJobWithSource(store, input, clock, MAX_JOB_SOURCE_BYTES, handoffDirectory);
   // Preparation has committed and read back the winning row before any source
   // is published. A failed source write cannot change that plan or its expiry.
   prepared(store, job, clock);

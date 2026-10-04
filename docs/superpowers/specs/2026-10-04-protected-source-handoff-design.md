@@ -31,6 +31,11 @@ path policy as the job store. Store one 0600 `source.bundle` in a 0700 directory
 named from the store ID and validated job ID. The canonical plan stays in the
 job database, not a second mutable manifest. No source goes into SQLite.
 
+Before preparing a handoff, also reject canonical overlap with the actual
+selected `checkoutPath`, whether or not it is inside a declared migration root.
+This includes `.git`, ignored descendants, and aliased checkout paths. The check
+runs before job insertion; reading an existing handoff must not need the checkout.
+
 Use a fresh private staging directory, exclusive file creation, file fsync,
 and directory rename to publish a complete nonempty entry without replacing an
 existing entry. Synchronize the directory before returning success. A duplicate

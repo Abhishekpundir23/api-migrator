@@ -1,4 +1,6 @@
 import type { JobStore } from "@api-migrator/db/runner-job-store-internal";
+import { realpathSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { canonicalJson } from "./canonical-json.js";
 import { validateLocalPreviewExecution, type PreviewSourceIdentity } from "./preview-evidence.js";
 import {
@@ -70,9 +72,20 @@ export function prepareRunnerJob(store: JobStore, value: unknown, clock: JobCloc
 
 /** Source-internal: retain the one bundle used to derive the committed job. */
 export function prepareRunnerJobWithSource(store: JobStore, value: unknown, clock: JobClock,
-  maxSourceBytes?: number): { job: Readonly<JobRecord>; sourceBundle: Buffer } {
+  maxSourceBytes?: number, protectedSourceDirectory?: string): { job: Readonly<JobRecord>; sourceBundle: Buffer } {
   const input = snapshotInput(value);
   store.observeTime(now(clock));
+  if (protectedSourceDirectory !== undefined) {
+    // Declared workspace roots may not include this selected checkout. Bind
+    // custody to the actual canonical checkout before creating a durable job;
+    // .git and ignored descendants are clean Git input but disposable storage.
+    try {
+      const checkout = realpathSync(resolve(input.checkoutPath));
+      const sources = realpathSync(protectedSourceDirectory);
+      const beneath = (a: string, b: string) => a === b || a.startsWith(b === sep ? b : `${b}${sep}`);
+      if (beneath(checkout, sources) || beneath(sources, checkout)) throw new Error("overlapping source custody");
+    } catch { throw new RunnerJobError("store_unsafe"); }
+  }
   let source: PreviewSourceIdentity;
   let sourceBundle: Buffer;
   try {
