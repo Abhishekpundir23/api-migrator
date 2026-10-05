@@ -1,7 +1,7 @@
 # Offline GCP trial planning
 
-This is a **proposal renderer**, not a deployment command. It makes no network
-calls and never invokes `gcloud`. It cannot create, approve, or delete resources,
+The local CLIs are **proposal renderers**, not deployment commands. They make
+no network calls and never invoke `gcloud`. They cannot create, approve, or delete resources,
 authorize payment, or enable production. `--execute` and unknown flags fail.
 
 ```sh
@@ -56,14 +56,78 @@ instance ID, fully qualified serial log name and a maximum two-hour window.
 It requests at most 1,000 records; reaching that limit or
 missing terminal records must be treated as possibly truncated/incomplete.
 The renderer does not parse or certify log results. Direct serial-output reads
-are not post-deletion retention proof. Download and hash evidence before
-deletion, then verify it remains retrievable afterward.
+are not post-deletion retention proof. Try to download and hash evidence before
+deletion, then verify it remains retrievable afterward. Evidence collection
+must never delay cleanup: missing evidence means an incomplete trial, not an
+extension of the deadline.
+
+## Prepare the guest bootstrap
+
+```sh
+npm run gcp:trial:prepare -- --input /absolute/path/request-without-startup-hash.json
+```
+
+Use the same request fields above, **omitting** `startupScriptSha256`. The output
+is `{plan, script}`; the returned plan binds the exact generated script bytes.
+Save those bytes as `startup.sh` only for a separately approved trial. The CLI
+does not write or execute the script. Re-render an expired plan and review its
+new digest. Existing planner-only proposals are not upgraded or authorized.
+
+The generated Bash expects root on a disposable Debian 12 amd64 guest. It
+verifies the pinned Node 22.23.2 archive, creates a non-login user, clears the
+worker environment, verifies the source archive, installs only the engine and
+root build tools with `npm ci --ignore-scripts`, and runs engine build/tests.
+Unrelated console dependencies are excluded. The 64 MiB per-file limit permits
+the engine's deliberate oversized-lockfile test, and test files run serially
+within the 128-process limit. It reserves 90 seconds before
+the deletion deadline, bounds child processes, and rejects any second run using
+a persistent root-owned directory. Repository code never runs as root. No
+GitHub credentials or application secrets are supplied.
+
+Only the root wrapper emits `API_MIGRATOR_TRIAL_RESULT` after the bounded worker
+returns. Worker output stays in a root-owned log, not the marker stream. An
+absent marker is incomplete; a marker is not signed or independently verified.
+This `engine-smoke-v1` profile does not exercise Docker, deploy the app, or
+satisfy the dedicated runner drill. Local Docker tests use real verified Node,
+tar, npm, user creation and privilege dropping with a small source fixture;
+downloads and OS-package installation inside the test container are substituted.
+The full bootstrap test downloads the pinned official Node archive to the local
+temporary fixture before running the container without network access.
+
+## Offline cleanup decisions
+
+`cleanup.mjs` exports `captureOwnership(planJson, observationJson, {nowMs})` and
+`decideCleanup(planJson, recordJson, inventoryJson, {nowMs, reason})`. Inputs are
+bounded JSON strings. The controller validates but does not fetch observations.
+
+- Capture requires a completed error-free insert operation, matching uint64 VM
+  ID, matching nonce, exact project/zone links and a single auto-delete boot disk
+  with its own ID. IDs remain strings. Records bind the original plan/deadline.
+- Inventory envelopes contain `projectId`, `zone`, `observedAt`, `filter: ""`,
+  and `instances`/`disks` page chains. Each page is `{pageToken, response}` with
+  the original GCP list response. All pages must be present in order, ending
+  without a next token. Reads must be at most 30 seconds old. Filtered, error,
+  malformed, repeated or partial responses are rejected.
+- `deadline` waits only before the absolute deadline. `completed`, `failed`,
+  `cancelled` and `controller_failure` require immediate cleanup decisions.
+  There is no dependency on successful log collection.
+- Replacements, changed attachments and unexpected run-labelled resources are
+  flagged without adopting them. Remaining disks are reported independently.
+  Only complete absence observations yield `absence_observed`.
+
+Every output retains `executionBlocked`, `activationBlocked`, and
+`cloudVerified: false`. Digests detect accidental changes; they are not
+authentication or custody. Forged JSON observations do not prove cloud state.
+Google documents name-based deletion without an expected-ID precondition.
+Fresh ID checks do not eliminate name-reuse races, so cleanup due returns
+`generation_safe_delete_unverified`, **not an executable delete command**.
+The older planner command arrays are review material, not controller approval.
 
 ## Not implemented yet
 
-The bootstrap script, live preflight/controller, strict result/evidence parser,
-and exact-ID cleanup verification remain separate work. No `startup.sh` ships
-in this directory; its supplied hash is only a proposed binding. Prior to any
+The live preflight/cloud adapter, independently running deadline watchdog,
+durable authenticated custody, strict result/evidence parser and live cleanup
+verification remain separate work. Prior to any
 cloud execution, verify the personal account (no impersonation), source/runtime
 and bootstrap hashes, image/guest environment, network policies, logging
 retention, API/quota, and the approved cost/credit boundary. Cloud Logging,
@@ -77,4 +141,6 @@ Sources: [VM lifetime semantics](https://docs.cloud.google.com/compute/docs/inst
 [create flags](https://docs.cloud.google.com/sdk/gcloud/reference/compute/instances/create),
 [IP connectivity](https://docs.cloud.google.com/compute/docs/ip-addresses),
 [serial output and retention](https://docs.cloud.google.com/compute/docs/troubleshooting/viewing-serial-port-output),
-[Cloud Logging reads](https://docs.cloud.google.com/sdk/gcloud/reference/logging/read).
+[Cloud Logging reads](https://docs.cloud.google.com/sdk/gcloud/reference/logging/read),
+[instance deletion](https://docs.cloud.google.com/compute/docs/reference/rest/v1/instances/delete),
+[disk deletion](https://docs.cloud.google.com/compute/docs/reference/rest/v1/disks/delete).

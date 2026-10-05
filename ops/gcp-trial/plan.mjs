@@ -73,7 +73,7 @@ export function renderTrialPlan(input, { nowMs = Date.now() } = {}) {
       "boot_image_and_guest_environment_verified", "compute_api_and_quota_verified", "effective_ingress_policy_verified",
       "declared_internet_egress_verified", "off_host_logging_retention_verified", "independent_cleanup_controller_ready"],
     requiredAfterExecution: ["instance_and_boot_disk_ids_recorded", "live_configuration_matches_proposal",
-      "complete_bounded_smoke_result", "logs_downloaded_and_hashed_before_delete", "exact_owned_vm_and_disk_absent",
+      "complete_bounded_smoke_result", "evidence_collection_must_not_delay_cleanup", "exact_owned_vm_and_disk_absent",
       "logs_retrievable_after_delete"],
     commands: {
       inspectNetwork: command("compute", "networks", "describe", input.network),
@@ -88,11 +88,12 @@ export function renderTrialPlan(input, { nowMs = Date.now() } = {}) {
         `--labels=api-migrator-trial=${input.runId}`, `--metadata=${metadata}`, "--metadata-from-file=startup-script=./startup.sh"),
       describe: command("compute", "instances", "describe", instanceName, `--zone=${ZONE}`),
       delete: command("compute", "instances", "delete", instanceName, `--zone=${ZONE}`),
-      instanceInventory: command("compute", "instances", "list", `--zones=${ZONE}`, `--filter=name=${instanceName}`),
+      instanceInventory: command("compute", "instances", "list", `--zones=${ZONE}`),
       diskInventory: command("compute", "disks", "list", `--zones=${ZONE}`),
     },
-    limitations: ["proposal_only_no_cloud_calls", "startup_script_and_controller_not_implemented",
+    limitations: ["proposal_only_no_cloud_calls", "live_cloud_adapter_not_implemented",
       "timer_not_a_cost_cap_or_deletion_receipt", "name_based_commands_require_fresh_exact_id_ownership_checks",
+      "fresh_id_checks_do_not_eliminate_name_reuse_races",
       "network_names_do_not_prove_isolation", "logging_enablement_is_not_retained_evidence"],
   };
   return { ...body, planDigest: `sha256:${createHash("sha256").update(canonicalJson(body)).digest("hex")}` };

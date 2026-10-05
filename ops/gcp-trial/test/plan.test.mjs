@@ -33,6 +33,7 @@ test("private proposal scopes every command and fixes an absolute deletion deadl
   }
   assert(!create.some((arg) => arg.startsWith("--max-run-duration")));
   for (const command of Object.values(plan.commands)) assert(command.includes(`--project=${PROJECT}`));
+  assert(!plan.commands.instanceInventory.some((arg) => arg.startsWith("--filter")));
   assert.equal(plan.runtime.version, "22.23.2");
   assert.match(plan.runtime.sha256, /^[a-f0-9]{64}$/);
   assert.equal(plan.source.revision, "a".repeat(40));
