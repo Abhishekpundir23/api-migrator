@@ -25,6 +25,23 @@ npm run runner:image:verify
 npm run runner:image:integration
 ```
 
+The standalone integration resolves the image to its immutable local ID. Each
+phase creates a retained container with a random attempt label, validates its
+ownership, and starts it by ID. Bounded cleanup removes only that owned ID and
+confirms absence before the temporary workspace is deleted or success is
+printed. If create completion or cleanup is uncertain, the command fails and
+reports the retained workspace path; do not delete it until the matching
+container's ownership and absence have been checked. This protects command
+timeouts, not an externally killed orchestrator, host crash, or hostile Docker
+daemon. The native joined fixture keeps its separate cleanup coordinator.
+
+To exercise real Docker client-timeout and nonzero-exit cleanup explicitly:
+
+```bash
+FIXTURE_TEST_IMAGE=$(docker image inspect --format '{{.Id}}' api-migrator-runner:local) \
+  node --test ops/publication-runner/image/test/docker-fixture-executor-docker.mjs
+```
+
 The integration script uses real containers and proves the phase protocol and
 result bindings. Its Inngest fixture uses the complete audited transform set
 and an explicit operator-declared `long-running` deployment; it asserts zero

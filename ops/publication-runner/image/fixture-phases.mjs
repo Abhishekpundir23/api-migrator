@@ -114,7 +114,7 @@ export function createFixturePhaseOperations({ image, paths, plan, addresses, ex
       "--label", `api-migrator.fixture-job=${jobId}`, "--network", network,
       ...hostAddresses.flatMap((address) => ["--add-host", `registry.npmjs.org:${address}`]),
       ...mounts.flatMap(([source, target, readOnly]) => bind(source, target, readOnly)), image, ...args];
-    const output = await execute({ phase, network, dockerArgs, timeoutMs, maxBuffer: MAX_BUFFER });
+    const output = await execute({ phase, network, image, dockerArgs, timeoutMs, maxBuffer: MAX_BUFFER });
     if (typeof output !== "string") throw new TypeError(`${phase} status output invalid`);
     return output;
   }
@@ -198,16 +198,6 @@ export function createFixturePhaseOperations({ image, paths, plan, addresses, ex
         phaseIntegration: "passed", securityDrill: false };
     },
   };
-}
-
-export function executeDockerFixturePhase({ dockerArgs, timeoutMs, maxBuffer }) {
-  if (!Array.isArray(dockerArgs) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1
-    || !Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > MAX_BUFFER) {
-    throw new TypeError("fixture execution bounds invalid");
-  }
-  return execFileSync("docker", dockerArgs, {
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs, maxBuffer,
-  });
 }
 
 function exactPhaseOutput(output, pattern, phase) {

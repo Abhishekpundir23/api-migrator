@@ -47,5 +47,9 @@ jobs:
       - run: npm ci
       - run: npm run build:packages
       - run: npm run runner:image:build
+      - name: Verify real Docker timeout and failure cleanup
+        run: |
+          FIXTURE_TEST_IMAGE=$(docker image inspect --format '{{.Id}}' api-migrator-runner:local) \
+            node --test ops/publication-runner/image/test/docker-fixture-executor-docker.mjs
       - run: npm run runner:image:verify
       - run: npm run runner:image:integration
