@@ -29,6 +29,7 @@
     "test:ops:gcp": "node --test ops/gcp-trial/test/*.test.mjs",
     "gcp:trial:plan": "node ops/gcp-trial/render-plan.mjs",
     "gcp:trial:prepare": "node ops/gcp-trial/prepare-trial.mjs",
+    "gcp:trial:inventory": "node ops/gcp-trial/collect-inventory.mjs",
     "test:ops:shell": "bash -n ops/publication-runner/run-credential-free-preview.sh && bash -n ops/publication-runner/deployment/cleanup-runner.sh",
     "test:ops:gateway": "node --test ops/publication-runner/gateway/test/*.test.mjs",
     "test:ops:deployment": "node --test ops/publication-runner/deployment/test/*.test.mjs",

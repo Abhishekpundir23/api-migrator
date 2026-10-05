@@ -123,9 +123,57 @@ Fresh ID checks do not eliminate name-reuse races, so cleanup due returns
 `generation_safe_delete_unverified`, **not an executable delete command**.
 The older planner command arrays are review material, not controller approval.
 
+## Read-only live inventory preflight
+
+Unlike the proposal renderers, the inventory CLI performs **authenticated GET
+requests**. It cannot create, delete or modify resources. Use the existing personal
+Cloud Shell session and a short-lived token through stdin, never a token argument,
+environment variable or saved credential file:
+
+```sh
+set -o pipefail
+gcloud auth print-access-token \
+  --account=YOUR_APPROVED_PERSONAL_EMAIL \
+  --project=project-32bf49a2-bd30-4956-850 \
+  --billing-project=project-32bf49a2-bd30-4956-850 |
+  node ops/gcp-trial/collect-inventory.mjs --read-only --token-stdin \
+    --expected-account=YOUR_APPROVED_PERSONAL_EMAIL
+```
+
+Do not enable shell tracing or credential/debug logging. The token is sent only
+to Google's fixed UserInfo and Compute endpoints. Supply the same approved
+personal email in both places; there is no default. The same token must identify
+that exact verified email before any Compute request, and service-account emails
+are refused. The CLI verifies identity, not whether an account is personally
+owned: independently confirm the selected account first. No project, zone,
+URL, HTTP method, impersonation or execution override is accepted.
+Native HTTPS certificate verification must remain enabled.
+
+The collector fetches complete **unfiltered** zonal instance and disk page chains
+in `us-central1-a`. Field projections retain only identities, timestamps, labels,
+disk attachment/auto-delete information and disk users; startup metadata,
+service-account configuration and disk encryption material are not requested.
+Unexpected fields are rejected. IDs stay strings, redirects and API errors fail,
+and the complete read is limited to 20 seconds, 20 pages per kind, 1,000 resources
+per kind and 256 KiB. It never retries a partial read as if it were complete.
+
+Output wraps the existing cleanup `inventory` envelope plus the observed account
+and completion time. `inventory.observedAt` uses the oldest read's time, not a
+fresh timestamp painted over earlier pages. It is an observation, not a globally
+atomic snapshot, signed receipt, ownership record, cleanup proof or deployment
+authorization. `cloudVerified: false`, `executionBlocked: true` and
+`activationBlocked: true` remain set. All failures use sanitized diagnostics;
+the credential is neither saved nor included in results. Output contains the
+verified account email and resource details; do not commit live output publicly.
+
+An empty inventory only means no matching zonal resources were observed. It
+does not certify account-wide absence or remaining trial credit. Credit, billing
+mode, effective network rules, quota, images, logging and watchdog readiness
+must be checked separately before provisioning.
+
 ## Not implemented yet
 
-The live preflight/cloud adapter, independently running deadline watchdog,
+The mutation-capable cloud adapter, broader configuration preflight, independently running deadline watchdog,
 durable authenticated custody, strict result/evidence parser and live cleanup
 verification remain separate work. Prior to any
 cloud execution, verify the personal account (no impersonation), source/runtime

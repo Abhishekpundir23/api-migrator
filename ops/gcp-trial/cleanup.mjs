@@ -118,15 +118,21 @@ function pages(chain, kind) {
   return items;
 }
 
+export function validateTrialInventory(inventoryJson, { nowMs = Date.now() } = {}) {
+  const inventory = parse(inventoryJson);
+  fields(inventory, ["projectId", "zone", "observedAt", "filter", "instances", "disks"]);
+  scope(inventory); fresh(inventory.observedAt, nowMs);
+  if (inventory.filter !== "") throw new Error("invalid inventory scope or time");
+  return { inventory, instances: pages(inventory.instances, "instances"), disks: pages(inventory.disks, "disks") };
+}
+
 export function decideCleanup(planJson, recordJson, inventoryJson, { nowMs = Date.now(), reason = "deadline" } = {}) {
   if (!time(nowMs) || !["deadline", "completed", "failed", "cancelled", "controller_failure"].includes(reason)) {
     throw new Error("invalid cleanup clock or reason");
   }
-  const p = validatedPlan(planJson), r = validatedOwnership(recordJson, p, nowMs), inv = parse(inventoryJson);
-  fields(inv, ["projectId", "zone", "observedAt", "filter", "instances", "disks"]);
-  scope(inv); fresh(inv.observedAt, nowMs);
-  if (inv.filter !== "" || inv.observedAt < r.capturedAt) throw new Error("invalid inventory scope or time");
-  const instances = pages(inv.instances, "instances"), disks = pages(inv.disks, "disks");
+  const p = validatedPlan(planJson), r = validatedOwnership(recordJson, p, nowMs);
+  const { inventory: inv, instances, disks } = validateTrialInventory(inventoryJson, { nowMs });
+  if (inv.observedAt < r.capturedAt) throw new Error("invalid inventory scope or time");
   const common = { projectId: PROJECT, zone: ZONE, runId: p.runId, planDigest: p.planDigest, deleteAt: p.deleteAt,
     instanceId: r.instanceId, diskId: r.diskId, observedAt: inv.observedAt, inventoryDigest: jsonDigest(inv),
     executionBlocked: true, activationBlocked: true, cloudVerified: false };
