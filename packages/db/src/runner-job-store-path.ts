@@ -66,11 +66,22 @@ function regular(path: string, max: number): Stats {
   return stat;
 }
 export function validateFiles(directory: string): Stats {
-  for (const entry of readdirSync(directory)) {
-    if (entry === `${DATABASE_BASENAME}-journal`) regular(join(directory, entry), MAX_JOURNAL_BYTES);
-    else if (entry !== DATABASE_BASENAME) unsafe();
+  for (let attempt = 0; ; attempt++) {
+    let journalDisappeared = false;
+    for (const entry of readdirSync(directory)) {
+      if (entry === `${DATABASE_BASENAME}-journal`) {
+        try { regular(join(directory, entry), MAX_JOURNAL_BYTES); }
+        catch (error) {
+          // A concurrent SQLite commit can unlink its rollback journal after
+          // enumeration. Revalidate the entire allowlist at most twice; no
+          // other missing file, journal error or unsafe entry is tolerated.
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || attempt >= 2) throw error;
+          journalDisappeared = true;
+        }
+      } else if (entry !== DATABASE_BASENAME) unsafe();
+    }
+    if (!journalDisappeared) return regular(join(directory, DATABASE_BASENAME), MAX_DATABASE_BYTES);
   }
-  return regular(join(directory, DATABASE_BASENAME), MAX_DATABASE_BYTES);
 }
 function same(a: Stats, b: Stats): boolean {
   return sameIdentity(a, b) && a.nlink === b.nlink;

@@ -148,6 +148,11 @@ are refused. The CLI verifies identity, not whether an account is personally
 owned: independently confirm the selected account first. No project, zone,
 URL, HTTP method, impersonation or execution override is accepted.
 Native HTTPS certificate verification must remain enabled.
+Compute requests explicitly set the pinned quota project. UserInfo is an
+identity lookup, not a project resource request, and receives no quota-project
+header: the live preflight observed `USER_PROJECT_DENIED` with that header and
+successful verified identity without it. No IAM or API-enablement change is
+needed for that correction.
 
 The collector fetches complete **unfiltered** zonal instance and disk page chains
 in `us-central1-a`. Field projections retain only identities, timestamps, labels,

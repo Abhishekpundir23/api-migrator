@@ -39,9 +39,9 @@ test("collects authenticated unfiltered inventories without granting execution a
   for (const { url, options } of f.calls) {
     assert.equal(options.method, "GET"); assert.equal(options.redirect, "error");
     assert.equal(options.headers.Authorization, `Bearer ${TOKEN}`);
-    assert.equal(options.headers["X-Goog-User-Project"], PROJECT);
     assert.ok(options.signal instanceof AbortSignal); assert.equal(options.body, undefined);
     if (url.hostname === "www.googleapis.com") {
+      assert.equal(options.headers["X-Goog-User-Project"], PROJECT);
       assert.ok(url.href.startsWith(BASE + "/")); assert.equal(url.searchParams.has("filter"), false);
       assert.equal(url.searchParams.get("maxResults"), "100");
       assert.ok(url.searchParams.get("fields").includes("nextPageToken"));
@@ -50,6 +50,20 @@ test("collects authenticated unfiltered inventories without granting execution a
     }
   }
   assert.equal(JSON.stringify(out).includes(TOKEN), false);
+});
+
+test("authenticates UserInfo without a quota header while retaining explicit Compute quota scope", async () => {
+  const f = fixture({ alter: (url, options) => {
+    if (url.hostname === "openidconnect.googleapis.com" && Object.hasOwn(options.headers, "X-Goog-User-Project")) {
+      return Response.json({ error: { code: 403, status: "PERMISSION_DENIED",
+        details: [{ reason: "USER_PROJECT_DENIED", domain: "googleapis.com" }] } }, { status: 403 });
+    }
+  } });
+  const out = await collectTrialInventory(TOKEN, { fetchImpl: f.fetchImpl, now: () => NOW });
+  assert.equal(out.account, ACCOUNT);
+  assert.equal(Object.hasOwn(f.calls[0].options.headers, "X-Goog-User-Project"), false);
+  assert.equal(f.calls.length, 3);
+  for (const call of f.calls.slice(1)) assert.equal(call.options.headers["X-Goog-User-Project"], PROJECT);
 });
 
 test("follows opaque page tokens and preserves uint64 IDs losslessly", async () => {

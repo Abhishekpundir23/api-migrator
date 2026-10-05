@@ -71,10 +71,11 @@ export async function collectTrialInventory(token, { expectedAccount, fetchImpl 
       lastTime = value; return value;
     };
     timer = setTimeout(() => controller.abort(), timeoutMs);
-    const getJson = async (url) => {
+    const getJson = async (url, computeQuota = false) => {
       checkClock();
       const response = await fetchImpl(url, { method: "GET", redirect: "error", credentials: "omit", cache: "no-store",
-        headers: { Authorization: `Bearer ${token}`, "X-Goog-User-Project": PROJECT, Accept: "application/json" }, signal: controller.signal });
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json",
+          ...(computeQuota ? { "X-Goog-User-Project": PROJECT } : {}) }, signal: controller.signal });
       if (response.status !== 200) { await response.body?.cancel(); throw new Error(); }
       const chunks = [];
       for await (const chunk of response.body) {
@@ -98,7 +99,7 @@ export async function collectTrialInventory(token, { expectedAccount, fetchImpl 
         const url = new URL(`${BASE}/${kind}`);
         url.searchParams.set("maxResults", "100"); url.searchParams.set("fields", fields(kind));
         if (pageToken) url.searchParams.set("pageToken", pageToken);
-        const response = await getJson(url.href);
+        const response = await getJson(url.href, true);
         if (Object.hasOwn(response, "error") || Object.hasOwn(response, "warning")
           || response.kind !== (kind === "instances" ? "compute#instanceList" : "compute#diskList")
           || response.selfLink !== `${BASE}/${kind}`) throw new Error();
