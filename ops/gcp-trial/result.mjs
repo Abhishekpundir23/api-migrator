@@ -39,13 +39,14 @@ function terminal(line, plan) {
 
 // Consume the bounded JSON array from the existing serial-port-1 Logging read.
 // Never fetch, execute, attest or claim the supplied records are authentic.
-export function parseTrialResult(planJson, recordJson, logsJson, { nowMs = Date.now() } = {}) {
+export function parseTrialResult(planJson, recordJson, logsJson, { nowMs = Date.now(), eventUntilMs = nowMs } = {}) {
   try {
     const { plan, ownership } = validateTrialOwnership(planJson, recordJson, { nowMs });
+    if (!Number.isSafeInteger(eventUntilMs) || eventUntilMs < plan.issuedAt || eventUntilMs > nowMs) throw new Error();
     if (typeof logsJson !== "string" || Buffer.byteLength(logsJson) > 1_048_576) throw new Error();
     const entries = JSON.parse(logsJson);
     if (!Array.isArray(entries) || entries.length > 1000) throw new Error();
-    const from = BigInt(plan.issuedAt) * 1_000_000n, until = BigInt(Math.min(plan.deleteAt, nowMs)) * 1_000_000n;
+    const from = BigInt(plan.issuedAt) * 1_000_000n, until = BigInt(Math.min(plan.deleteAt, eventUntilMs)) * 1_000_000n;
     const logName = `projects/${plan.projectId}/logs/serialconsole.googleapis.com%2Fserial_port_1_output`;
     const candidates = []; let split = false, fragment = false, markerCount = 0;
     for (const entry of entries) {

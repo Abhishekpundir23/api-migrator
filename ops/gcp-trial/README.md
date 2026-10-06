@@ -1,8 +1,10 @@
-# Offline GCP trial planning
+# GCP trial preparation and read-only observations
 
-The local CLIs are **proposal renderers**, not deployment commands. They make
-no network calls and never invoke `gcloud`. They cannot create, approve, or delete resources,
-authorize payment, or enable production. `--execute` and unknown flags fail.
+The planning and preparation CLIs are **proposal renderers**, not deployment
+commands. They make no network calls and never invoke `gcloud`. The inventory
+and log collectors described below make authenticated reads only. None can
+create, approve, or delete resources, authorize payment, or enable production.
+`--execute` and unknown flags fail.
 
 ```sh
 npm run gcp:trial:plan -- --input /absolute/path/request.json
@@ -179,7 +181,9 @@ must be checked separately before provisioning.
 ## Offline smoke-result read-back
 
 `result.mjs` exports `parseTrialResult(planJson, ownershipJson, logsJson,
-{nowMs})`. Supply the original plan, captured ownership record, and the JSON
+{nowMs, eventUntilMs})`. The optional event cutoff defaults to parsing time;
+collectors freeze it at query start, while receive timestamps may extend to
+parsing time. Supply the original plan, captured ownership record, and the JSON
 array downloaded by the existing `renderEvidenceRead` command. It makes no
 cloud calls, changes no resource and runs no guest code. Keep raw logs private.
 
@@ -207,7 +211,8 @@ Coherent output is labelled `reported_passed` or `reported_failed`, **not a
 verified cloud result**. Only bounded enums/identity/digests leave the parser;
 raw payloads do not. The SHA-256 binds the exact supplied log bytes, not their
 authenticity or completeness. A caller can forge a JSON array or omit records;
-an authenticated collector with durable custody is still required.
+authenticated collection with durable custody is still required for stronger
+evidence. The bounded collector below covers the read, not durable custody.
 
 `executionBlocked` and `activationBlocked` remain true. `cloudVerified`,
 `evidenceAuthenticityVerified`, `cleanupVerified` and `releaseEvidenceEligible`
@@ -220,10 +225,63 @@ it. Log availability or parser failure must never delay scheduled cleanup.
 Format references: [Cloud Logging LogEntry](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry),
 [serial port output](https://docs.cloud.google.com/compute/docs/troubleshooting/viewing-serial-port-output).
 
+## Authenticated bounded log collection
+
+`logs.mjs` exports `collectTrialLogs(planJson, ownershipJson, token,
+{expectedAccount})`. The CLI accepts one regular, single-link JSON file of at
+most 32 KiB, with exactly `{ "plan": <original plan>, "ownership": <captured record> }`.
+Do not manufacture ownership records to claim a real trial was run.
+
+Confirm that `TRIAL_ACCOUNT` is the approved personal email and that the
+selected gcloud configuration has no impersonation. Then pipe that account's
+short-lived access token to the collector. Never put it in a shell argument,
+file, log, issue or PR:
+
+```sh
+set -o pipefail
+gcloud auth print-access-token --account="$TRIAL_ACCOUNT" \
+  --project=project-32bf49a2-bd30-4956-850 \
+  --billing-project=project-32bf49a2-bd30-4956-850 |
+  node ops/gcp-trial/collect-logs.mjs --read-only --token-stdin \
+    --expected-account="$TRIAL_ACCOUNT" --input /absolute/path/trial-input.json
+```
+
+The collector validates the original plan and ownership binding before any
+network request. UserInfo must confirm the exact expected verified email;
+service-account identities are refused. As with the inventory collector, this
+checks identity, not personal ownership of the supplied email. Keep native
+HTTPS verification enabled and shell tracing/debug logging disabled.
+Only then does it call Cloud Logging
+for the fixed personal project, originating zone, lossless VM ID and serial
+port 1. It uses the reviewed time-window filter without a marker-text filter,
+so ordinary output, fragments and duplicate markers remain visible to the
+parser. The event cutoff is fixed at the earlier of collection start or trial
+deadline. Later ingestion is allowed only through collection completion.
+
+Google's [`entries.list`](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/entries/list)
+uses POST for a read. Requests use the fixed Google endpoint, explicit personal
+quota project, no redirects or retries, and descending event order. Empty
+pages with continuation tokens are followed; every other query parameter
+stays fixed. Token loops, malformed responses, a 20-page cap, an unfinished
+continuation at 1,000 entries, or a 1 MiB cumulative response budget fail
+closed. Reaching exactly 1,000 entries without continuation is still incomplete
+evidence. The read has a 20-second total deadline; token input has its own
+10-second deadline. Neither wait may delay a separate cleanup controller.
+
+Only a bounded summary is printed: query and raw-page SHA-256 digests, times,
+entry count and the parser's `reported_*` or `incomplete` observation. Raw logs,
+page tokens, credentials and the account email are not emitted or persisted.
+The nested parser digest covers the assembled JSON entry array, not the raw
+page bytes. These hashes are not signatures; the output can be forged after
+collection and cannot independently prove completeness, retention or cleanup.
+All existing authority flags remain blocked or false. Tests substitute the
+external transport, not the CLI, file/credential readers, collector or parser;
+live VM/Logging compatibility is not yet verified.
+
 ## Not implemented yet
 
 The mutation-capable cloud adapter, broader configuration preflight, independently running deadline watchdog,
-durable authenticated custody, authenticated log collection and live cleanup
+durable authenticated custody, live log-collection verification and live cleanup
 verification remain separate work. Prior to any
 cloud execution, verify the personal account (no impersonation), source/runtime
 and bootstrap hashes, image/guest environment, network policies, logging

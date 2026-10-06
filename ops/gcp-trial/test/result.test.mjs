@@ -110,6 +110,18 @@ test("accepts Google's nanosecond timestamps inside the window", () => {
   const f = resultFixture(); f.entry.timestamp = f.entry.timestamp.replace("Z", "123456Z");
   assert.equal(parse(f).status, "reported_passed");
 });
+test("a fixed event cutoff rejects even one later nanosecond while retrieval time advances", () => {
+  const f = resultFixture(); f.entry.timestamp = new Date(f.nowMs).toISOString().replace("Z", "000001Z");
+  f.entry.receiveTimestamp = new Date(f.nowMs + 500).toISOString();
+  assert.throws(() => parse(f, [f.entry], { nowMs: f.nowMs + 1000, eventUntilMs: f.nowMs }), /invalid trial/);
+});
+test("fixed event cutoff still permits ingestion between cutoff and retrieval completion", () => {
+  const f = resultFixture(); f.entry.receiveTimestamp = new Date(f.nowMs + 500).toISOString();
+  assert.equal(parse(f, [f.entry], { nowMs: f.nowMs + 1000, eventUntilMs: f.nowMs }).status, "reported_passed");
+});
+for (const until of [NaN, -1, 2_000_000_000_000 - 1, 2_000_000_004_001]) test(`rejects invalid explicit event cutoff ${until}`, () => {
+  const f = resultFixture(); assert.throws(() => parse(f, [f.entry], { eventUntilMs: until }), /invalid trial/);
+});
 for (const [name, mutate] of [
   ["altered plan command", f => { f.plan.commands.create.push("--service-account=other"); }],
   ["changed record ID", f => { f.ownership.instanceId = "123"; }],
