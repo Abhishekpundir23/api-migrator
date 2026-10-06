@@ -91,6 +91,13 @@ function validatedOwnership(text, p, nowMs) {
   return r;
 }
 
+// Shared offline binding checks; these digests do not authenticate observations.
+export function validateTrialOwnership(planJson, recordJson, { nowMs = Date.now() } = {}) {
+  if (!time(nowMs)) throw new Error("invalid ownership clock");
+  const plan = validatedPlan(planJson);
+  return { plan, ownership: validatedOwnership(recordJson, plan, nowMs) };
+}
+
 function pages(chain, kind) {
   if (!Array.isArray(chain) || chain.length === 0 || chain.length > 20) throw new Error("invalid inventory pages");
   let token = "";

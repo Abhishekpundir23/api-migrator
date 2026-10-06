@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { prepareTrial, renderWorker } from "../bootstrap.mjs";
+import { parseTrialResult } from "../result.mjs";
+import { resultFixture } from "./result-fixture.mjs";
 
 const NOW = 2_000_000_000_000;
 const request = (overrides = {}) => ({ projectId: "project-32bf49a2-bd30-4956-850",
@@ -153,8 +155,10 @@ test("root bootstrap hands real verified runtime to an unprivileged worker and r
   writeFileSync(join(root, "source.tar.gz"), source);
   chmodSync(root, 0o755);
   chmodSync(join(root, "source.tar.gz"), 0o644);
-  const value = request({ sourceArchiveSha256: sha(source), deleteAt: Date.now() + 3_600_000 });
-  writeFileSync(join(root, "startup.sh"), prepareTrial(value).script);
+  const issuedAt = Date.now();
+  const value = request({ sourceArchiveSha256: sha(source), deleteAt: issuedAt + 3_600_000 });
+  const artifact = prepareTrial(value, { nowMs: issuedAt });
+  writeFileSync(join(root, "startup.sh"), artifact.script);
   // OS packages/downloads are substituted; the archive, hash check, tar permissions,
   // account creation, privilege drop, pinned Node, npm and repository phases are real.
   const setup = `printf '%s\\n' '#!/bin/bash' 'exit 0' > /usr/bin/apt-get\n` +
@@ -171,4 +175,12 @@ test("root bootstrap hands real verified runtime to an unprivileged worker and r
   assert.equal(record.status, "passed"); assert.equal(record.phase, "complete");
   assert.equal(record.runId, value.runId); assert.equal(record.sourceArchiveSha256, sha(source));
   assert.match(result.stdout, /REPEAT_REFUSED/);
+  // Actual wrapper stdout, with synthetic Logging resource metadata only. This
+  // is local parser/bootstrap compatibility, not live VM or Logging evidence.
+  const fixture = resultFixture(issuedAt, value), observedAt = Date.now();
+  fixture.entry.textPayload = result.stdout;
+  fixture.entry.timestamp = fixture.entry.receiveTimestamp = new Date(observedAt).toISOString();
+  const parsed = parseTrialResult(JSON.stringify(artifact.plan), JSON.stringify(fixture.ownership),
+    JSON.stringify([fixture.entry]), { nowMs: observedAt });
+  assert.equal(parsed.status, "reported_passed"); assert.equal(parsed.cloudVerified, false);
 });

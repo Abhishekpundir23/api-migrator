@@ -176,10 +176,54 @@ does not certify account-wide absence or remaining trial credit. Credit, billing
 mode, effective network rules, quota, images, logging and watchdog readiness
 must be checked separately before provisioning.
 
+## Offline smoke-result read-back
+
+`result.mjs` exports `parseTrialResult(planJson, ownershipJson, logsJson,
+{nowMs})`. Supply the original plan, captured ownership record, and the JSON
+array downloaded by the existing `renderEvidenceRead` command. It makes no
+cloud calls, changes no resource and runs no guest code. Keep raw logs private.
+
+The parser revalidates the plan and ownership digests, then checks **every**
+record's exact project, zone, lossless VM ID and serial-port-1 log name. UTC
+event timestamps must fall between plan issuance and the earlier of the
+deadline or parsing time; nanoseconds are compared without rounding. A supplied
+receive timestamp must be coherent and no later than parsing time. Retrieve
+the same bounded event window after deletion when checking retention; a later
+retrieval does not itself prove deletion or retention.
+
+Input is capped at 1 MiB and 1,000 entries. Hitting the 1,000-entry query limit,
+split entries, a missing/partial marker, or multiple markers returns
+`incomplete`. Wrong resource identities, invalid timestamps, malformed input
+and unsupported payload types fail with a sanitized error. There is no
+best-effort fallback, silent deduplication or split-record reconstruction.
+An extra `API_MIGRATOR` stem without a complete marker also makes the evidence
+incomplete; shorter fragments are indistinguishable from ordinary boot text.
+
+Exactly one compact `API_MIGRATOR_TRIAL_RESULT` marker is required, either bare
+or following the console's `startup-script: ` prefix. Its fixed wrapper wire
+format must match run, source revision/hash, profile, phase, exit code and
+blocked activation. Unknown fields and duplicate JSON keys are refused.
+Coherent output is labelled `reported_passed` or `reported_failed`, **not a
+verified cloud result**. Only bounded enums/identity/digests leave the parser;
+raw payloads do not. The SHA-256 binds the exact supplied log bytes, not their
+authenticity or completeness. A caller can forge a JSON array or omit records;
+an authenticated collector with durable custody is still required.
+
+`executionBlocked` and `activationBlocked` remain true. `cloudVerified`,
+`evidenceAuthenticityVerified`, `cleanupVerified` and `releaseEvidenceEligible`
+remain false even for a reported pass. The real local Docker bootstrap test
+feeds its actual wrapper stdout through the parser with synthetic Logging
+metadata; that is format compatibility only, not a VM/Logging integration test.
+Unknown live serial formatting must be inspected and tested before accepting
+it. Log availability or parser failure must never delay scheduled cleanup.
+
+Format references: [Cloud Logging LogEntry](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry),
+[serial port output](https://docs.cloud.google.com/compute/docs/troubleshooting/viewing-serial-port-output).
+
 ## Not implemented yet
 
 The mutation-capable cloud adapter, broader configuration preflight, independently running deadline watchdog,
-durable authenticated custody, strict result/evidence parser and live cleanup
+durable authenticated custody, authenticated log collection and live cleanup
 verification remain separate work. Prior to any
 cloud execution, verify the personal account (no impersonation), source/runtime
 and bootstrap hashes, image/guest environment, network policies, logging
