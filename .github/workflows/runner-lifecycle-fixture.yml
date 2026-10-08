@@ -2,6 +2,11 @@ name: Runner image lifecycle fixture
 
 on:
   workflow_dispatch:
+    inputs:
+      dns_comparison:
+        description: Run a bounded read-only DNS comparison before each fixture (may warm upstream caches)
+        type: boolean
+        default: false
   pull_request:
     paths: [".github/workflows/runner-lifecycle-fixture.yml", "ops/publication-runner/**", "packages/**", "scripts/test-git-identity.mjs", "package-lock.json"]
   push:
@@ -136,6 +141,54 @@ jobs:
           sudo install -o root -g root -m 0444 "$manifest" "${tool_root}/SHA256SUMS"
           sudo install -d -o root -g root -m 0755 /tmp/api-migrator-fixture-results
           printf 'sealed=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Compare default DNS paths (read-only opt-in)
+        id: dns_comparison
+        if: github.event_name == 'workflow_dispatch' && inputs.dns_comparison
+        timeout-minutes: 3
+        shell: bash
+        env:
+          DNS_PROBE_RUN_ID: ${{ github.run_id }}
+          DNS_PROBE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          DNS_PROBE_SOURCE_REVISION: ${{ github.sha }}
+          DNS_PROBE_REPOSITORY: ${{ github.repository }}
+          DNS_PROBE_SCENARIO: ${{ matrix.scenario }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          tool_root=/usr/local/libexec/api-migrator-hosted-smoke
+          sudo sha256sum --check --strict "${tool_root}/SHA256SUMS" >/dev/null
+          artifact=$(mktemp "${RUNNER_TEMP}/fixture-dns-comparison.XXXXXX")
+          if timeout --kill-after=5s 130s env -i PATH="${tool_root}:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C LC_ALL=C TZ=UTC \
+            DNS_PROBE_RUN_ID="$DNS_PROBE_RUN_ID" DNS_PROBE_RUN_ATTEMPT="$DNS_PROBE_RUN_ATTEMPT" \
+            DNS_PROBE_SOURCE_REVISION="$DNS_PROBE_SOURCE_REVISION" DNS_PROBE_REPOSITORY="$DNS_PROBE_REPOSITORY" \
+            DNS_PROBE_SCENARIO="$DNS_PROBE_SCENARIO" \
+            "${tool_root}/node" "${tool_root}/fixture-runtime/ops/publication-runner/deployment/compare-hosted-dns.mjs" \
+            --read-only > "$artifact"; then
+            size=$(wc -c < "$artifact")
+            if (( size > 0 && size <= 65536 )); then
+              chmod 0440 "$artifact"
+              printf 'path=%s\n' "$artifact" >> "$GITHUB_OUTPUT"
+            else
+              rm -f "$artifact"
+              echo "DNS comparison output bound failed" >&2
+              exit 1
+            fi
+          else
+            rm -f "$artifact"
+            echo "DNS comparison failed" >&2
+            exit 1
+          fi
+
+      - name: Upload read-only DNS comparison before fixture execution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.dns_comparison.outcome == 'success' && steps.dns_comparison.outputs.path != ''
+        with:
+          name: joined-fixture-dns-comparison-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.scenario }}
+          path: ${{ steps.dns_comparison.outputs.path }}
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
 
       - name: Run joined fixture
         shell: bash

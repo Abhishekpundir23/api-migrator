@@ -238,6 +238,46 @@ Ubuntu 24.04 workers. This is a separate test entrypoint,
 wrapper, observer, or console actions. The existing 15-scenario smoke stays
 separate.
 
+### Opt-in same-host DNS comparison
+
+For an unresolved DNS-admission failure, dispatch `runner-lifecycle-fixture.yml`
+with `dns_comparison=true`. It defaults to false and is not run by push or PR
+events. Immediately before each joined fixture, an unprivileged, credential-free
+process compares three channels using the host's unchanged default DNS settings:
+
+- one reused Node resolver;
+- a fresh Node resolver for each sample;
+- independent UDP `dig` queries (no TCP retry or alternate server).
+
+The probe makes at most 25 sample groups at a five-second cadence, within a
+125-second acquisition budget. Each query has its own short deadline; the shell
+also imposes an outer process timeout. Only `registry.npmjs.org` A records are
+queried. The retained JSON contains bounded counts, TTL ranges, answer-set and
+resolver-configuration digests, endpoint classes, wire flags, timings, runtime
+versions, and source/run/scenario identity. Raw addresses, resolver configuration,
+command output, and exception text are not exported. The comparison is uploaded
+before fixture execution; incomplete or oversized output is not uploaded.
+Digests permit equality comparisons, not secrecy or authorization.
+
+The answers never feed a plan or admission decision. The fixture subsequently
+performs its own normal acquisition with its unchanged 120-second minimum TTL,
+125-second acquisition bound, default resolver, and expiry enforcement. These
+are self-attested diagnostics, not independent release or security evidence.
+Publication, activation, and external signing remain blocked.
+
+Interpret this experiment carefully: extra queries can warm upstream caches,
+the channels are not packet-identical, and this is a newly allocated runner—not
+the historical failed VM. A later passing fixture does not prove a fix. If all
+channels deliver low refreshed TTLs, the short lifetime is visible outside the
+Node decoder too. Persistent differences between reused and fresh channels
+warrant investigation of resolver routing/backend affinity, not an automatic
+resolver change. Node 22.23.2 explicitly disables its c-ares query cache in
+[the native channel setup](https://github.com/nodejs/node/blob/v22.23.2/src/cares_wrap.cc#L881-L910),
+so constructing fresh resolvers is not a supported client-cache fix. No
+reproduction leaves the prior failure unexplained; retain that limitation.
+
+### Fixture execution and bounds
+
 The shared `image/fixture-phases.mjs` generates the fixed Inngest fixture and
 dependency lockfile before restricted execution is measured. After fresh DNS
 acquisition, the adapter binds the real source, image config digest, runner plan
