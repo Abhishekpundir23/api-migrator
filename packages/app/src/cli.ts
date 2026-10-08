@@ -13,8 +13,9 @@ function usage(): never {
   console.error(
     [
       "Preview:",
-      "  tsx packages/app/src/cli.ts owner/repo [--base main] [--branch name] [--deployment-kind long-running|serverless]",
+      "  tsx packages/app/src/cli.ts owner/repo [--base main] [--branch name] [--deployment-kind long-running|serverless] [--preview-bundle /absolute/new-directory]",
       "  Deployment is operator-declared. Omission remains unknown and F12-blocked.",
+      "  Preview bundles contain sensitive source; use a private external parent (Unix only).",
       "",
       "Direct CLI publication is intentionally disabled. Use the local operator console",
       "so the signed owner authorization and durable one-use receipt are enforced.",
@@ -48,9 +49,10 @@ migrateRepo({
   manifest,
   baseBranch: args.baseBranch,
   branch: args.branch,
+  previewBundlePath: args.previewBundlePath,
   publication: { mode: "preview" },
 })
-  .then(({ report, prUrl, publication: outcome }) => {
+  .then(({ report, prUrl, publication: outcome, previewBundle }) => {
     console.log(`Changed files: ${report.changedFiles.length}`);
     console.log(`Operator-declared deployment: ${report.manifest.deployment?.kind ?? "unknown"} (not independently verified)`);
     console.log(`Applied: ${report.summary.applied}  |  Flagged: ${report.summary.review}`);
@@ -60,6 +62,11 @@ migrateRepo({
     console.log(`Candidate tree: ${outcome.candidateTreeSha}`);
     if (outcome.headSha) console.log(`Approved head: ${outcome.headSha}`);
     console.log(`Artifact: ${outcome.artifactDigest}`);
+    if (previewBundle) {
+      console.log(`Preview bundle: ${previewBundle.path}`);
+      console.log(`Patch: ${previewBundle.receipt.patchSha256} (${previewBundle.receipt.patchBytes} bytes)`);
+      console.log("Local review only: this does not authorize publication or attest execution.");
+    }
     if (outcome.blockers.length) {
       console.log("Safety blockers:");
       for (const blocker of outcome.blockers) console.log(`  - ${blocker.message}`);

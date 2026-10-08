@@ -158,6 +158,37 @@ npm run migrate -- owner/repo
 
 The command prints the preflight ID, exact base commit, blockers, artifact fingerprint, and candidate tree. The direct CLI and package-root API are preview-only. The local console contains distinct preview, read-only challenge, offline owner-envelope, and operator-confirmation stages, but only preview is currently usable: challenge and publish fail closed because the trusted runner-capability provider is not wired. Its write-capable campaign executor is isolated behind an explicitly internal package subpath for console integration and must not be exposed as an API or invoked outside the completed ceremony. External publication remains disabled until the runner-capability, ruleset/CI-evidence, and supervised-drill gates are completed.
 
+### Inspect the exact preview patch locally
+
+Opt in to a private review bundle when you need to inspect more than the changed
+filenames. Create an owner-only parent directory **outside this checkout**, then
+choose a new child directory for each preview:
+
+```bash
+review_parent=$(mktemp -d /tmp/api-migrator-review.XXXXXX)
+npm run migrate -- owner/repo --preview-bundle "$review_parent/preview"
+```
+
+The bundle contains `candidate.patch` and `receipt.json`. The patch preserves
+binary content and file-mode changes. The receipt records its SHA-256 and byte
+length alongside the repository, base commit, candidate tree, artifact digest,
+preflight ID, preview status and blockers. A blocked preview stays blocked; an
+unchanged preview has an empty patch. The receipt is written last.
+
+This export supports macOS and Linux. Its parent must already exist, be owned
+by the current user, permit no group/other access, and not be a symlink. The
+destination must not exist. Use a path without dot segments, repeated separators
+or a trailing separator; these ambiguous forms are rejected before inspecting
+the output directory. Bundle directories use mode `0700`; files use `0600`.
+Patches over 8 MiB are rejected. Windows is not supported until equivalent ACL
+enforcement is implemented.
+
+Treat the bundle as sensitive source code: keep it local, inspect it in a trusted
+viewer, and remove it when no longer needed. Raw patch bytes are not added to
+ordinary reports, console storage or logs. Export is available only for plain
+previews, not owner challenges or publication runs. It does not approve a
+migration, provide a trusted runner attestation, or enable publishing.
+
 ### Owner challenge and offline signing
 
 The console's **Generate owner challenge** action is currently unavailable. It reruns the exact preview but then requires an opaque capability returned by `verifyPublicationRunnerAttestation`; because no trusted control-plane provider supplies that capability, the action fails closed and downloads no challenge. Once that provider is integrated and drilled, the action is designed to require the selected-repository GitHub App identity, recheck current remote state, and download canonical challenge JSON.

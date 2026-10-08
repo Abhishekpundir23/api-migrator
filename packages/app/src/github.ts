@@ -51,6 +51,7 @@ import {
 import { sanitizeMigrationReport } from "./report.js";
 import type { AppMigrationReport } from "./report.js";
 import { captureLocalPreviewExecution } from "./preview-source.js";
+import { validatePreviewBundlePath, writePreviewBundle, type PreviewBundleResult } from "./preview-bundle.js";
 import {
   buildExpectedOwnerAuthorizationBindings,
   readOwnerPublicationPolicy,
@@ -81,6 +82,8 @@ export interface MigrateRepoInput {
   baseBranch?: string;
   /** Optional exact content-addressed branch override returned by preview. */
   branch?: string;
+  /** Opt-in sensitive local review output, available only for plain previews. */
+  previewBundlePath?: string;
   /** Omitted means preview. Publication is never the default. */
   publication?: PublicationRequest;
   /**
@@ -103,6 +106,8 @@ export interface MigrateRepoResult {
   preflightId: string;
   artifactDigest: string;
   publication: PublicationOutcome;
+  /** Safe path and receipt metadata only; never raw patch bytes. */
+  previewBundle?: PreviewBundleResult;
   /** Present only on the internal, read-only owner-challenge path. */
   ownerChallenge?: OwnerAuthorizationChallengeArtifact;
   error?: string;
@@ -156,6 +161,12 @@ export async function migrateRepo(
   const repository = parseRepositorySlug(input.slug);
   const manifestJson = exactManifestJson(input.manifest, input.manifestJson);
   const publication = validatePublicationRequest(input.publication);
+  if (input.previewBundlePath !== undefined &&
+    (publication.mode !== "preview" || input.ownerChallenge !== undefined || input.runnerAttestation !== undefined)) {
+    throw new Error("Preview bundle is available only for plain previews");
+  }
+  const previewBundlePath = input.previewBundlePath === undefined
+    ? undefined : validatePreviewBundlePath(input.previewBundlePath);
   const ownerChallenge = input.ownerChallenge === undefined
     ? null
     : validateOwnerChallengePreparationRequest(input.ownerChallenge);
@@ -346,29 +357,39 @@ export async function migrateRepo(
       if (ownerChallenge !== null) {
         throw new Error("Owner challenge is unavailable because the reviewed preview has no changes");
       }
+      const outcome = createNoChangesOutcome(publication, common);
       return {
         report,
         prUrl: null,
         changed: false,
         preflightId,
         artifactDigest: artifact.digest,
-        publication: createNoChangesOutcome(publication, common),
+        publication: outcome,
+        ...(previewBundlePath === undefined ? {} : { previewBundle: writePreviewBundle({
+          path: previewBundlePath, checkoutPath: repoPath, environment: cleanEnv,
+          repositorySlug: repository.slug, publication: outcome,
+        }) }),
       };
     }
 
     if (publication.mode === "preview" && ownerChallenge === null) {
+      const outcome: PublicationOutcome = {
+        ...common,
+        mode: "preview",
+        status: blockers.length === 0 ? "preview_ready" : "blocked",
+        overridden: false,
+      };
       return {
         report,
         prUrl: null,
         changed: true,
         preflightId,
         artifactDigest: artifact.digest,
-        publication: {
-          ...common,
-          mode: "preview",
-          status: blockers.length === 0 ? "preview_ready" : "blocked",
-          overridden: false,
-        },
+        publication: outcome,
+        ...(previewBundlePath === undefined ? {} : { previewBundle: writePreviewBundle({
+          path: previewBundlePath, checkoutPath: repoPath, environment: cleanEnv,
+          repositorySlug: repository.slug, publication: outcome,
+        }) }),
       };
     }
 

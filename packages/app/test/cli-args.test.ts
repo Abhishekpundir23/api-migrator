@@ -17,3 +17,17 @@ test("CLI rejects ambiguous deployment arguments before starting a preview", () 
     assert.throws(() => parsePreviewArgs(args));
   }
 });
+
+// Catches a dropped opt-in or a parser that accepts ambiguous/relative output.
+test("CLI preview bundle is absolute, single-valued, and preserves other preview flags", () => {
+  assert.deepEqual(parsePreviewArgs(["owner/repo", "--preview-bundle", "/private/reviews/new", "--base", "main",
+    "--branch", "migration", "--deployment-kind", "serverless"]), {
+    slug: "owner/repo", previewBundlePath: "/private/reviews/new", baseBranch: "main",
+    branch: "migration", deploymentKind: "serverless",
+  });
+  for (const tail of [["--preview-bundle"], ["--preview-bundle", "relative"],
+    ["--preview-bundle", "/private/reviews/new", "--preview-bundle", "/private/reviews/other"],
+    ["--preview-bundle", "--base", "main"]]) {
+    assert.throws(() => parsePreviewArgs(["owner/repo", ...tail]));
+  }
+});

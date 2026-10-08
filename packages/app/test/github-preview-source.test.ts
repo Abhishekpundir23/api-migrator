@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -174,6 +175,7 @@ test("migrateRepo captures the same canonical source identity for GitHub slug ca
     for (const result of results) {
       assert.equal(result.changed, false);
       assert.equal(result.publication.status, "no_changes");
+      assert.equal("previewBundle" in result, false);
     }
     assert.deepEqual(results[0]!.report.previewExecution, results[1]!.report.previewExecution);
     assert.deepEqual(results[1]!.report.previewExecution, {
@@ -190,6 +192,126 @@ test("migrateRepo captures the same canonical source identity for GitHub slug ca
   } finally {
     rmSync(source, { recursive: true, force: true });
   }
+});
+
+// Catches export after checkout cleanup, synthetic metadata, or patch leakage into ordinary results.
+test("explicit preview export binds the actual staged candidate and survives disposable checkout cleanup", async () => {
+  const source = repositoryFixture();
+  const privateParent = mkdtempSync(join(tmpdir(), "preview-integration-bundle-"));
+  let checkoutPath = "";
+  try {
+    const dependencies = createPreviewMigrateRepoDependencies({
+      cloneRepository({ destinationPath, environment }) {
+        checkoutPath = destinationPath;
+        cloneFixture(source, destinationPath, environment);
+      },
+      async captureExecution() {
+        return { schemaVersion: 1, kind: "local-preview", source: null, unavailableReason: "repository_identity_unavailable" };
+      },
+      copyRepository: copyGitFreeTree,
+      async runMigration(_manifest, repoPath) {
+        writeFileSync(join(repoPath, "index.ts"), "export const value = 2; // PRIVATE_SOURCE_SENTINEL\n");
+        const report = verifiedReport();
+        report.changedFiles = ["index.ts"];
+        report.summary.applied = 1;
+        report.summary.changedFiles = 1;
+        return { report, requiredVerificationFiles: [] };
+      },
+    });
+    const result = await migrateRepo({ slug: "owner/repo", manifest, manifestJson, baseBranch: "main",
+      previewBundlePath: join(privateParent, "bundle") }, dependencies);
+    assert.equal(result.changed, true);
+    assert.equal(result.publication.status, "preview_ready");
+    assert.ok(result.previewBundle);
+    assert.equal(result.previewBundle.receipt.preflightId, result.preflightId);
+    assert.equal(result.previewBundle.receipt.candidateTreeSha, result.publication.candidateTreeSha);
+    assert.equal(result.previewBundle.receipt.artifactDigest, result.artifactDigest);
+    assert.equal(result.previewBundle.receipt.baseSha, EXPECTED_BASE_SHA);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SOURCE_SENTINEL|diff --git/);
+    assert.equal(existsSync(checkoutPath), false);
+    const reconstruction = join(privateParent, "reconstruction");
+    cloneFixture(source, reconstruction, gitEnvironment);
+    git(reconstruction, ["apply", "--index", "--", join(result.previewBundle.path, "candidate.patch")]);
+    assert.equal(git(reconstruction, ["write-tree"]), result.publication.candidateTreeSha);
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(privateParent, { recursive: true, force: true });
+  }
+});
+
+// Catches exporting only successful changed previews, or silently promoting blocked outcomes.
+test("explicit export retains blocked and no-change preview outcomes", async () => {
+  const source = repositoryFixture();
+  const privateParent = mkdtempSync(join(tmpdir(), "preview-integration-status-"));
+  try {
+    for (const status of ["no_changes", "blocked"] as const) {
+      const dependencies = createPreviewMigrateRepoDependencies({
+        cloneRepository({ destinationPath, environment }) { cloneFixture(source, destinationPath, environment); },
+        async captureExecution() {
+          return { schemaVersion: 1, kind: "local-preview", source: null, unavailableReason: "repository_identity_unavailable" };
+        },
+        copyRepository: copyGitFreeTree,
+        async runMigration(_manifest, repoPath) {
+          const report = verifiedReport();
+          if (status === "blocked") {
+            writeFileSync(join(repoPath, "index.ts"), "export const value = 2;\n");
+            report.changedFiles = ["index.ts"];
+            report.summary.changedFiles = 1;
+            report.summary.review = 1;
+          }
+          return { report, requiredVerificationFiles: [] };
+        },
+      });
+      const result = await migrateRepo({ slug: "owner/repo", manifest, baseBranch: "main",
+        previewBundlePath: join(privateParent, status) }, dependencies);
+      assert.equal(result.publication.status, status);
+      assert.ok(result.previewBundle);
+      assert.equal(result.previewBundle.receipt.previewStatus, status);
+      assert.deepEqual(result.previewBundle.receipt.blockers, result.publication.blockers.map((b) => b.message));
+      assert.equal(result.previewBundle.receipt.authorizesPublication, false);
+      if (status === "no_changes") {
+        assert.equal(readFileSync(join(result.previewBundle.path, "candidate.patch")).length, 0);
+        assert.equal(result.previewBundle.receipt.candidateTreeSha, EXPECTED_TREE_SHA);
+      } else assert.equal(result.previewBundle.receipt.blockers.length, 1);
+    }
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(privateParent, { recursive: true, force: true });
+  }
+});
+
+// Sensitive-path preconditions must execute before any clone, capture, auth, or migration callback.
+test("bundle paths and privileged usage are rejected before external preview callbacks or auth", async () => {
+  const privateParent = mkdtempSync(join(tmpdir(), "preview-integration-reject-"));
+  let callbacks = 0;
+  const dependencies = createPreviewMigrateRepoDependencies({
+    cloneRepository() { callbacks++; throw new Error("external callback reached"); },
+    async captureExecution() { callbacks++; throw new Error("external callback reached"); },
+    copyRepository() { callbacks++; throw new Error("external callback reached"); },
+    async runMigration() { callbacks++; throw new Error("external callback reached"); },
+  });
+  try {
+    mkdirSync(join(privateParent, "existing"));
+    for (const path of ["relative", join(privateParent, "existing"), join(privateParent, "missing", "new")]) {
+      await assert.rejects(() => migrateRepo({ slug: "owner/repo", manifest, previewBundlePath: path }, dependencies), /preview bundle/i);
+      assert.equal(callbacks, 0);
+    }
+    const now = Date.now();
+    const privileged = [
+      { publication: { mode: "publish", approvedBy: "operator", preflightId: `pf_${"a".repeat(64)}`,
+        previewCompletedAt: now - 1_000, ownerAuthorizationEnvelope: "{}", ownerChallengeDigest: `sha256:${"b".repeat(64)}` } },
+      { ownerChallenge: { preflightId: `pf_${"a".repeat(64)}`, artifactDigest: `sha256:${"b".repeat(64)}`,
+        candidateTreeSha: "c".repeat(40), previewCompletedAt: now - 1_000, previewReceiptExpiresAt: now + 30_000 } },
+      { runnerAttestation: {} as never },
+    ];
+    for (const input of privileged) {
+      // Without the preview dependency seam this also proves the export's own privileged gate.
+      await assert.rejects(() => migrateRepo({ slug: "owner/repo", manifest, previewBundlePath: join(privateParent, "new"),
+        ...input } as never), /preview bundle.*plain preview/i);
+    }
+    assert.equal(existsSync(join(privateParent, "new")), false);
+    assert.equal(callbacks, 0);
+  } finally { rmSync(privateParent, { recursive: true, force: true }); }
 });
 
 test("explicit capture unavailability remains attached and does not stop migration", async () => {
