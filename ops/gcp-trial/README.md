@@ -121,8 +121,10 @@ bounded JSON strings. The controller validates but does not fetch observations.
 Every output retains `executionBlocked`, `activationBlocked`, and
 `cloudVerified: false`. Digests detect accidental changes; they are not
 authentication or custody. Forged JSON observations do not prove cloud state.
-Google documents name-based deletion without an expected-ID precondition.
-Fresh ID checks do not eliminate name-reuse races, so cleanup due returns
+The public deletion reference describes names; the discovery contract also
+accepts numeric instance selectors (see the rehearsal below). There is no
+documented expected-ID precondition for a **name-targeted** delete. Fresh ID
+checks do not eliminate that name-reuse race, so cleanup due still returns
 `generation_safe_delete_unverified`, **not an executable delete command**.
 The older planner command arrays are review material, not controller approval.
 
@@ -295,13 +297,77 @@ read is not an atomic cloud snapshot. `executionBlocked` and `activationBlocked`
 remain true; `cloudVerified`, `cleanupVerified`, `releaseEvidenceEligible`,
 `evidenceAuthenticityVerified` and `independentControllerReady` remain false.
 
-The documented [instance deletion API](https://docs.cloud.google.com/compute/docs/reference/rest/v1/instances/delete)
-and [disk deletion API](https://docs.cloud.google.com/compute/docs/reference/rest/v1/disks/delete)
-target resource names, without a documented expected-ID precondition.
-`requestId` deduplicates requests; it does not bind the first request to a
-resource generation. Fresh inventory alone cannot close that name-reuse race.
+The [instance deletion reference](https://docs.cloud.google.com/compute/docs/reference/rest/v1/instances/delete)
+and [disk deletion reference](https://docs.cloud.google.com/compute/docs/reference/rest/v1/disks/delete)
+describe resource names, without an expected-ID precondition. The discovery
+contract supports numeric instance selectors, but that does not establish a
+complete VM-and-disk cleanup guarantee. `requestId` deduplicates requests; it
+does not bind a name-targeted request to a resource generation.
 Provisioning stays blocked until an independently reviewed cleanup mechanism
 and the remaining network, billing and trial preflights are in place.
+
+## Immutable-ID cleanup protocol rehearsal
+
+`cleanup-protocol.mjs` exports `rehearseTrialCleanup(planJson, ownershipJson,
+{transport, readInventory, now, wait, reason, timeoutMs})`. This is an **offline
+protocol kernel**, not a live deletion tool. It has no default network transport,
+credentials, CLI, scheduler, or production caller. The existing read-only CLIs
+and their blocked decisions are unchanged. Run its fixture tests with:
+
+```sh
+node --test ops/gcp-trial/test/cleanup-protocol.test.mjs
+```
+
+The required callbacks substitute the external I/O boundary:
+
+- `readInventory({signal})` returns a bounded complete inventory JSON string in
+  the existing format. Its oldest observation must be at or after this read's
+  request time; reusing an earlier snapshot cannot prove post-delete absence.
+- `transport({method, url, signal})` returns `{status, body}`, where `body` is an
+  operation JSON string of at most 64 KiB. Fixtures receive exact-ID `DELETE`
+  requests and fixed-scope operation `GET` requests. There are no headers or
+  credentials in these descriptors. Connect only controlled fixtures today.
+- `now()` supplies the clock; `wait(milliseconds, signal)` supplies polling
+  delays. Defaults use the system clock and abortable timers, not network I/O.
+
+The kernel validates original plan/ownership bindings, checks a complete fresh
+inventory, and addresses only the captured decimal-string uint64 IDs. VM removal
+precedes any orphan-disk removal. Every operation must match its resource ID,
+type, scope and link, and retain the same operation ID and name across polls.
+Each operation allows at most five GET polls. A 20-second timer bounds asynchronous
+waits, including callbacks that ignore abort, provided they yield to the event
+loop. It cannot interrupt synchronously blocking trusted code. Callers may
+shorten but not extend the timer. Timeouts and ambiguous DELETE responses stop the sequence.
+No resource-name fallback or second DELETE for the same resource occurs within
+an invocation. A 404 still requires fresh full inventory. Remaining resources,
+replacements, changed attachments, or incomplete observations cannot report
+absence. A successful operation is not itself proof of absence.
+
+Every result is marked `mode: rehearsal`, with execution/activation blocked and
+cloud/cleanup/evidence verification false. These flags describe the absence of
+a repository-provided live execution path; they do not sandbox injected code.
+The caller and callbacks are trusted. The kernel has no durable attempt journal;
+starting another invocation is **not** recovery from an indeterminate live delete.
+
+### What remains before a live adapter
+
+The official [Compute v1 discovery contract](https://www.googleapis.com/discovery/v1/apis/compute/v1/rest),
+revision `20260922` inspected on 2026-10-08, explicitly allows the decimal-ID
+alternative in `instances.delete.instance`. `disks.delete.disk` instead uses a
+generic non-whitespace pattern; it does not establish exact-ID lookup semantics.
+The [operation resource](https://docs.cloud.google.com/compute/docs/reference/rest/v1/zoneOperations)
+defines `targetId` as identifying one resource incarnation. These facts support
+the protocol design, not a claim that a live trial has passed.
+
+Live activation still needs verified disk-ID DELETE semantics, protection
+against concurrent changes to auto-delete attachments, checked live scheduling
+and deletion-protection settings, authenticated transport and observations,
+durable attempt custody/recovery, and an independent deadline controller.
+Fresh inventory is not an atomic attachment lock. Google's
+[runtime-limit documentation](https://docs.cloud.google.com/compute/docs/instances/limit-vm-runtime)
+also says stop/suspend clears the termination timestamp and automatic termination
+can start late; the native timer alone cannot replace that controller. No
+disposable-resource canary or cloud mutation is part of these fixture tests.
 
 ## Offline smoke-result read-back
 
