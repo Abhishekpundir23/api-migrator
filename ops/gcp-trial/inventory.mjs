@@ -105,7 +105,7 @@ export async function collectTrialInventory(token, { expectedAccount, fetchImpl 
           || response.selfLink !== `${BASE}/${kind}`) throw new Error();
         checkProjection(response, kind);
         inventory[kind].push({ pageToken, response });
-        pageToken = response.nextPageToken ?? "";
+        pageToken = response.nextPageToken === undefined ? "" : response.nextPageToken;
         if (typeof pageToken !== "string" || pageToken.length > 2048) throw new Error();
       } while (pageToken);
     }

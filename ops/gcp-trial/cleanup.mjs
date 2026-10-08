@@ -118,7 +118,7 @@ function pages(chain, kind) {
       seenIds.add(item.id); seenNames.add(item.name); items.push(item);
       if (items.length > 1000) throw new Error("inventory size exceeded");
     }
-    token = response.nextPageToken ?? "";
+    token = response.nextPageToken === undefined ? "" : response.nextPageToken;
     if (typeof token !== "string" || token.length > 2048 || (token === "" && i !== chain.length - 1)) throw new Error("invalid pagination");
   }
   if (token !== "") throw new Error("incomplete inventory pagination");
@@ -152,7 +152,7 @@ export function decideCleanup(planJson, recordJson, inventoryJson, { nowMs = Dat
   if (!vm && !disk) return { ...common, status: "absence_observed" };
   if ((vm && (vm.name !== r.instanceName || vm.labels?.["api-migrator-trial"] !== p.runId || !expectedAttachment(vm, r.diskName)))
     || (disk && disk.name !== r.diskName) || (vm && !disk)) return blocked("ownership_changed");
-  if (reason === "deadline" && nowMs < p.deleteAt) return { ...common, status: "waiting" };
   if (disk && (disk.users ?? []).some((user) => !vm || user !== vm.selfLink)) return blocked("disk_attached_elsewhere", "disk");
+  if (reason === "deadline" && nowMs < p.deleteAt) return { ...common, status: "waiting" };
   return blocked("generation_safe_delete_unverified", vm ? "instance" : "disk");
 }

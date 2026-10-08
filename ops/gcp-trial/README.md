@@ -2,8 +2,9 @@
 
 The planning and preparation CLIs are **proposal renderers**, not deployment
 commands. They make no network calls and never invoke `gcloud`. The inventory
-and log collectors described below make authenticated reads only. None can
-create, approve, or delete resources, authorize payment, or enable production.
+and log collectors and cleanup check described below make authenticated reads
+only. None can create, approve, or delete resources, authorize payment, or
+enable production.
 `--execute` and unknown flags fail.
 
 ```sh
@@ -177,6 +178,66 @@ An empty inventory only means no matching zonal resources were observed. It
 does not certify account-wide absence or remaining trial credit. Credit, billing
 mode, effective network rules, quota, images, logging and watchdog readiness
 must be checked separately before provisioning.
+
+## Read-only cleanup check
+
+`observe-cleanup.mjs` joins the authenticated inventory collector to the offline
+ownership and deadline checks. It validates the original plan and captured
+ownership before making any request, then fetches fresh, complete VM and disk
+inventories. It evaluates the decision at completion, so crossing the deadline
+during a read cannot return `waiting`. The inventory retains its oldest read
+timestamp. Backward clock movement and reads exceeding 20 seconds fail.
+
+The CLI accepts a regular, single-link JSON file of at most 32 KiB containing
+exactly `{ "plan": <original plan>, "ownership": <captured record> }`. Use the
+approved personal account, with no impersonation, as in the inventory example:
+
+```sh
+set -o pipefail
+gcloud auth print-access-token --account="$TRIAL_ACCOUNT" \
+  --project=project-32bf49a2-bd30-4956-850 \
+  --billing-project=project-32bf49a2-bd30-4956-850 |
+  node ops/gcp-trial/check-cleanup.mjs --read-only --token-stdin \
+    --expected-account="$TRIAL_ACCOUNT" --reason=deadline \
+    --input /absolute/path/trial-input.json
+```
+
+The package entry point is `npm run gcp:trial:cleanup-check -- <same flags>`.
+Keep shell tracing/debug logging off and native HTTPS verification enabled.
+Never save the token or pass it as an argument. The only network calls are the
+existing fixed Google UserInfo and personal-project Compute **GET** requests.
+There are no log reads, retries, deletion requests or executable command output.
+The JSON summary omits the account email, raw inventory and token; resource IDs
+and binding digests remain, so keep live output private.
+
+| Exit | Meaning | Follow-up |
+| --- | --- | --- |
+| `0` | `absence_observed` in complete zonal inventory | Not a verified cleanup or billing receipt |
+| `3` | `waiting`, before the original deadline | `nextCheckAt` is advisory, no check is scheduled |
+| `4` | `blocked`, resources require operator attention | Inspect the decision reason; no deletion is authorized |
+| `2` | Input, authentication, inventory or clock failure | State is unknown; investigate without extending the deadline |
+
+`--reason=completed`, `failed`, `cancelled`, or `controller_failure` requests an
+immediate decision before the deadline. Missing logs never postpone it.
+`deadlineReached` and `overdueMs` use the original immutable `deleteAt`.
+Remaining owned resources still report `generation_safe_delete_unverified`;
+changed ownership or replacements report their existing blocking reasons.
+An owned disk can remain a blocker after the VM disappears.
+
+This is **one observation, not an independent cleanup controller or watchdog**.
+No timer, scheduler, alert delivery, credential refresh or durable custody is
+installed. `nextCheckAt` is not evidence that anything will run later, and the
+read is not an atomic cloud snapshot. `executionBlocked` and `activationBlocked`
+remain true; `cloudVerified`, `cleanupVerified`, `releaseEvidenceEligible`,
+`evidenceAuthenticityVerified` and `independentControllerReady` remain false.
+
+The documented [instance deletion API](https://docs.cloud.google.com/compute/docs/reference/rest/v1/instances/delete)
+and [disk deletion API](https://docs.cloud.google.com/compute/docs/reference/rest/v1/disks/delete)
+target resource names, without a documented expected-ID precondition.
+`requestId` deduplicates requests; it does not bind the first request to a
+resource generation. Fresh inventory alone cannot close that name-reuse race.
+Provisioning stays blocked until an independently reviewed cleanup mechanism
+and the remaining network, billing and trial preflights are in place.
 
 ## Offline smoke-result read-back
 

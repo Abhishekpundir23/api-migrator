@@ -103,6 +103,7 @@ for (const [name, pages] of [
   ["page loop", [page("instances", [], { nextPageToken: "x" }), page("instances", [], { nextPageToken: "x" })]],
   ["too many pages", Array.from({ length: 20 }, (_, i) => page("instances", [], { nextPageToken: String(i) }))],
   ["oversized token", [page("instances", [], { nextPageToken: "x".repeat(2049) })]],
+  ["null continuation token", [page("instances", [], { nextPageToken: null })]],
   ["oversized inventory", [page("instances", Array.from({ length: 1001 }, (_, i) => resource("instances", `vm-${i}`, String(i + 1))))]],
 ]) {
   test(`refuses ${name} without echoing server data`, async () => {

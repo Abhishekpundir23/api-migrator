@@ -105,6 +105,12 @@ test("same-name replacement is never adopted or treated as complete cleanup", ()
   const o = observation(); o.instance.id = "987";
   assert.equal(decide(inventory([o.instance])).reason, "replacement_or_unowned_resource");
 });
+for (const vmPresent of [true, false]) test(`foreign disk attachment blocks before deadline with VM present=${vmPresent}`, () => {
+  const o = observation(), at = NOW + 30_000; o.disk.users = [`${BASE}/instances/other`];
+  const result = decide(inventory(vmPresent ? [o.instance] : [], [o.disk], at), "deadline", capture(), at);
+  assert.equal(result.status, "blocked"); assert.equal(result.reason, "disk_attached_elsewhere");
+  assert.equal(result.resource, "disk");
+});
 test("unexpected run-labelled resources are reported rather than deleted", () => {
   const o = observation(); o.instance.name = "unowned"; o.instance.selfLink = `${BASE}/instances/unowned`; o.instance.id = "987";
   assert.equal(decide(inventory([o.instance])).reason, "replacement_or_unowned_resource");
@@ -123,6 +129,7 @@ test("complete pagination finds an owned disk on a later page", () => {
 for (const [name, change] of [
   ["filtered", (v) => { v.filter = `name=${NAME}`; }],
   ["missing final page", (v) => { v.instances[0].response.nextPageToken = "next"; }],
+  ["null continuation token", (v) => { v.disks[0].response.nextPageToken = null; }],
   ["token mismatch", (v) => { v.instances[0].pageToken = "other"; }],
   ["error instead of empty", (v) => { v.disks[0].response = { error: { code: 403 } }; }],
   ["unknown response instead of empty", (v) => { v.disks[0].response = {}; }],
