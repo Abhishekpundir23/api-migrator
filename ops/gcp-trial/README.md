@@ -2,7 +2,7 @@
 
 The planning and preparation CLIs are **proposal renderers**, not deployment
 commands. They make no network calls and never invoke `gcloud`. The inventory
-and log collectors and cleanup check described below make authenticated reads
+and ownership/log collectors and cleanup check described below make authenticated reads
 only. None can create, approve, or delete resources, authorize payment, or
 enable production.
 `--execute` and unknown flags fail.
@@ -178,6 +178,70 @@ An empty inventory only means no matching zonal resources were observed. It
 does not certify account-wide absence or remaining trial credit. Credit, billing
 mode, effective network rules, quota, images, logging and watchdog readiness
 must be checked separately before provisioning.
+
+## Read-only ownership capture
+
+This adapter reads an **already existing** creation operation, exact trial VM,
+and same-name boot disk. It cannot provision or recover a missing trial. Supply
+a regular, single-link JSON file of at most 32 KiB with exactly
+`{ "plan": <original rendered plan>, "operationName": <original insert operation name> }`.
+The original plan is reconstructed and validated before any network request;
+altered commands/digests, future plans, and plans at or beyond `deleteAt` fail.
+Do not substitute an unrelated operation or regenerate a plan to adopt a VM.
+
+```sh
+set -o pipefail
+gcloud auth print-access-token --account="$TRIAL_ACCOUNT" \
+  --project=project-32bf49a2-bd30-4956-850 \
+  --billing-project=project-32bf49a2-bd30-4956-850 |
+  node ops/gcp-trial/capture-ownership.mjs --read-only --token-stdin \
+    --expected-account="$TRIAL_ACCOUNT" --input /absolute/path/plan-and-operation.json
+```
+
+The package entry point is `npm run gcp:trial:ownership -- <same flags>`.
+Use the approved personal account, with no impersonation; keep shell tracing,
+debug logging and disabled HTTPS verification off. The token comes only from
+stdin and is never saved or returned. Verified exact-email UserInfo must succeed
+before Compute, with no quota header on UserInfo. The only subsequent requests
+are three fixed-project/zone **GETs**, each with the pinned Compute quota header:
+[zonal operation](https://docs.cloud.google.com/compute/docs/reference/rest/v1/zoneOperations/get),
+[instance](https://docs.cloud.google.com/compute/docs/reference/rest/v1/instances/get),
+and [boot disk](https://docs.cloud.google.com/compute/docs/reference/rest/v1/disks/get).
+No URL, method, project, authentication or execution override is accepted.
+
+Google defines operation names as server-defined, not instance RFC1035 names.
+This CLI deliberately accepts only a bounded ASCII alphanumeric, hyphen and
+underscore segment, starting with an alphanumeric character, at most 256
+characters. That is a conservative local input constraint, not a claim about
+all Google operation names. Paths, queries, fragments, percent escapes and
+traversal are refused. There is no polling, retry, provisioning or deletion.
+
+Narrow projections request only ownership identities, creation times, nonce
+labels, operation status/target/error fields and disk attachment/users. Startup
+metadata, credentials, disk keys/encryption material and logs are not requested.
+Unexpected fields, warnings, errors, redirects, pending/non-insert operations,
+scope/link mismatches, wrong uint64 generations, extra or missing disks, changed
+nonce and attachments fail. Both resource creation times must be within the
+original `issuedAt` through `createBefore` window and no later than the earliest
+read. Capture itself may happen after that creation window, but before `deleteAt`.
+The existing `captureOwnership` validator binds the plan digest, original nonce,
+deadline and exact string-valued VM, disk and operation IDs.
+
+The complete read is limited to 20 seconds and 256 KiB across all responses,
+including identity. Clock rollback or completion at/after the deletion deadline
+fails, with sanitized exit `2` and no partial result. Success exits `0` and wraps
+the verified account, earliest `observedAt`, completion time and `handoff`.
+Extract **only** `handoff`, an exact `{plan, ownership}` object, for the existing
+log and cleanup-check CLI inputs; the enclosing observation has extra fields
+and is intentionally not accepted by those CLIs. Keep all live output private.
+
+Authenticated reads are not a globally atomic snapshot, signed evidence, a
+safe-delete authorization or proof that the VM's runtime configuration/source
+matches the proposal. Ownership does not verify machine type, network policy,
+service accounts, guest bootstrap or source execution; configuration remains a
+separate gate. `executionBlocked` and `activationBlocked` remain true;
+`cloudVerified`, `releaseEvidenceEligible` and `evidenceAuthenticityVerified`
+remain false. No billing, publication, watchdog, signing or release gate changes.
 
 ## Read-only cleanup check
 

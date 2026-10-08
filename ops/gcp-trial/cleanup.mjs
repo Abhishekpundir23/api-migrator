@@ -31,7 +31,7 @@ function scope(value) {
 function fresh(value, nowMs) {
   if (!time(nowMs) || !time(value) || value > nowMs || nowMs - value > 30_000) throw new Error("stale or invalid observation");
 }
-function validatedPlan(text) {
+export function validatedPlan(text) {
   try {
     const p = parse(text, 65_536);
     const expected = renderTrialPlan({ projectId: p.projectId, runId: p.runId, sourceRevision: p.source.revision,
