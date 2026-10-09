@@ -87,6 +87,7 @@ install -d -m 0700 -o "$account" -g "$account" "$root/work"
 phase=public_build
 run_phase 600 runuser -u "$account" -- env -i HOME="$root/work" PATH="$root/node/bin:/usr/bin:/bin" CI=1 npm_config_registry=https://registry.npmjs.org npm_config_update_notifier=false /bin/bash -se > "$root/setup.log" 2>&1 <<'BATCH_IMAGE_WORKER'
 set -euo pipefail
+umask 022
 [ "$(id -u)" -ne 0 ] && [ ! -w /var/run/docker.sock ] || exit 80
 [ "$(id -G | wc -w)" -eq 1 ] || exit 80
 ulimit -f 65536

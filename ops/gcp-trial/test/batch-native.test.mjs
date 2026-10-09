@@ -11,6 +11,77 @@ const enabled = process.env.API_MIGRATOR_DOCKER_TEST === "1";
 const image = "node:22.23.2-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436";
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+// Test-only fault trigger: GNU timeout still owns signals, process-group cleanup
+// and exit 124. Its production duration and inherited worker stdin are unchanged.
+function readyTimeoutWrapper(log) {
+  return `if [ "\${3:-}" != 1200 ]; then exec /usr/bin/native-timeout "$@"; fi
+exec 3<&0
+/usr/bin/native-timeout "$@" <&3 &
+timeout_pid=$!
+exec 3<&-
+printf '%s' "$timeout_pid" > /tmp/native-boundary/timeout.pid
+stop_timeout() {
+  if [ -n "$timeout_pid" ]; then
+    kill -ALRM "$timeout_pid" 2>/dev/null || true
+    set +e; wait "$timeout_pid"; set -e
+    timeout_pid=
+  fi
+}
+trap stop_timeout EXIT
+readiness_deadline=$((SECONDS + 20))
+while ! awk 'previous ~ /^NATIVE_WORKER_UID=[1-9][0-9]*$/ && $0 == "WORKER_STARTED" {ready=1} {previous=$0} END {exit !ready}' '${log}'; do
+  if ! kill -0 "$timeout_pid" 2>/dev/null; then echo 'timeout fixture exited before readiness' >&2; exit 98; fi
+  if [ "$SECONDS" -ge "$readiness_deadline" ]; then echo 'timeout fixture readiness deadline exceeded' >&2; exit 97; fi
+  sleep 0.1
+done
+kill -ALRM "$timeout_pid"
+set +e
+wait "$timeout_pid"
+code=$?
+set -e
+timeout_pid=
+trap - EXIT
+exit "$code"
+`;
+}
+
+test('native timeout trigger preserves stdin and refuses absent worker readiness', { skip: !enabled, timeout: 90_000 }, async t => {
+  for (const behavior of ['delayed', 'early-exit', 'never-ready']) await t.test(behavior, () => {
+    const name = `batch-timeout-ready-${randomUUID()}`;
+    const log = '/tmp/native-boundary/worker.log';
+    const wrapper = Buffer.from('#!/bin/bash\nset -euo pipefail\n' + readyTimeoutWrapper(log)).toString('base64');
+    const worker = behavior === 'early-exit' ? 'exit 23' : `exec /usr/local/bin/node -e 'const fs=require("node:fs");fs.writeFileSync("/tmp/native-boundary/worker.pid",String(process.pid));${behavior === 'delayed' ? 'setTimeout(()=>{console.log("NATIVE_WORKER_UID=1000");console.log("WORKER_STARTED")},6000);' : ''}setInterval(()=>{},1000)'`;
+    try {
+      const result = spawnSync('docker', ['run', '--rm', '--name', name, '--platform', 'linux/amd64',
+        '--network', 'none', '--memory=128m', '--pids-limit=32', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+        '-i', image, 'bash', '-se'], { input: `mkdir /tmp/native-boundary
+touch ${log}
+mv /usr/bin/timeout /usr/bin/native-timeout
+printf '%s' '${wrapper}' | base64 -d > /tmp/timeout-fixture
+chmod 755 /tmp/timeout-fixture
+set +e
+/tmp/timeout-fixture --signal=TERM --kill-after=5s 1200 bash -se > ${log} <<'WORKER'
+${worker}
+WORKER
+code=$?
+set -e
+for receipt in /tmp/native-boundary/timeout.pid /tmp/native-boundary/worker.pid; do
+  [ ! -f "$receipt" ] || [ ! -d "/proc/$(cat "$receipt")" ] || exit 96
+done
+printf 'exact_timeout_children_absent\\n'
+exit "$code"
+`, encoding: 'utf8', timeout: 35_000, maxBuffer: 16_384 });
+      assert.equal(result.status, { delayed: 124, 'early-exit': 98, 'never-ready': 97 }[behavior], result.stderr + result.stdout);
+      assert.equal(result.stdout, 'exact_timeout_children_absent\n');
+      if (behavior !== 'delayed') assert.match(result.stderr, behavior === 'early-exit' ? /exited before readiness/ : /readiness deadline exceeded/);
+    } finally {
+      spawnSync('docker', ['rm', '-f', name], { timeout: 15_000 });
+      const check = spawnSync('docker', ['ps', '-aq', '--filter', `name=^/${name}$`], { encoding: 'utf8', timeout: 15_000 });
+      assert.equal(check.status, 0); assert.equal(check.stdout.trim(), '');
+    }
+  });
+});
+
 // Breaks caught: skipping the metadata controls, dropping runuser/env isolation,
 // swallowing worker failure/timeout, or removing the trusted EXIT log emitter.
 // Only downloads, apt and the kernel metadata boundary are substituted. In
@@ -33,7 +104,7 @@ test("full generated Batch runnable executes native privilege/runtime/log contra
       const dir = join(fixtures, scenario);
       mkdirSync(join(dir, "repo/packages/engine/test"), { recursive: true });
       mkdirSync(join(dir, "repo/fixtures/tsx"), { recursive: true });
-      const build = `const fs=require('node:fs'); if(process.getuid()===0 || process.env.GITHUB_TOKEN || !fs.existsSync('/tmp/native-boundary/root-control') || !fs.existsSync('/tmp/native-boundary/nft-ready') || !fs.existsSync('/tmp/native-boundary/probe-v4') || !fs.existsSync('/tmp/native-boundary/probe-v6')) process.exit(91); console.log('NATIVE_WORKER_UID='+process.getuid()); console.log('WORKER_STARTED'); ${scenario === "worker-failure" ? "process.exit(37);" : scenario === "worker-timeout" ? "setTimeout(()=>{},30000);" : "fs.writeFileSync('built','yes');"}`;
+      const build = `const fs=require('node:fs'); ${scenario === "worker-timeout" ? "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,6000);" : ""} if(process.getuid()===0 || process.env.GITHUB_TOKEN || !fs.existsSync('/tmp/native-boundary/root-control') || !fs.existsSync('/tmp/native-boundary/nft-ready') || !fs.existsSync('/tmp/native-boundary/probe-v4') || !fs.existsSync('/tmp/native-boundary/probe-v6')) process.exit(91); console.log('NATIVE_WORKER_UID='+process.getuid()); console.log('WORKER_STARTED'); ${scenario === "worker-failure" ? "process.exit(37);" : scenario === "worker-timeout" ? "setTimeout(()=>{},30000);" : "fs.writeFileSync('built','yes');"}`;
       const pkg = { name: "batch-fixture", version: "1.0.0", private: true, workspaces: ["packages/*"], devDependencies: { tsx: "file:fixtures/tsx" } };
       const engine = { name: "@api-migrator/engine", version: "1.0.0", scripts: { build: "node build.cjs" } };
       writeFileSync(join(dir, "repo/package.json"), JSON.stringify(pkg));
@@ -61,7 +132,7 @@ test("full generated Batch runnable executes native privilege/runtime/log contra
         stub("apt-get", "exit 0\n") + stub("xz", "cat /fixtures/node.tar\n") +
         stub("nft", `[[ "$*" = '-f -' ]] || exit 92\nrules=$(cat)\nuid=$(id -u ambabcdef0123456789)\n[[ "$rules" = *"meta skuid $uid ip daddr 169.254.169.254 reject"* && "$rules" = *"meta skuid $uid ip6 daddr fd20:ce::254 reject"* && "$rules" = *'udp dport 53 accept'* && "$rules" = *'tcp dport 53 accept'* ]] || exit 93\n[ -f /tmp/native-boundary/root-control ] || exit 94\n${scenario === "nft-failure" ? "exit 86" : "touch /tmp/native-boundary/nft-ready"}\n`) +
         stub("curl", `dest=; url=\nwhile [ "$#" -gt 0 ]; do case "$1" in --output) dest=$2; shift 2;; *) url=$1; shift;; esac; done\ncase "$url" in\n http://169.254.169.254/*|http://\\[fd20:ce::254\\]/*)\n  if [ "$(id -u)" -eq 0 ]; then touch /tmp/native-boundary/root-control; printf '${scenario === "root-metadata-failure" ? "503" : "200"}'; exit 0; fi\n  [ -f /tmp/native-boundary/nft-ready ] || exit 95\n  case "$url" in http://169.254.169.254/*) touch /tmp/native-boundary/probe-v4;; *) touch /tmp/native-boundary/probe-v6;; esac\n  exit ${scenario === "worker-metadata-access" ? "0" : "7"};;\n https://nodejs.org/*) cp /fixtures/node.tar.xz "$dest";;\n https://codeload.github.com/*)\n  [ "$(id -u)" -ne 0 ] && [ -f /tmp/native-boundary/probe-v4 ] && [ -f /tmp/native-boundary/probe-v6 ] || exit 96\n  touch /tmp/native-boundary/source-requested; cp /fixtures/${scenario}/source.tar.gz "$dest";;\n *) exit 90;; esac\n`) +
-        (scenario === "worker-timeout" ? `mv /usr/bin/timeout /usr/bin/native-timeout\n` + stub("timeout", `if [ "\${3:-}" = 1200 ]; then set -- "$1" "$2" 2 "\${@:4}"; fi\nexec /usr/bin/native-timeout "$@"\n`) : "") +
+        (scenario === "worker-timeout" ? `mv /usr/bin/timeout /usr/bin/native-timeout\n` + stub("timeout", readyTimeoutWrapper(`/var/lib/api-migrator-batch-${runId}/worker.log`)) : "") +
         `export GITHUB_TOKEN=must-not-reach-worker\nset +e\nbash /fixtures/${scenario}/startup.sh\ncode=$?\nset -e\nif [ -e /tmp/native-boundary/source-requested ]; then echo SOURCE_REQUESTED; fi\nexit "$code"\n`;
       const name = `batch-native-${randomUUID()}`;
       st.after(() => {

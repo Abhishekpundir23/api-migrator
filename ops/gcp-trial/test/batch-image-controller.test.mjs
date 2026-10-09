@@ -11,7 +11,7 @@ import { verifyFixtureIdentity } from '../../../scripts/test-git-identity.mjs';
 const load = async () => { const m = await import('../run-batch-image-smoke.mjs').catch(() => null); assert(m, 'image controller must exist'); return m; };
 const D = c => `sha256:${c.repeat(64)}`;
 
-test('bounded public preparation refuses expiry and kills a hung setup process group including descendants', async t => {
+test('bounded public preparation enforces actual elapsed expiry without plan output', async t => {
   const { prepareBatchImageWorkspace } = await load();
   assert.equal(typeof prepareBatchImageWorkspace, 'function', 'bounded setup subprocess implementation must exist');
   const root = mkdtempSync(join(tmpdir(), 'batch-image-setup-group-'));
@@ -19,15 +19,87 @@ test('bounded public preparation refuses expiry and kills a hung setup process g
   await assert.rejects(prepareBatchImageWorkspace(root, { deadline: Date.now() - 1 }), /deadline/);
   assert.deepEqual(readdirSync(root), []);
   const bin = join(root, 'bin'); mkdirSync(bin);
-  writeFileSync(join(bin, 'npm'), `#!${process.execPath}\nconst fs=require('node:fs');const cp=require('node:child_process');const child=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync('descendant.pid',String(child.pid));setInterval(()=>{},1000);\n`, { mode: 0o755 });
+  writeFileSync(join(bin, 'npm'), `#!${process.execPath}\nsetInterval(()=>{},1000);\n`, { mode: 0o755 });
   const workspace = join(root, 'workspace'); mkdirSync(workspace);
   const originalPath = process.env.PATH; process.env.PATH = bin;
   try {
-    await assert.rejects(prepareBatchImageWorkspace(workspace, { deadline: Date.now() + 1000 }), /deadline|failed/);
-    const pid = Number(readFileSync(join(workspace, 'checkout/descendant.pid'), 'utf8'));
-    assert.throws(() => process.kill(pid, 0), e => e.code === 'ESRCH', 'descendant must actually be gone');
+    const start = Date.now();
+    await assert.rejects(prepareBatchImageWorkspace(workspace, { deadline: start + 150 }), /deadline|failed/);
+    assert(Date.now() - start >= 100, 'the real elapsed deadline must run');
+    assert(Date.now() - start < 6500, 'expiry and group cleanup remain bounded');
     assert.equal(existsSync(join(workspace, 'plan.json')), false);
+    assert.equal(existsSync(join(workspace, 'source.bundle')), false);
   } finally { process.env.PATH = originalPath; }
+});
+
+test('preparation deadline kills a self-acknowledged descendant and refuses missing readiness', { timeout: 45_000 }, async t => {
+  const { prepareBatchImageWorkspace } = await load();
+  const realSetTimeout = globalThis.setTimeout;
+  const sleep = ms => new Promise(resolve => realSetTimeout(resolve, ms));
+  for (const behavior of ['delayed', 'early-exit', 'never-ready']) await t.test(behavior, async st => {
+    const root = mkdtempSync(join(tmpdir(), 'batch-image-ready-group-'));
+    const bin = join(root, 'bin'); mkdirSync(bin);
+    const workspace = join(root, 'workspace'); mkdirSync(workspace);
+    const childCode = 'require("node:fs").writeFileSync("descendant.pid",String(process.pid));setInterval(()=>{},1000)';
+    const body = behavior === 'early-exit' ? 'process.exit(17);' : behavior === 'never-ready' ? 'setInterval(()=>{},1000);'
+      : `setTimeout(()=>{require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{stdio:'ignore'});setInterval(()=>{},1000)},1500);`;
+    writeFileSync(join(bin, 'npm'), `#!${process.execPath}\n${body}\n`, { mode: 0o755 });
+    let deadlineCallback, deadlineTimer, settled = false, outcome, watchdog;
+    const originalPath = process.env.PATH;
+    // Only the parent's deadline event is controlled. Child startup, its self-PID
+    // receipt, negative-PGID SIGKILL, close and ESRCH remain actual OS behavior.
+    const timer = st.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+      if (!deadlineCallback && delay > 10_000) {
+        deadlineCallback = callback;
+        deadlineTimer = realSetTimeout(callback, delay, ...args);
+        return deadlineTimer;
+      }
+      return realSetTimeout(callback, delay, ...args);
+    });
+    const pidFile = join(workspace, 'checkout/descendant.pid');
+    try {
+      process.env.PATH = bin;
+      outcome = prepareBatchImageWorkspace(workspace, { deadline: Date.now() + 30_000 })
+        .then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+      assert.equal(typeof deadlineCallback, 'function');
+      const readiness = async () => {
+        const until = Date.now() + 5000;
+        while (!existsSync(pidFile)) {
+          if (settled) throw Error('fixture exited before descendant readiness');
+          if (Date.now() >= until) throw Error('descendant readiness deadline exceeded');
+          await sleep(25);
+        }
+      };
+      if (behavior === 'delayed') {
+        await readiness();
+        const pid = Number(readFileSync(pidFile, 'utf8'));
+        assert(Number.isSafeInteger(pid) && pid > 1);
+        assert.doesNotThrow(() => process.kill(pid, 0));
+        timer.mock.restore(); clearTimeout(deadlineTimer); deadlineCallback();
+        const result = await Promise.race([outcome, new Promise((_, reject) => {
+          watchdog = realSetTimeout(() => reject(Error('group cleanup watchdog exceeded')), 6500);
+        })]);
+        assert.match(result.error?.message ?? '', /deadline/);
+        assert.throws(() => process.kill(pid, 0), e => e.code === 'ESRCH', 'self-acknowledged descendant must be gone');
+      } else {
+        await assert.rejects(readiness(), behavior === 'early-exit' ? /exited before descendant readiness/ : /readiness deadline exceeded/);
+      }
+      assert.equal(existsSync(join(workspace, 'plan.json')), false);
+      assert.equal(existsSync(join(workspace, 'source.bundle')), false);
+    } finally {
+      timer.mock.restore(); clearTimeout(deadlineTimer); clearTimeout(watchdog);
+      if (!settled && deadlineCallback) deadlineCallback();
+      try {
+        if (outcome) {
+          const result = await Promise.race([outcome, new Promise((_, reject) => {
+            watchdog = realSetTimeout(() => reject(Error('fixture cleanup watchdog exceeded')), 6500);
+          })]);
+          assert.notEqual(result.error?.code, 'BATCH_SETUP_CLEANUP_UNVERIFIED', 'preserve workspace if group absence is unverified');
+        }
+        rmSync(root, { recursive: true, force: true });
+      } finally { clearTimeout(watchdog); process.env.PATH = originalPath; }
+    }
+  });
 });
 
 test('optional setup deadline refuses expired work before mutation and bounds npm and identity subprocesses', (t) => {

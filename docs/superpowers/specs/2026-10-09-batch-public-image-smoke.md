@@ -173,3 +173,53 @@ Behavioral regressions must use the actual plan builder for the production
 the same new-profile integration path in the real image fixture, including phase
 timeouts capped to plan expiry and rejection after expiry. Existing success
 summary and failure-record protocols are unchanged.
+
+### Make public build artifacts readable by the non-root image runner
+
+The next guest failed at prepare with a bounded subprocess exit 1. Exact-source
+local reproduction under the restrictive outer mask produced root-owned 0400
+files and 0500 dist directories after the existing seal. The unchanged actual
+Dockerfile preserved unreadable runtime imports: non-root prepare failed with
+EACCES. A diagnostic read/search-only image control passed. This establishes a
+local packaging defect consistent with the guest checkpoint, not the lost guest
+stderr or proof that no other live failure remains.
+
+Set umask 022 only inside the dedicated public build-worker body, before source
+extraction and build. Verify this selected correction with the real generated
+worker and unchanged Dockerfile before acceptance. Keep root bootstrap umask
+077, the build work parent 0700, build-UID quiescence, root ownership, write-bit
+removal and containment/hard-link checks unchanged. This exposes only approved
+public runtime artifacts to the separate non-root runner; it grants no writes,
+socket access, supplemental groups, capabilities, customer access or authority.
+Do not normalize the generic Docker packager or relax the fixture UID.
+
+Behavioral regression must execute the generated worker under an explicitly
+restrictive outer mask, inspect real file/directory/executable modes through the
+existing seal, and preserve the private parent. Ordinary public files must remain
+non-executable; executable semantics and directory traversal must survive, with
+root ownership and no write bits after sealing. Retain actual-image non-root
+prepare RED/control evidence, exact diagnostic cleanup, full CI and audit. All
+protocols, limits, metadata controls and activation gates remain unchanged.
+
+### Timeout-fixture readiness is not a production deadline change
+
+Parallel validation exposed two pre-existing tests that assumed a worker had
+started before a short setup-inclusive deadline expired. Keep actual elapsed
+expiry coverage, but establish bounded descendant readiness before exercising
+the parent's deadline-triggered real process-group cleanup. Control only the
+parent timer event in that fixture, not OS signals, process exit or absence.
+
+For the legacy native worker timeout fixture, preserve the generated worker
+envelope and genuine GNU timeout semantics. A bounded test-only readiness
+observer may trigger the exact timeout process's alarm after the validated
+worker marker; it must preserve stdin and real exit 124, refuse early exit or
+never-ready distinctly, and clean up its exact children. Do not manufacture
+success/failure records, remove worker-marker assertions, serialize the suite,
+or change production time budgets. Controlled delayed-start regressions and
+the ordinary full concurrent CI run must pass before acceptance.
+
+The controlled native test's synthetic Docker socket must signal readiness only
+after listening and establishing its fixture mode. Bound the test-only wait,
+detect early server exit, and refuse to start bootstrap on missing readiness.
+Cover delayed startup beyond the former half-second polling window, server exit
+and never-ready failure. This does not change any production deadline or gate.

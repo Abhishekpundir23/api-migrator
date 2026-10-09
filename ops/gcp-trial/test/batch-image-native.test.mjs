@@ -15,6 +15,49 @@ const D = c => `sha256:${c.repeat(64)}`;
 const canonical = v => v && typeof v === 'object' ? Array.isArray(v) ? `[${v.map(canonical).join(',')}]`
   : `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}` : JSON.stringify(v);
 
+function socketFixtureSetup(behavior = 'listen') {
+  const start = `require('node:net').createServer().listen('/var/run/docker.sock',()=>{require('node:fs').chmodSync('/var/run/docker.sock',0o660);require('node:fs').writeFileSync('/tmp/socket.ready','ready');});`;
+  const program = behavior === 'delayed' ? `setTimeout(()=>{${start}},750);`
+    : behavior === 'exit' ? 'process.exit(17);' : behavior === 'never-ready' ? 'setInterval(()=>{},1000);' : start;
+  return `/usr/local/bin/node -e '${program.replaceAll("'", "'\\''")}' >/tmp/socket.log 2>&1 &
+socket_pid=$!
+socket_deadline=$((SECONDS + 5))
+while [ ! -f /tmp/socket.ready ] || [ ! -S /var/run/docker.sock ]; do
+  if ! kill -0 "$socket_pid" 2>/dev/null; then echo 'socket fixture exited before readiness' >&2; exit 1; fi
+  if [ "$SECONDS" -ge "$socket_deadline" ]; then echo 'socket fixture readiness deadline exceeded' >&2; exit 1; fi
+  sleep 0.1
+done
+`;
+}
+
+test('native socket fixture gates bootstrap on bounded explicit readiness', { skip: !enabled, timeout: 60_000 }, async t => {
+  for (const behavior of ['delayed', 'exit', 'never-ready']) {
+    await t.test(behavior, () => {
+      const name = `batch-image-socket-${randomUUID()}`;
+      try {
+        const result = spawnSync('docker', ['run', '--rm', '--name', name, '--platform', 'linux/amd64',
+          '--network', 'none', '--memory=128m', '--pids-limit=32', '--cap-drop=ALL',
+          '--security-opt=no-new-privileges', '-i', image, 'bash', '-se'], {
+          input: `umask 077\n${socketFixtureSetup(behavior)}[ -f /tmp/socket.ready ]\n[ "$(stat -c %a /var/run/docker.sock)" = 660 ]\nprintf 'bootstrap-started\\n'\nkill "$socket_pid"\n`,
+          encoding: 'utf8', timeout: 15_000, maxBuffer: 16_384,
+        });
+        if (behavior === 'delayed') {
+          assert.equal(result.status, 0, result.stderr);
+          assert.equal(result.stdout, 'bootstrap-started\n');
+        } else {
+          assert.equal(result.status, 1, result.stderr);
+          assert.equal(result.stdout, '');
+          assert.match(result.stderr, behavior === 'exit' ? /socket fixture exited before readiness/ : /socket fixture readiness deadline exceeded/);
+        }
+      } finally {
+        spawnSync('docker', ['rm', '-f', name], { timeout: 15_000 });
+        const check = spawnSync('docker', ['ps', '-aq', '--filter', `name=^/${name}$`], { encoding: 'utf8', timeout: 15_000 });
+        assert.equal(check.status, 0); assert.equal(check.stdout.trim(), '');
+      }
+    });
+  }
+});
+
 // Supplemental bootstrap control-flow coverage, NOT cloud isolation evidence.
 // Apt/downloads/nft/metadata/Docker build are controlled fixtures; real Linux
 // accounts, runuser, env clearing, tar/hash verification, build, sealing and the
@@ -54,16 +97,34 @@ test('generated image bootstrap enforces privilege, sealing, runtime and failure
         packages[`node_modules/@api-migrator/${name}`] = { resolved: path, link: true };
       }
       writeFileSync(join(repo, 'package-lock.json'), JSON.stringify({ name: pkg.name, version: pkg.version, lockfileVersion: 3, packages }));
+      writeFileSync(join(repo, 'public-tool'), '#!/bin/sh\nprintf public-tool-ok\n', { mode: 0o755 });
       writeFileSync(join(repo, 'build.cjs'), `const fs=require('node:fs');if(process.getuid()===0||process.env.GITHUB_TOKEN||process.env.GOOGLE_APPLICATION_CREDENTIALS)process.exit(91);
 if(!fs.existsSync('/tmp/native-boundary/nft-'+process.getuid()))process.exit(92);
 fs.writeFileSync('build-uid',String(process.getuid()));
+${scenario === 'success' ? `const assert=require('node:assert/strict');
+fs.mkdirSync('public-dist');fs.writeFileSync('public-dist/plain.js','public-data');fs.writeFileSync('public-dist/tool','#!/bin/sh\\nprintf built-tool-ok\\n',{mode:0o755});
+const mode=p=>(fs.statSync(p).mode&0o777).toString(8);
+assert.equal(mode(process.env.HOME),'700');assert.equal(fs.statSync(process.env.HOME).uid,process.getuid());
+assert.equal(mode('package.json'),'644','extracted public ordinary file must be readable');
+assert.equal(mode('public-tool'),'755');assert.equal(mode('public-dist'),'755');
+assert.equal(mode('public-dist/plain.js'),'644');assert.equal(mode('public-dist/tool'),'755');
+assert.equal(require('node:child_process').execFileSync('./public-tool',{encoding:'utf8'}),'public-tool-ok');` : ''}
 ${scenario === 'build-failure' ? 'process.exit(37);' : scenario === 'build-timeout' ? 'setInterval(()=>{},1000);' : scenario === 'escaping-link' ? "fs.symlinkSync('/etc/passwd','escape');" : ''}`);
-      const controller = `import fs from 'node:fs';
+      const controller = `import fs from 'node:fs';import assert from 'node:assert/strict';import {execFileSync} from 'node:child_process';
 if(process.getuid()!==0||process.env.GITHUB_TOKEN||process.env.GOOGLE_APPLICATION_CREDENTIALS)process.exit(93);
 const root=process.cwd();for(const p of [root,root+'/build-uid',root+'/ops/gcp-trial/run-batch-image-smoke.mjs']){const s=fs.statSync(p);if(s.uid!==0||s.gid!==0||(s.mode&0o222))process.exit(94);}
 const buildUid=Number(fs.readFileSync('build-uid','utf8'));if(!fs.existsSync('/tmp/native-boundary/nft-'+buildUid))process.exit(95);
 const uid=Number(process.argv[process.argv.indexOf('--uid')+1]);if(!fs.existsSync('/tmp/native-boundary/nft-'+uid))process.exit(96);
 if(Number(process.argv[process.argv.indexOf('--deadline')+1])-Date.now()>1200000)process.exit(42);
+${scenario === 'success' ? `assert.equal(process.umask(),0o077,'root mask must remain private');
+const work=fs.statSync(root+'/../work');assert.equal(work.mode&0o777,0o700);assert.equal(work.uid,buildUid);assert.notEqual(uid,buildUid);
+for(const [file,mode] of [['package.json',0o444],['public-tool',0o555],['public-dist',0o555],['public-dist/plain.js',0o444],['public-dist/tool',0o555]]){
+ const s=fs.statSync(root+'/'+file);assert.equal(s.mode&0o777,mode,file);assert.equal(s.uid,0);assert.equal(s.gid,0);assert.equal(s.mode&0o222,0);
+}
+const gid=Number(process.argv[process.argv.indexOf('--gid')+1]);
+assert.equal(execFileSync(process.execPath,['-e','process.stdout.write(require("node:fs").readFileSync(process.argv[1],"utf8"))',root+'/public-dist/plain.js'],{uid,gid,encoding:'utf8'}),'public-data');
+assert.equal(execFileSync(root+'/public-tool',[],{uid,gid,encoding:'utf8'}),'public-tool-ok');
+assert.equal(execFileSync(root+'/public-dist/tool',[],{uid,gid,encoding:'utf8'}),'built-tool-ok');` : ''}
 ${scenario === 'phase-failure' ? "console.error('SECRET controller stderr');process.exit(38);" : scenario === 'phase-diagnostic' ? `console.log('API_MIGRATOR_BATCH_IMAGE_FAILURE '+JSON.stringify({schemaVersion:1,stage:'public_setup',reason:'subprocess_failed',exitCode:1,signal:null}));console.error('SECRET controller stderr');process.exit(1);` : scenario === 'phase-timeout' ? 'setInterval(()=>{},1000);' : `console.log(${JSON.stringify('API_MIGRATOR_BATCH_IMAGE_SUMMARY ' + canonical(summary))});`}`;
       writeFileSync(join(repo, 'ops/gcp-trial/run-batch-image-smoke.mjs'), controller);
       const tar = spawnSync('tar', ['-czf', '-', '-C', dir, 'repo'], { maxBuffer: 1_048_576 }); assert.equal(tar.status, 0);
@@ -74,7 +135,7 @@ ${scenario === 'phase-failure' ? "console.error('SECRET controller stderr');proc
         subnetwork: 'api-migrator-trial-sub', deleteAt: now + 3_600_000 }, { nowMs: now });
       writeFileSync(join(dir, 'startup.sh'), prepared.job.taskGroups[0].taskSpec.runnables[0].script.text);
       const stub = (name, body) => `printf '%s' '${Buffer.from('#!/bin/bash\nset -euo pipefail\n' + body).toString('base64')}' | base64 -d > /usr/bin/${name}\nchmod 755 /usr/bin/${name}\n`;
-      const setup = `mkdir -m 0777 /tmp/native-boundary\n/usr/local/bin/node -e "require('node:net').createServer().listen('/var/run/docker.sock')" >/tmp/socket.log 2>&1 &\nsocket_pid=$!\nfor n in 1 2 3 4 5; do [ -S /var/run/docker.sock ] && break; sleep 0.1; done\nchmod 660 /var/run/docker.sock\n` +
+      const setup = `umask 077\nmkdir -m 0777 /tmp/native-boundary\n` + socketFixtureSetup() +
         stub('apt-get', `exit ${scenario === 'provision-failure' ? 39 : 0}\n`) + stub('xz', 'cat /fixtures/node.tar\n') +
         stub('docker', `if [ "$1" = info ]; then echo '${JSON.stringify({ OSType: 'linux', CgroupVersion: '2', SecurityOptions: scenario === 'rootless' ? ['name=rootless'] : ['name=seccomp'] })}'; exit 0; fi\n[ "$1" = build ] || exit 97\n${scenario === 'image-build-failure' ? 'exit 40' : `while [ "$#" -gt 0 ]; do if [ "$1" = --iidfile ]; then printf '%s' '${D('a')}' > "$2"; exit 0; fi; shift; done\nexit 98`}\n`) +
         stub('nft', `rules=$(cat)\nuid=$(printf '%s' "$rules" | sed -n 's/.*meta skuid \\([0-9]*\\) ip daddr 169.254.169.254 reject/\\1/p')\n[ -n "$uid" ] || exit 99\ntouch /tmp/native-boundary/nft-$uid\n`) +
