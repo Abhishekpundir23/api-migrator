@@ -43,9 +43,17 @@ test('generated image bootstrap enforces privilege, sealing, runtime and failure
     await t.test(scenario, { timeout: 50_000 }, st => {
       const dir = join(fixtures, scenario), repo = join(dir, 'repo');
       mkdirSync(join(repo, 'ops/gcp-trial'), { recursive: true });
-      const pkg = { name: 'bootstrap-control-fixture', version: '1.0.0', scripts: { 'build:packages': 'node build.cjs' } };
+      const pkg = { name: 'bootstrap-control-fixture', version: '1.0.0', workspaces: ['packages/*'], scripts: { 'build:packages': 'node build.cjs' } };
       writeFileSync(join(repo, 'package.json'), JSON.stringify(pkg));
-      writeFileSync(join(repo, 'package-lock.json'), JSON.stringify({ name: pkg.name, version: pkg.version, lockfileVersion: 3, packages: { '': pkg } }));
+      const packages = { '': pkg };
+      for (const name of ['engine', 'db', 'app', 'runner']) {
+        const path = `packages/${name}`, workspace = { name: `@api-migrator/${name}`, version: '1.0.0' };
+        mkdirSync(join(repo, path), { recursive: true });
+        writeFileSync(join(repo, path, 'package.json'), JSON.stringify(workspace));
+        packages[path] = workspace;
+        packages[`node_modules/@api-migrator/${name}`] = { resolved: path, link: true };
+      }
+      writeFileSync(join(repo, 'package-lock.json'), JSON.stringify({ name: pkg.name, version: pkg.version, lockfileVersion: 3, packages }));
       writeFileSync(join(repo, 'build.cjs'), `const fs=require('node:fs');if(process.getuid()===0||process.env.GITHUB_TOKEN||process.env.GOOGLE_APPLICATION_CREDENTIALS)process.exit(91);
 if(!fs.existsSync('/tmp/native-boundary/nft-'+process.getuid()))process.exit(92);
 fs.writeFileSync('build-uid',String(process.getuid()));

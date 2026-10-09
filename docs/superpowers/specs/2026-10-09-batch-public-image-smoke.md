@@ -41,6 +41,13 @@ and never give it Docker socket access. The root controller may build the pinned
 public Dockerfile and generate the synthetic fixture; this is trusted public
 setup, not customer isolation. No private source or credentials are present.
 
+The public build installs only the engine, db, app and runner workspaces plus
+root build tools, with lifecycle scripts disabled. The console is not needed
+for this profile and must not be installed. Retain a bounded 64 MiB per-file
+limit for this public build: the initial 8 MiB cap was reproduced truncating
+required TypeScript files. The 600-second public-build timeout, process limit,
+output bounds, other phase limits and all production gates remain unchanged.
+
 Use existing four-phase functions and exact owned-container cleanup. A dedicated
 non-root UID/GID owns only fixture data. Prepare, migrate and verify use network
 `none`; install uses `host` so host UID metadata rules apply. Retain dropped
@@ -93,8 +100,8 @@ an always-run workflow step independently retries/audits the receipt. Other Linu
 hosts fail without policy mutation. Mac explicitly reports local non-GCE evidence
 and does not install nft rules. Probe failures report bounded exit/signal and fixed
 reason enums, never response bodies, headers or tokens. GCE metadata isolation
-still requires the supervised live
-guest run. Include failed phase, timeout, wrong image/UID, missing cleanup,
+still requires the supervised live guest run. Include failed phase, timeout,
+wrong image/UID, missing cleanup,
 cross-profile evidence, malformed report, stale deadline and broad-input denial.
 Run full Docker-enabled CI, dependency audit, independent review, and preserve
 exact Abhishek author/committer identities. Open a separate PR; do not auto-merge.

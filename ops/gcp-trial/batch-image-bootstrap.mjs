@@ -85,7 +85,7 @@ run_phase 600 runuser -u "$account" -- env -i HOME="$root/work" PATH="$root/node
 set -euo pipefail
 [ "$(id -u)" -ne 0 ] && [ ! -w /var/run/docker.sock ] || exit 80
 [ "$(id -G | wc -w)" -eq 1 ] || exit 80
-ulimit -f 8192
+ulimit -f 65536
 ulimit -u 128
 [ "$(node --version)" = v22.23.2 ] || exit 81
 cd "$HOME"
@@ -94,7 +94,7 @@ printf '%s\n' '@SOURCE_HASH@  source.tar.gz' | sha256sum --check --status || exi
 mkdir source
 tar --extract --gzip --file source.tar.gz --directory source --strip-components=1 --no-same-owner --no-same-permissions
 cd source
-npm ci --ignore-scripts --no-audit --no-fund
+npm ci --workspace @api-migrator/engine --workspace @api-migrator/db --workspace @api-migrator/app --workspace @api-migrator/runner --include-workspace-root --ignore-scripts --no-audit --no-fund
 npm run build:packages
 BATCH_IMAGE_WORKER
 phase=seal_runtime

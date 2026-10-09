@@ -49,3 +49,15 @@
 ## Execution decisions
 
 Routine design/execution prompts are omitted under the user's repeated explicit delegation. Use a subagent implementation and independent review while the parent checks cloud readiness; no parallel writers and no new security authority.
+
+### Task 2: Correct the reproduced public-build file-limit failure
+
+The first supervised trial at `4207c3b` failed in `public_build` with exit 153; resource cleanup was independently verified. Exact-source Debian x86_64 reproduction established SIGXFSZ: 8 MiB truncates TypeScript, and full installation still fails at 64 MiB on unused Next SWC. Four required workspaces plus root tools pass installation and all builds under 64 MiB.
+
+Scope: change only the public build worker's file cap from 8192 to 65536 and explicit engine/db/app/runner workspace selectors with `--include-workspace-root`. Keep `--ignore-scripts`, pinned source/runtime, 600-second budget, process limits, all other file/output caps, metadata policies, Docker handling, DNS guards and activation gates unchanged. This is a newly discovered live-host acceptance defect, separate from the closed Linux test-prerequisite finding.
+
+- [x] Add a RED behavioral regression executing the generated worker with a real file larger than 8 MiB; assert the exact scoped npm argv and finite file limit. Clearly label any substituted package commands.
+- [x] Apply the narrow correction and prove the regression GREEN.
+- [x] Execute the corrected rendered worker against the exact public source's real dependency graph on pinned Node 22.23.2 Debian x86_64, verify install/build success, and independently verify exact diagnostic-container absence. No source/archive/hash or lifecycle bypass.
+- [x] Run focused tests, full Docker-enabled CI and dependency audit; retain output. Verify both Git identities and make a new commit (no amend/push).
+- [ ] Parent performs one scoped independent review, pushes for fresh checks, and supervises a fresh-nonce live trial only after applicable gates clear. Existing failed attempts remain retained; no automatic PR merge.
