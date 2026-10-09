@@ -535,6 +535,69 @@ All existing authority flags remain blocked or false. Tests substitute the
 external transport, not the CLI, file/credential readers, collector or parser;
 live VM/Logging compatibility is not yet verified.
 
+## Public runner image on managed Batch (non-authorizing)
+
+Render the separate fixed image profile from the same eight-field request as
+the engine profile:
+
+```sh
+npm run gcp:batch:image:prepare -- --input /absolute/path/batch-request.json
+```
+
+This command renders JSON only. It cannot submit a job, accept a custom command,
+registry, repository, image, UID, service account or machine override. It retains
+the personal-project/zone scope, one `e2-medium`, 30 GB `pd-standard`, one task,
+zero retries and 1,800-second maximum. `prepareBatchImage` adds profile
+`batch-public-image-phase-smoke-v1` and binds its generated script SHA-256;
+`prepareBatch` and old prepared records retain engine-profile behavior.
+
+The guest admits Debian 12 amd64/root and an already working local rootful
+Docker/cgroup-v2 daemon. It does not install or replace Docker or Batch-agent
+packages. Pinned Node and source downloads precede a lifecycle-disabled install
+and package build as a fresh non-login UID with no socket access or credentials.
+After killing that UID's remaining processes, it moves and seals the runtime
+tree under root ownership. Root then builds only the reviewed public Dockerfile
+and creates the synthetic public fixture. This trusted setup is not a customer
+isolation boundary. A second dedicated non-root UID owns fixture data only.
+Public fixture preparation runs in its own bounded process group; the controller
+kills and observes that group before trusting its output, including on failure.
+
+The controller proves root can read the nonsensitive metadata instance-ID
+endpoint, then probes both metadata address families inside the exact image as
+the fixture UID on host networking. It never requests a token. Metadata denial
+rules stay installed even on failure, until the VM is destroyed. Prepare,
+migrate and verify use `none`; install uses `host`. The controller retains
+containers long enough to verify exact ID/image/UID/labels, removes only owned
+containers and independently fetches their absence before deleting the workspace.
+A killed CLI or failed cleanup never yields a passing summary.
+
+One bounded canonical image summary binds image ID, ordered phase-state
+digests, plan/evidence digests and output identity. The guest's indexed log
+chunks and result marker are independently reconstructed by
+`classifyBatchResult`; image success never accepts engine TAP. The summary is
+explicitly self-attested, with `securityDrill:false`,
+`releaseEvidenceEligible:false`, `activationBlocked:true`,
+`externalSigningEligible:false` and `productionReady:false`. Its synthetic DNS
+lifetime is protocol scaffolding: **not npm-only egress enforcement, live DNS
+TTL evidence, a Debian gateway port, or rootless isolation**. The existing
+Ubuntu/120-second-DNS-floor joined fixture and production gates are unchanged.
+
+For a supervised live attempt, retain the immutable public source revision and
+archive checksum, prepared job/script digest, accepted job UID, fetched terminal
+job, complete digest-bound logs, and a separately fetched full-project inventory
+of instances/disks/managed groups. Supervise queue and initialization as well as
+execution; a task timeout does not bound those earlier stages. Fetch resource
+absence independently after terminal state; guest workspace/container cleanup
+is not VM/disk/MIG deletion proof. Do not delay cleanup to obtain logs. Missing
+runtime capability is a failed preflight, not permission to change the host.
+
+Tests distinguish controlled bootstrap behavior (substituted provisioning,
+downloads, metadata, nft and Docker-build boundaries) from actual image builds
+and four-phase local container runs. The latter substitute only unavailable GCE
+root metadata reachability; neither establishes live GCE nft enforcement.
+Hosted dispatch, forced registry gateway, rootless deployment, independent
+observer/signing, protected source custody and publication remain separate gates.
+
 ## Not implemented yet
 
 The mutation-capable cloud adapter, broader configuration preflight, independently running deadline watchdog,

@@ -1,0 +1,225 @@
+# Public runner image on managed Batch
+
+## Decision and scope
+
+Run the real four-phase public Inngest image fixture on the already approved
+disposable Debian 12 Batch host. This is a separate, non-authorizing protocol
+smoke, not a Debian port of the Ubuntu native gateway fixture and not a rootless
+production runner. The user delegated routine implementation choices and asked
+for uninterrupted progress; no new IAM, billing, customer access or publication
+authority is implied.
+
+Reusing the joined Ubuntu/rootful-Docker fixture would require a platform and
+gateway port. Replacing Docker with Podman would require a different UID, mount,
+cgroup and network adapter. The smallest useful next evidence is therefore the
+real image protocol on the approved host, with those remaining gaps explicit.
+
+## Fixed authority and resources
+
+- Personal project `project-32bf49a2-bd30-4956-850`, zone `us-central1-a`.
+- Existing worker with only Batch reporting and log writing; existing isolated
+  subnet/no-ingress policy; no credentials passed to source or containers.
+- One `e2-medium`, 30 GB `pd-standard`, one task, zero retries, 1,800-second task
+  maximum; supervise queue/initialization and independently fetch final absence.
+- Same strict eight request fields as engine smoke. No arbitrary script, registry,
+  repository URL, machine, service account or command inputs.
+- Fixed profile `batch-public-image-phase-smoke-v1`; engine profile unchanged.
+- Node 22.23.2 and public archive SHA-256 pinned. Runner Dockerfile already pins
+  its base image. Build locally on the guest; retain exact image ID in evidence.
+
+## Guest execution
+
+Deadline and Debian 12/amd64/root admission occur before mutations. Provision
+only bounded trusted tools. Inspect the image's existing Docker runtime first;
+do not replace Batch agent/runtime packages or run a remote install script.
+Fail closed if a working local rootful Docker/cgroup-v2 daemon is unavailable.
+
+Repository acquisition, npm lifecycle-disabled install and package build run as
+a fresh non-login UID. A root-controlled, non-writable runtime tree is required
+before root launches fixture orchestration; quiesce the build UID before sealing
+and never give it Docker socket access. The root controller may build the pinned
+public Dockerfile and generate the synthetic fixture; this is trusted public
+setup, not customer isolation. No private source or credentials are present.
+
+The public build installs only the engine, db, app and runner workspaces plus
+root build tools, with lifecycle scripts disabled. The console is not needed
+for this profile and must not be installed. Retain a bounded 64 MiB per-file
+limit for this public build: the initial 8 MiB cap was reproduced truncating
+required TypeScript files. The 600-second public-build timeout, process limit,
+output bounds, other phase limits and all production gates remain unchanged.
+
+Use existing four-phase functions and exact owned-container cleanup. A dedicated
+non-root UID/GID owns only fixture data. Prepare, migrate and verify use network
+`none`; install uses `host` so host UID metadata rules apply. Retain dropped
+capabilities, read-only root filesystem, no-new-privileges and resource limits.
+Before phases, prove metadata ID is reachable from the trusted root controller
+and unreachable by the actual non-root container. Never request a token. Keep
+metadata denial until the VM is destroyed, including error paths.
+
+This profile does NOT prove npm-only egress or live DNS-TTL enforcement. Explicitly
+label the standalone fixture's synthetic resolution lifetime as scaffolding.
+Do not weaken the existing joined fixture's 120-second DNS floor or Ubuntu guard.
+The result must include the exact image ID, plan/evidence digests, output binding,
+all four successful phases, verified owned-container/workspace cleanup and
+`securityDrill:false`, `selfAttested:true`, `releaseEvidenceEligible:false`,
+`activationBlocked:true`, `externalSigningEligible:false`, `productionReady:false`.
+
+Bound every phase by remaining wall deadline, cap logs/reports, install failure
+emission early once the pinned runtime exists. A killed client is not proof of
+container death. Failed cleanup never yields passing evidence. Final VM/disk/MIG
+absence remains a separate authenticated operator observation, not a guest claim.
+
+## Evidence and compatibility
+
+Separate render-only CLI `gcp:batch:image:prepare` and `prepareBatchImage` use the
+same fixed infrastructure/request validator. Shared code may be extracted where
+needed, but the legacy engine request, generated script and classifier behavior
+must remain compatible. The new profile must not accept engine TAP evidence.
+
+Keep indexed bounded log chunks and one trusted result marker bound to run,
+source and script. Extend the operator classifier with an explicit known-profile
+dispatch (default legacy engine for old prepared records). Reconstruct the image
+summary independently; missing, duplicate, substituted or malformed phase output
+must not pass. Existing job UID/material-config and independent inventory checks
+apply unchanged. These are operator consistency checks, never attestation.
+
+## Verification and completion
+
+Tests must execute generated bootstrap/controller behavior, not merely search
+its text. Supplemental controlled native bootstrap fixtures may substitute
+provisioning, downloads and Docker build commands to cover control-flow failures;
+label these substitutions and do not count them as live provisioning evidence.
+Separately build the real image and execute real local containers where the host
+supports them, substituting only the unavailable cloud metadata positive control
+for those image tests. On explicitly opted-in GitHub-hosted Linux only, the test
+must admit a local rootful/cgroup-v2 daemon and install an exact fixture-owned
+inet table denying the current nonzero test UID's TCP/80 traffic to both metadata
+addresses. Bounded cleanup may delete only that unchanged owned table, after
+independently observing owned-container absence, then must observe table absence;
+an always-run workflow step independently retries/audits the receipt. Other Linux
+hosts fail without policy mutation. Mac explicitly reports local non-GCE evidence
+and does not install nft rules. Probe failures report bounded exit/signal and fixed
+reason enums, never response bodies, headers or tokens. GCE metadata isolation
+still requires the supervised live guest run. Include failed phase, timeout,
+wrong image/UID, missing cleanup,
+cross-profile evidence, malformed report, stale deadline and broad-input denial.
+Run full Docker-enabled CI, dependency audit, independent review, and preserve
+exact Abhishek author/committer identities. Open a separate PR; do not auto-merge.
+
+### Bounded public fixture preparation and failure diagnostics
+
+The first corrected-head guest reached `image_smoke` but retained zero worker
+bytes, because detailed controller stderr was redirected to a file destroyed
+with the VM. Preserve one bounded failure-only stdout record in the existing
+digest-bound worker log; never scrape or publish `controller.log`.
+
+Exact-source Debian x86_64 reproduction also shows the inherited 8 MiB
+controller file cap rejecting npm's @types/node metadata during public fixture
+preparation. The same preparation succeeds under 64 MiB. Raise only this public
+image_smoke controller's per-file limit to 64 MiB. Keep image_build at 8 MiB,
+worker-log encoding at 4 MiB, child output/diagnostic bounds, deadlines, process
+limits and every isolation/activation gate unchanged. This establishes a local
+setup defect consistent with the guest failure, not its exclusive live cause.
+Future metadata growth beyond the finite limit must still fail closed.
+
+Use `API_MIGRATOR_BATCH_IMAGE_FAILURE` with exactly `schemaVersion`, `stage`,
+`reason`, `exitCode` and `signal`; the complete line is at most 1,024 bytes.
+Stage is the last entered checkpoint, not a claim about underlying root cause.
+Stages are controller_entry, admission, public_setup, registry_resolution,
+fixture_plan, fixture_ownership, root_metadata, container_metadata, prepare,
+install, migrate, verify, cleanup and summary_validation. Reasons are
+invalid_input, admission_denied, deadline_exhausted, output_limit,
+diagnostic_limit, subprocess_failed, cleanup_unverified, invalid_output,
+unexpected and controller_unavailable. Use `unexpected` without narrower typed
+evidence. Exit is an integer 0–255 or null; signal is an allowlisted actual
+signal or null. Never infer a signal from a shell exit number.
+
+Never retain messages, stacks, causes, arbitrary codes, commands, URLs, HTTP
+responses or raw subprocess output. Preserve actual preparation-child close
+code/signal and existing timeout/output/cleanup precedence. Replace raw CLI
+error stderr with a fixed safe message. If a nonzero image_smoke exit leaves
+an empty worker log, the trusted emitter supplies controller_entry /
+controller_unavailable using the observed shell exit and unknown signal.
+
+Success remains byte-for-byte the existing single-summary protocol. Failure
+diagnostics, mixed output and malformed records can never satisfy it; the
+success predicate and activation gates stay unchanged. External cleanup proof
+remains mandatory. No other cap or runtime-policy change is authorized.
+
+The live supervised trial may run only after local gates are clean and source is
+available at an immutable public revision. Retain accepted job, fetched terminal
+job, complete digest-bound logs, and separately fetched full-project empty
+instances/disks/managed-groups. No live claim may be based on local tests alone.
+
+### Align the public controller with the existing plan lifetime
+
+The next live guest retained a digest-verified fixture_plan checkpoint failure.
+Local execution of the actual plan builder demonstrates that the 1,200-second
+controller window can request a 1,140-second plan, exceeding the unchanged
+15-minute maximum. The previous real-image fixture used a 600-second window and
+did not cover this contract. This is a concrete caller mismatch consistent with
+the checkpoint, not the unavailable guest exception text.
+
+Cap the new profile's requested plan expiry at the earlier of the controller
+deadline minus the existing 60-second cleanup reserve and now plus the existing
+maximum plan TTL. Reuse the existing maximum constant through a pure module;
+do not weaken the shared 1–15-minute validator. Bound phase execution by that
+earlier plan expiry as well, retaining the same cleanup reserve. Do not enlarge
+any deadline, synthetic DNS lifetime, minimum lifetime, privilege or activation
+gate. Too little time for a valid plan must still reject without plan output.
+
+Behavioral regressions must use the actual plan builder for the production
+1,200-second window, maximum/minimum boundaries and elapsed-setup cases. Exercise
+the same new-profile integration path in the real image fixture, including phase
+timeouts capped to plan expiry and rejection after expiry. Existing success
+summary and failure-record protocols are unchanged.
+
+### Make public build artifacts readable by the non-root image runner
+
+The next guest failed at prepare with a bounded subprocess exit 1. Exact-source
+local reproduction under the restrictive outer mask produced root-owned 0400
+files and 0500 dist directories after the existing seal. The unchanged actual
+Dockerfile preserved unreadable runtime imports: non-root prepare failed with
+EACCES. A diagnostic read/search-only image control passed. This establishes a
+local packaging defect consistent with the guest checkpoint, not the lost guest
+stderr or proof that no other live failure remains.
+
+Set umask 022 only inside the dedicated public build-worker body, before source
+extraction and build. Verify this selected correction with the real generated
+worker and unchanged Dockerfile before acceptance. Keep root bootstrap umask
+077, the build work parent 0700, build-UID quiescence, root ownership, write-bit
+removal and containment/hard-link checks unchanged. This exposes only approved
+public runtime artifacts to the separate non-root runner; it grants no writes,
+socket access, supplemental groups, capabilities, customer access or authority.
+Do not normalize the generic Docker packager or relax the fixture UID.
+
+Behavioral regression must execute the generated worker under an explicitly
+restrictive outer mask, inspect real file/directory/executable modes through the
+existing seal, and preserve the private parent. Ordinary public files must remain
+non-executable; executable semantics and directory traversal must survive, with
+root ownership and no write bits after sealing. Retain actual-image non-root
+prepare RED/control evidence, exact diagnostic cleanup, full CI and audit. All
+protocols, limits, metadata controls and activation gates remain unchanged.
+
+### Timeout-fixture readiness is not a production deadline change
+
+Parallel validation exposed two pre-existing tests that assumed a worker had
+started before a short setup-inclusive deadline expired. Keep actual elapsed
+expiry coverage, but establish bounded descendant readiness before exercising
+the parent's deadline-triggered real process-group cleanup. Control only the
+parent timer event in that fixture, not OS signals, process exit or absence.
+
+For the legacy native worker timeout fixture, preserve the generated worker
+envelope and genuine GNU timeout semantics. A bounded test-only readiness
+observer may trigger the exact timeout process's alarm after the validated
+worker marker; it must preserve stdin and real exit 124, refuse early exit or
+never-ready distinctly, and clean up its exact children. Do not manufacture
+success/failure records, remove worker-marker assertions, serialize the suite,
+or change production time budgets. Controlled delayed-start regressions and
+the ordinary full concurrent CI run must pass before acceptance.
+
+The controlled native test's synthetic Docker socket must signal readiness only
+after listening and establishing its fixture mode. Bound the test-only wait,
+detect early server exit, and refuse to start bootstrap on missing readiness.
+Cover delayed startup beyond the former half-second polling window, server exit
+and never-ready failure. This does not change any production deadline or gate.
