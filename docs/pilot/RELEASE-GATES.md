@@ -32,6 +32,17 @@ that a real Batch job ran or that its resources were deleted. Operational
 receipts must be checked separately, and Batch's task timeout does not bound
 queue or VM-initialization time.
 
+The separate `batch-public-image-phase-smoke-v1` profile runs the public
+Inngest image's prepare/install/migrate/verify protocol on a disposable rootful
+Docker Batch host. It does not port the Ubuntu gateway fixture: install uses
+host networking and a synthetic DNS lifetime, not enforced npm-only egress or
+live TTL evidence. Its actual-container metadata probe, exact image/report
+binding and owned cleanup are internal consistency checks. Local Docker and
+controlled bootstrap tests do not establish GCE metadata isolation or cloud
+resource deletion. Rootless deployment, joined gateway enforcement,
+independent observation/signing, protected source custody, hosted dispatch and
+publication remain blocked; no row above is closed by this profile.
+
 ## Additional gates before automated publication
 
 1. Connect the durable runner job/source handoff to actual hosted dispatch,

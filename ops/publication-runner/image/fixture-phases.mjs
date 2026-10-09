@@ -20,19 +20,20 @@ export function fixtureContainerNames(plan) {
     .map((phase) => [phase, `api-migrator-fixture-${jobId}-${phase}`]));
 }
 
-export function prepareFixtureWorkspace(root) {
+export function prepareFixtureWorkspace(root, { deadline } = {}) {
   if (typeof root !== "string" || !isAbsolute(root)) throw new TypeError("fixture root must be absolute");
+  setupBounds(deadline);
   const paths = Object.fromEntries(["checkout", "dependencies", "installation", "output", "result"]
     .map((name) => [name, join(root, name)]));
   paths.planPath = join(root, "plan.json");
   paths.sourcePath = join(root, "source.bundle");
   for (const path of Object.values(paths).slice(0, 5)) mkdirSync(path, { mode: 0o700 });
-  prepareFixture(paths.checkout);
-  git(paths.checkout, ["init", "--initial-branch=main"]);
-  git(paths.checkout, ["add", "--all"]);
-  git(paths.checkout, ["commit", "--no-gpg-sign", "--message", "runner integration fixture"]);
-  const baseSha = git(paths.checkout, ["rev-parse", "HEAD"]).trim();
-  const baseTreeSha = git(paths.checkout, ["rev-parse", "HEAD^{tree}"]).trim();
+  prepareFixture(paths.checkout, deadline);
+  git(paths.checkout, ["init", "--initial-branch=main"], deadline);
+  git(paths.checkout, ["add", "--all"], deadline);
+  git(paths.checkout, ["commit", "--no-gpg-sign", "--message", "runner integration fixture"], deadline);
+  const baseSha = git(paths.checkout, ["rev-parse", "HEAD"], deadline).trim();
+  const baseTreeSha = git(paths.checkout, ["rev-parse", "HEAD^{tree}"], deadline).trim();
   const manifest = {
     name: "Inngest TypeScript SDK v3 -> v4",
     provider: "inngest",
@@ -216,7 +217,14 @@ function bind(source, target, readOnly) {
   return ["--mount", `type=bind,src=${resolve(source)},dst=${target}${readOnly ? ",readonly" : ""}`];
 }
 
-function git(cwd, args) {
+function setupBounds(deadline, cap = DEFAULT_TIMEOUT_MS) {
+  if (deadline === undefined) return {};
+  const remaining = deadline - Date.now();
+  if (!Number.isSafeInteger(deadline) || remaining < 1) throw new Error('fixture setup deadline exhausted');
+  return { timeout: Math.min(cap, remaining), killSignal: 'SIGKILL', maxBuffer: MAX_BUFFER };
+}
+
+function git(cwd, args, deadline) {
   const env = {
     PATH: process.env.PATH,
     HOME: "/nonexistent",
@@ -227,9 +235,9 @@ function git(cwd, args) {
     GIT_COMMITTER_EMAIL: "74260202+Abhishekpundir23@users.noreply.github.com",
   };
   const committing = args[0] === "commit";
-  if (committing) verifyFixtureIdentity(cwd, env);
-  const output = execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env });
-  if (committing) verifyFixtureIdentity(cwd, env, true);
+  if (committing) verifyFixtureIdentity(cwd, env, false, { deadline });
+  const output = execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env, ...setupBounds(deadline, 10_000) });
+  if (committing) verifyFixtureIdentity(cwd, env, true, { deadline });
   return output;
 }
 
@@ -237,7 +245,7 @@ function digest(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function prepareFixture(checkout) {
+function prepareFixture(checkout, deadline) {
   mkdirSync(join(checkout, "src"));
   writeFileSync(join(checkout, "package.json"), `${JSON.stringify({
     name: "runner-integration-fixture", private: true, type: "module",
@@ -285,7 +293,7 @@ EXPOSE 3000
 CMD [ "npm", "run", "start" ]
 `);
   execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], {
-    cwd: checkout, stdio: ["ignore", "pipe", "pipe"], timeout: DEFAULT_TIMEOUT_MS, maxBuffer: MAX_BUFFER,
+    cwd: checkout, stdio: ["ignore", "pipe", "pipe"], timeout: DEFAULT_TIMEOUT_MS, maxBuffer: MAX_BUFFER, ...setupBounds(deadline),
     env: { PATH: process.env.PATH, HOME: join(checkout, ".npm-home"),
       npm_config_cache: join(checkout, ".npm-cache"), npm_config_strict_ssl: "true",
       npm_config_registry: "https://registry.npmjs.org/" },

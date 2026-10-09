@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../publication-runner/deployment/lib.mjs";
 import { hasBatchSmokeSummary } from "./batch-bootstrap.mjs";
+import { hasBatchImageSummary } from "./batch-image-summary.mjs";
 
 const digest = (s) => createHash("sha256").update(s).digest("hex");
 const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -27,6 +28,8 @@ export function classifyBatchResult({
   logs,
   inventory,
 } = {}) {
+  const profile = p?.profile === undefined ? 'batch-engine-smoke-v1' : p.profile;
+  valid(['batch-engine-smoke-v1', 'batch-public-image-phase-smoke-v1'].includes(profile), 'unknown prepared profile');
   valid(
     object(p) &&
       p.schemaVersion === 1 &&
@@ -241,7 +244,7 @@ export function classifyBatchResult({
               "activationBlocked",
             ]) &&
             record.schemaVersion === 1 &&
-            record.profile === "batch-engine-smoke-v1" &&
+            record.profile === profile &&
             record.runId === p.runId &&
             record.sourceRevision === p.source.revision &&
             record.sourceArchiveSha256 === p.source.sha256 &&
@@ -285,7 +288,7 @@ export function classifyBatchResult({
         result.phase === "complete" &&
         result.exitCode === 0 &&
         result.status === "passed" &&
-        hasBatchSmokeSummary(output)
+        (profile === 'batch-engine-smoke-v1' ? hasBatchSmokeSummary(output) : hasBatchImageSummary(output))
       )
         outcome.smoke = "passed";
     }

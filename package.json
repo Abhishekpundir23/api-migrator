@@ -31,6 +31,7 @@
     "gcp:trial:plan": "node ops/gcp-trial/render-plan.mjs",
     "gcp:trial:prepare": "node ops/gcp-trial/prepare-trial.mjs",
     "gcp:batch:prepare": "node ops/gcp-trial/prepare-batch.mjs",
+    "gcp:batch:image:prepare": "node ops/gcp-trial/prepare-batch-image.mjs",
     "gcp:trial:inventory": "node ops/gcp-trial/collect-inventory.mjs",
     "gcp:trial:ownership": "node ops/gcp-trial/capture-ownership.mjs",
     "gcp:trial:logs": "node ops/gcp-trial/collect-logs.mjs",
