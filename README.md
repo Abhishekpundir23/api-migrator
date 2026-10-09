@@ -20,6 +20,10 @@ This remains executable contract validation, not a live drill: the checked-in ex
 
 The first product goal is deliberately narrow: create a complete, verified migration preview for one repository, let a human review it, and publish a PR only after explicit approval. It never auto-merges.
 
+See the [client-pilot release gates](docs/pilot/RELEASE-GATES.md) for the
+remaining deployable work and the evidence required before accepting client
+source. Passing CI alone does not clear those gates.
+
 ## Safety model
 
 The publication flow below is a security boundary under active pilot validation. Steps 4–7 describe the intended ceremony after a trusted control plane can verify runner evidence and supply the resulting opaque capability. The current console fails closed before creating a challenge. Do not use this flow for external source until every remaining gate above has evidence.
@@ -102,7 +106,10 @@ the demonstrated boundary. See the [verification record](docs/plans/2026-09-19-r
 
 ## Local setup
 
-Requirements: Node.js 22+, npm, Git, Docker for isolated verification, and access to repositories you are authorized to test.
+Requirements: Node.js 22 LTS (the tested local version is pinned in `.nvmrc`),
+npm, Git, Docker for isolated verification, and access to repositories you are
+authorized to test. CI and the runner image use Node 22. Newer majors are not
+validated; Node 26 rejects a runtime-hardening flag used by the host tools.
 
 ```bash
 npm ci
@@ -221,6 +228,7 @@ When challenge generation is enabled, its receipt will never extend the original
 | `npm run typecheck` | Builds package declarations, then type-checks every workspace |
 | `npm test` | Runs the workspace unit and migration-fixture tests that exist in this checkout |
 | `npm run ci` | Runs ordered package builds, type-checks, workspace, pilot-evidence, and runner-script checks, example sidecar validation, and the console production build |
+| `npm run audit:dependencies` | Checks all locked dependencies against current npm advisories; high/critical findings or registry errors fail the separate CI audit job |
 | `npm run test:ops` | Checks the shell, gateway, host-deployment, dedicated-host handoff, hosted-smoke data/workflow, and runner-image contracts without claiming an authoritative Linux security drill |
 | `npm run runner:image:build` | Builds the minimal local Node 22 runner image |
 | `npm run runner:image:verify` | Verifies the image configuration and fixed entrypoint surface |

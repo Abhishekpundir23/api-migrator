@@ -25,6 +25,7 @@
     "test:workspaces": "npm run test --workspaces --if-present",
     "test:pilot": "node --test scripts/validate-pilot-result.test.mjs",
     "test:console-packaging": "node --test scripts/console-packaging.test.mjs",
+    "audit:dependencies": "npm audit --audit-level=high",
     "test:ops": "npm run test:ops:shell && npm run test:ops:gateway && npm run test:ops:deployment && npm run test:ops:image && npm run test:ops:gcp",
     "test:ops:gcp": "node --test ops/gcp-trial/test/*.test.mjs",
     "gcp:trial:plan": "node ops/gcp-trial/render-plan.mjs",
@@ -52,7 +53,7 @@
   "overrides": {
     "next": {
       "postcss": "8.5.25",
-      "sharp": "0.35.3"
+      "sharp": "0.35.5"
     }
   }
 }
