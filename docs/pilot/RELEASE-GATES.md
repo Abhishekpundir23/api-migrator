@@ -23,6 +23,15 @@ the exact grant and cleanup execution do not yet exist. Closing this gap needs
 a separately reviewed authority design; do not substitute name-based deletion,
 wildcard roles, or an unapproved IAM-changing process.
 
+The managed Batch trial now has a separate strict job renderer, public-source
+bootstrap, metadata-access checks, bounded off-host log records, and an
+operator-side result classifier. Its accepted job owns VM creation and teardown;
+the worker is not given disk deletion privileges. This is still an internal
+engine smoke, not the production hosted runner. Local tests cannot establish
+that a real Batch job ran or that its resources were deleted. Operational
+receipts must be checked separately, and Batch's task timeout does not bound
+queue or VM-initialization time.
+
 ## Additional gates before automated publication
 
 1. Connect the durable runner job/source handoff to actual hosted dispatch,

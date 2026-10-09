@@ -1,5 +1,71 @@
 # GCP trial preparation and read-only observations
 
+## Managed Batch trial
+
+`npm run gcp:batch:prepare -- --input REQUEST.json` renders a separate Batch
+artifact; it never submits it. The request uses `projectId`, `runId`,
+`sourceRevision`, `sourceArchiveSha256`, `bootImage`, `network`, `subnetwork`,
+and `deleteAt`. Values follow the table below, except `bootImage` must be a
+specific `batch-custom-image` version named
+`batch-debian-12-official-YYYYMMDD-...`. There is no arbitrary script, account,
+machine-size, retry, or project override.
+
+The job uses one e2-medium task, a 30 GB standard boot disk, zero task retries,
+a 30-minute task timeout, the dedicated `api-migrator-batch-worker` account,
+and a separate no-ingress network. It needs outbound internet access through
+an ephemeral external IP. Enable Batch and grant its Google-managed service
+agent the documented service-agent role only after approval; the worker needs
+only `roles/batch.agentReporter` and `roles/logging.logWriter`. No keys are
+needed. Do not use the Compute default service account or default network.
+
+The trusted bootstrap checks the absolute deadline, verifies Node and source
+hashes, and runs only the public engine smoke under a separate Unix account.
+Before repository execution, a UID-specific firewall blocks metadata HTTP on
+both documented IP endpoints, with a positive root control and negative worker
+probes. DNS to the IPv4 metadata resolver is allowed. This is not a hostile-code
+sandbox: customer source, secrets, publication, and console activation remain
+blocked.
+
+The smoke requires positive test passes and unique test totals with no failures,
+cancellations, or TODOs. It permits at most one skip: the engine test named
+`Docker runner performs an install then an offline typecheck`, because this
+profile does not install Docker. Every other skip is rejected. The separate
+Docker-enabled local/CI suite must still run without skips.
+
+Task timeouts do **not** bound queue or VM initialization time. Supervise the
+first jobs, cancel stale/non-progressing jobs, and keep observing until terminal
+state and independent VM/disk/instance-group absence. Do not call this a hard
+cost cap or an unattended absolute-deadline controller.
+
+Worker output is emitted as bounded, indexed base64 records plus a digest-bound
+result in Cloud Logging. `classifyBatchResult` in `batch-result.mjs` joins the
+prepared script, retained create response, fresh job response, complete task
+logs filtered to the server-assigned job UID, and a full-project resource
+inventory. It reports smoke and cleanup separately and never authorizes
+production. Missing chunks, wrong identities, surviving resources, and incomplete
+reads must not be treated as success. The inventory check is conservative: any
+remaining VM, disk, or managed instance group in this otherwise empty trial
+project leaves cleanup unverified. This function checks operator-collected
+evidence; it is not an authenticated collector or an independent attestation.
+The current classifier accepts absence receipts only within five minutes after
+the terminal job update. A later empty inventory can be read manually, but this
+classifier deliberately leaves that late receipt unverified; do not relabel its
+timestamp or treat the refusal as evidence that resources survived.
+
+Fetched job comparison accepts only the observed provider defaults: omitted zero
+retries and false external-IP prohibition, the exact generated job-ID label,
+output-only task-group name, and the exact parent-region plus pinned-zone pair.
+Additional zones, changed accounts/scripts/resources, and unknown execution
+fields still fail comparison. These normalization rules do not authenticate
+operator-supplied observations.
+
+Provider references: [Batch job lifecycle](https://docs.cloud.google.com/batch/docs/create-run-job),
+[custom service accounts](https://docs.cloud.google.com/batch/docs/create-run-job-custom-service-account),
+[timeouts](https://docs.cloud.google.com/batch/docs/set-timeouts), and
+[Batch OS images](https://docs.cloud.google.com/batch/docs/view-os-images).
+
+## Earlier Compute trial tools
+
 The planning and preparation CLIs are **proposal renderers**, not deployment
 commands. They make no network calls and never invoke `gcloud`. The inventory
 and ownership/log collectors and cleanup check described below make authenticated reads
