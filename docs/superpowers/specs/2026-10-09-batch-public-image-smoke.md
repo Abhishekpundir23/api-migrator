@@ -150,3 +150,26 @@ The live supervised trial may run only after local gates are clean and source is
 available at an immutable public revision. Retain accepted job, fetched terminal
 job, complete digest-bound logs, and separately fetched full-project empty
 instances/disks/managed-groups. No live claim may be based on local tests alone.
+
+### Align the public controller with the existing plan lifetime
+
+The next live guest retained a digest-verified fixture_plan checkpoint failure.
+Local execution of the actual plan builder demonstrates that the 1,200-second
+controller window can request a 1,140-second plan, exceeding the unchanged
+15-minute maximum. The previous real-image fixture used a 600-second window and
+did not cover this contract. This is a concrete caller mismatch consistent with
+the checkpoint, not the unavailable guest exception text.
+
+Cap the new profile's requested plan expiry at the earlier of the controller
+deadline minus the existing 60-second cleanup reserve and now plus the existing
+maximum plan TTL. Reuse the existing maximum constant through a pure module;
+do not weaken the shared 1–15-minute validator. Bound phase execution by that
+earlier plan expiry as well, retaining the same cleanup reserve. Do not enlarge
+any deadline, synthetic DNS lifetime, minimum lifetime, privilege or activation
+gate. Too little time for a valid plan must still reject without plan output.
+
+Behavioral regressions must use the actual plan builder for the production
+1,200-second window, maximum/minimum boundaries and elapsed-setup cases. Exercise
+the same new-profile integration path in the real image fixture, including phase
+timeouts capped to plan expiry and rejection after expiry. Existing success
+summary and failure-record protocols are unchanged.

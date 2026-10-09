@@ -3,6 +3,7 @@ import { chownSync, existsSync, lstatSync, mkdtempSync, readdirSync, rmSync } fr
 import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { PUBLICATION_RUNNER_PLAN_MAX_TTL_MS } from '../../packages/app/dist/publication-runner.js';
 import { canonicalJson } from '../publication-runner/deployment/lib.mjs';
 import { assertFixtureDockerDaemon } from '../publication-runner/deployment/fixture-native.mjs';
 import { createFixturePhaseOperations, createFixturePlan, fixtureContainerNames } from '../publication-runner/image/fixture-phases.mjs';
@@ -139,7 +140,15 @@ async function denied(host,family){return new Promise((resolve,reject)=>{
   if (result !== 'metadata_denied\n') throw fail('invalid_output', 'actual container metadata denial unverified');
 }
 
+export function createBatchImagePlan(prepared, { image, addresses, deadline, now }) {
+  return createFixturePlan(prepared, { imageDigest: image, addresses, now, resolutionObservedAt: now,
+    resolutionExpiresAt: deadline, expiresAt: Math.min(deadline - 60_000, now + PUBLICATION_RUNNER_PLAN_MAX_TTL_MS) });
+}
+
 export async function runBatchImagePhases({ root, paths, plan, image, uid, gid, addresses, deadline, executor, rootMetadataControl, now = Date.now, checkpoint = () => {} }) {
+  // remaining() reserves 60 seconds for cleanup. Never let that execution
+  // budget exceed the validated plan, even when the outer guard is longer.
+  deadline = Math.min(deadline, plan.plan.job.expiresAt + 60_000);
   const result = await withFixtureWorkspace(root, executor, async () => {
     checkpoint('root_metadata');
     if (typeof rootMetadataControl !== 'function' || await rootMetadataControl() !== '200') throw fail('admission_denied', 'root metadata positive control failed');
@@ -211,8 +220,7 @@ export async function runBatchImageSmoke(input, { checkpoint = () => {} } = {}) 
     const addresses = [...new Set(JSON.parse(resolved))].sort();
     const now = Date.now();
     checkpoint('fixture_plan');
-    const plan = createFixturePlan(prepared, { imageDigest: input.image, addresses, now, resolutionObservedAt: now,
-      resolutionExpiresAt: input.deadline, expiresAt: input.deadline - 60_000 });
+    const plan = createBatchImagePlan(prepared, { image: input.image, addresses, now, deadline: input.deadline });
     function own(path) {
       const stat = lstatSync(path);
       if (stat.isSymbolicLink()) throw Error('unexpected fixture setup symlink');

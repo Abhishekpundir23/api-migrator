@@ -66,23 +66,23 @@ test('controller rejects non-root, foreign daemon, expired deadline and wrong id
 // boundary is substituted here. A wrong digest cannot manufacture the report.
 test('controller sequences exact phases, actual-image metadata probe and owned cleanup before evidence', async (t) => {
   const { runBatchImagePhases } = await load();
-  for (const scenario of ['success', 'root-metadata-failure', 'metadata-access', 'phase-failure', 'bad-digest', 'timeout', 'cleanup-failure', 'missing-report']) {
+  for (const scenario of ['success', 'earlier-outer-deadline', 'plan-expired', 'root-metadata-failure', 'metadata-access', 'phase-failure', 'bad-digest', 'timeout', 'verify-expired', 'cleanup-failure', 'missing-report']) {
     await t.test(scenario, async () => {
       const root = mkdtempSync(join(tmpdir(), 'batch-image-unit-'));
       t.after(() => rmSync(root, { recursive: true, force: true }));
       const paths = Object.fromEntries(['installation', 'output', 'dependencies', 'result'].map(n => [n, join(root, n)]));
       for (const path of Object.values(paths)) mkdirSync(path);
       paths.planPath = join(root, 'plan.json'); paths.sourcePath = join(root, 'source.bundle');
-      const plan = { digest: D('b'), plan: { job: { id: `previewjob_${'c'.repeat(64)}` } } };
+      const plan = { digest: D('b'), plan: { job: { id: `previewjob_${'c'.repeat(64)}`, expiresAt: 91_000 } } };
       const evidence = { planDigest: D('b'), output: { preflightId: `pf_${'d'.repeat(64)}`, artifactDigest: D('e'), candidateTreeSha: 'f'.repeat(40) },
         checks: Object.fromEntries(['install', 'typecheck', 'test', 'lint', 'runtime'].map(n => [n, { status: 'passed' }])),
         report: { verification: { ok: true, skipped: false }, summary: { review: 0 }, manifest: { deployment: { kind: 'long-running' } }, entries: [] }, blockers: [] };
       const text = canonicalJson(evidence), digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
-      let clock = 1000, cleaned = false;
+      let clock = scenario === 'plan-expired' ? 91_000 : 1000, cleaned = false;
       const calls = [], checkpoints = [];
       const executor = { execute(request) {
         calls.push(request);
-        assert(request.timeoutMs > 0 && request.timeoutMs <= 40_000);
+        assert.equal(request.timeoutMs, request.dockerArgs.includes('/usr/local/bin/node') ? 15_000 : (scenario === 'earlier-outer-deadline' ? 41_000 : 91_000) - clock);
         assert.equal(request.image, D('a'));
         assert(request.dockerArgs.includes('12003:12003'));
         if (request.dockerArgs.includes('/usr/local/bin/node')) {
@@ -90,29 +90,35 @@ test('controller sequences exact phases, actual-image metadata probe and owned c
           return scenario === 'metadata-access' ? 'metadata_reachable\n' : 'metadata_denied\n';
         }
         if (scenario === 'phase-failure') throw Error('phase failed');
-        if (scenario === 'timeout') clock = 200_000;
+        if (scenario === 'timeout') clock = 91_000;
         const outputs = { prepare: `runner_phase=prepare status=passed prepared_state_digest=${D('1')}\n`,
           install: `runner_phase=install status=passed prepared_state_digest=${D(scenario === 'bad-digest' ? '9' : '1')} install_state_digest=${D('2')}\n`,
           migrate: `runner_phase=migrate status=passed dependency_state_digest=${D('3')}\n`,
           verify: `runner_phase=verify status=passed evidence_digest=${digest} preflight_id=${evidence.output.preflightId}\n` };
         if (request.phase === 'verify' && scenario !== 'missing-report') writeFileSync(join(paths.result, 'runner-evidence.json'), text);
+        if (scenario === 'success' || scenario === 'earlier-outer-deadline') clock += 1000;
+        if (scenario === 'verify-expired' && request.phase === 'verify') clock = 91_000;
         return outputs[request.phase];
       }, assertCleanupComplete() { if (scenario === 'cleanup-failure') throw Error('cleanup unverified'); cleaned = true; } };
       const run = () => runBatchImagePhases({ root, paths, plan, image: D('a'), uid: 12003, gid: 12003,
-        addresses: ['104.16.1.35'], deadline: 101_000, executor, now: () => clock, checkpoint: stage => checkpoints.push(stage),
+        addresses: ['104.16.1.35'], deadline: scenario === 'earlier-outer-deadline' ? 101_000 : 1_201_000,
+        executor, now: () => clock, checkpoint: stage => checkpoints.push(stage),
         rootMetadataControl: () => scenario === 'root-metadata-failure' ? '503' : '200' });
-      if (scenario === 'success') {
+      if (scenario === 'success' || scenario === 'earlier-outer-deadline') {
         const result = await run();
         assert.equal(hasBatchImageSummary(`API_MIGRATOR_BATCH_IMAGE_SUMMARY ${canonicalJson(result)}\n`), true);
         assert.deepEqual(calls.map(r => r.network), ['host', 'none', 'host', 'none', 'none']);
         assert.deepEqual(result.phases.map(r => r.phase), ['prepare', 'install', 'migrate', 'verify']);
         assert.equal(result.evidenceDigest, digest);
         assert.deepEqual(checkpoints, ['root_metadata', 'container_metadata', 'prepare', 'install', 'migrate', 'verify', 'cleanup', 'summary_validation']);
+        assert.deepEqual(calls.map(r => r.timeoutMs), scenario === 'earlier-outer-deadline'
+          ? [15000, 40000, 39000, 38000, 37000] : [15000, 90000, 89000, 88000, 87000]);
       } else await assert.rejects(run());
-      if (scenario !== 'success') assert.equal(checkpoints.at(-1), {
-        'root-metadata-failure': 'root_metadata', 'metadata-access': 'container_metadata', 'phase-failure': 'prepare',
-        'bad-digest': 'install', timeout: 'install', 'cleanup-failure': 'cleanup', 'missing-report': 'verify',
+      if (scenario !== 'success' && scenario !== 'earlier-outer-deadline') assert.equal(checkpoints.at(-1), {
+        'plan-expired': 'container_metadata', 'root-metadata-failure': 'root_metadata', 'metadata-access': 'container_metadata', 'phase-failure': 'prepare',
+        'bad-digest': 'install', timeout: 'install', 'verify-expired': 'verify', 'cleanup-failure': 'cleanup', 'missing-report': 'verify',
       }[scenario]);
+      if (scenario === 'plan-expired') assert.equal(calls.length, 0);
       assert.equal(existsSync(root), scenario === 'cleanup-failure');
       assert.equal(cleaned, scenario !== 'cleanup-failure');
     });

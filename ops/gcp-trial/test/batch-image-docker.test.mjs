@@ -5,9 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
-import { createFixturePlan } from '../../publication-runner/image/fixture-phases.mjs';
 import { createDockerFixtureExecutor } from '../../publication-runner/image/docker-fixture-executor.mjs';
-import { prepareBatchImageWorkspace, runBatchImagePhases } from '../run-batch-image-smoke.mjs';
+import { createBatchImagePlan, prepareBatchImageWorkspace, runBatchImagePhases } from '../run-batch-image-smoke.mjs';
 import { hasBatchImageSummary, encodeBatchImageLog } from '../batch-image-summary.mjs';
 import { canonicalJson } from '../../publication-runner/deployment/lib.mjs';
 import { prepareBatchImage } from '../batch-image.mjs';
@@ -26,15 +25,17 @@ test('real Docker image four-phase protocol and failed/timeout cleanup remain no
   execFileSync('docker', ['build', '--file', 'ops/publication-runner/image/Dockerfile', '--iidfile', iidfile, '.'],
     { cwd: resolve(new URL('../../../', import.meta.url).pathname), encoding: 'utf8', timeout: 600_000, maxBuffer: 4_194_304, stdio: ['ignore', 'pipe', 'pipe'] });
   const image = readFileSync(iidfile, 'utf8').trim(); assert.match(image, /^sha256:[a-f0-9]{64}$/); t.diagnostic(`real image ${image}`);
-  const deadline = Date.now() + 600_000;
+  const deadline = Date.now() + 1_200_000;
   const root = mkdtempSync(join(tmpdir(), 'batch-image-real-'));
   const prepared = await prepareBatchImageWorkspace(root, { deadline: deadline - 60_000 });
   const addresses = [...new Set((await lookup('registry.npmjs.org', { all: true })).map(x => x.address))].sort();
   const now = Date.now();
-  const plan = createFixturePlan(prepared, { imageDigest: image, addresses, now, resolutionObservedAt: now,
-    resolutionExpiresAt: deadline, expiresAt: deadline - 60_000 });
+  const plan = createBatchImagePlan(prepared, { image, addresses, now, deadline });
+  assert(plan.plan.job.expiresAt - now <= 900_000);
+  assert(plan.plan.job.expiresAt <= deadline - 60_000);
   const ids = [];
   const executor = createDockerFixtureExecutor({ command(file, args, options) {
+    if (args[0] === 'start') assert(options.timeout > 0 && options.timeout <= 900_000);
     const output = execFileSync(file, args, options);
     if (args[0] === 'create') ids.push(output.trim());
     return output;

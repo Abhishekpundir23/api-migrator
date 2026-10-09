@@ -72,3 +72,13 @@ The corrected f7b6ce1 guest failed in image_smoke with exit 1 and zero worker-lo
 - [x] Execute rendered-bootstrap failing-controller, abrupt empty-output and outer-timeout cases; reconstruct chunks, verify digest and failed classification. Success stays exactly the original one-summary line; mixed/malformed output and nonzero exits never pass.
 - [x] Apart from the explicitly targeted image_smoke per-file cap, keep all caps, deadlines, public-build selectors, source/runtime pins, identity/isolation and cleanup rules unchanged. Run focused tests, full Docker-enabled CI and audit, retain evidence, verify exact Git identities and make a new commit without amend/push.
 - [ ] Parent performs one scoped independent review and fresh-head verification. Any further cloud run remains supervised and uses a fresh nonce/deadline, with independent terminal/resource-absence evidence. No automatic merge.
+
+### Task 4: Align public plan and phase lifetimes
+
+The 25c104c guest failed at fixture_plan; exact downloaded receipts and independent resource absence are retained. Actual createFixturePlan reproduction rejects a fresh 1,140-second plan and the conservative 991.874-second elapsed case against the existing 900-second maximum. Its 600-second test fixture passes and hides this mismatch. Fix the caller only; preserve the shared 1–15-minute policy.
+
+- [x] Add RED behavioral coverage through the actual plan builder and new-profile caller for the 1,200-second controller window, elapsed setup, exact upper/lower boundaries and insufficient time; prove rejection does not create plan/source output.
+- [x] Cap requested expiry at min(controller deadline minus 60 seconds, now plus existing maximum TTL). Reuse the pure existing maximum constant. A small new-profile helper is allowed to make this exact caller path testable; do not change shared fixture/validator semantics.
+- [x] Bound all new-profile phase operations by the earlier plan expiry while preserving the 60-second cleanup reserve. Test actual propagated timeout values and fail-closed expiry; success/failure protocols and synthetic-lifetime disclosure stay unchanged.
+- [x] Exercise the corrected helper with the 1,200-second window in the real image fixture, then run focused tests, full Docker-enabled CI and audit. Retain evidence and limitations. Verify exact Git identities and make a new commit without amend/push/cloud actions.
+- [ ] Parent performs one scoped independent review, verifies fresh remote checks and runs at most one supervised fresh-nonce trial after gates pass. Earlier failures remain preserved; no automatic merge.
