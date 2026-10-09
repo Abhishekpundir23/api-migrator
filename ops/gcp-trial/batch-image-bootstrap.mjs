@@ -1,5 +1,6 @@
 import { renderMetadataIsolation } from './batch-bootstrap.mjs';
 import { encodeBatchImageLog, hasBatchImageSummary } from './batch-image-summary.mjs';
+import { encodeBatchImageFailure } from './batch-image-failure.mjs';
 
 // Fixed public-source setup only; no request field supplies executable content.
 export function renderBatchImageScript(input, source) {
@@ -48,7 +49,10 @@ finish() {
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 @ENCODER@
-const bytes = readFileSync(process.argv[2]);
+let bytes = readFileSync(process.argv[2]);
+if (bytes.length === 0 && process.argv[3] === 'image_smoke' && Number(process.argv[4]) !== 0) {
+  bytes = Buffer.from(encodeBatchImageFailure({stage:'controller_entry',reason:'controller_unavailable',exitCode:Number(process.argv[4]),signal:null}));
+}
 for (const record of encodeBatchImageLog(bytes, {runId:'@RUN@',sourceRevision:'@REV@',sourceArchiveSha256:'@SOURCE_HASH@',phase:process.argv[3],exitCode:Number(process.argv[4])})) console.log(record);
 BATCH_IMAGE_EMITTER
  emitted=$?
@@ -138,11 +142,11 @@ phase=image_smoke
 # caller's absolute deadline extends beyond this controller's 1,200-second cap.
 controller_stop_at=$(($(date +%s) + 1200))
 if [ "$stop_at" -lt "$controller_stop_at" ]; then controller_stop_at=$stop_at; fi
-(ulimit -f 8192; run_phase 1200 env -i PATH="$PATH" HOME="$root" DOCKER_CONFIG="$DOCKER_CONFIG" DOCKER_HOST="$DOCKER_HOST" "$root/node/bin/node" ops/gcp-trial/run-batch-image-smoke.mjs --image "$image" --uid "$fixture_uid" --gid "$fixture_gid" --deadline "$((controller_stop_at * 1000))") > "$root/worker.log" 2> "$root/controller.log"
+(ulimit -f 65536; run_phase 1200 env -i PATH="$PATH" HOME="$root" DOCKER_CONFIG="$DOCKER_CONFIG" DOCKER_HOST="$DOCKER_HOST" "$root/node/bin/node" ops/gcp-trial/run-batch-image-smoke.mjs --image "$image" --uid "$fixture_uid" --gid "$fixture_gid" --deadline "$((controller_stop_at * 1000))") > "$root/worker.log" 2> "$root/controller.log"
 [ "$(date +%s)" -lt "$stop_at" ] || exit 70
 phase=complete
 `;
-  script = script.replace('@ENCODER@', `${hasBatchImageSummary.toString()}\n${encodeBatchImageLog.toString()}`);
+  script = script.replace('@ENCODER@', `${hasBatchImageSummary.toString()}\n${encodeBatchImageLog.toString()}\n${encodeBatchImageFailure.toString()}`);
   for (const [key, value] of Object.entries({ '@STOP@': String(Math.floor(input.deleteAt / 1000) - 90), '@RUN@': input.runId,
     '@SHORT@': input.runId.slice(0, 16), '@REV@': source.revision, '@SOURCE_HASH@': source.sha256, '@SOURCE_URL@': source.url }))
     script = script.replaceAll(key, value);

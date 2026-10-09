@@ -106,6 +106,46 @@ cross-profile evidence, malformed report, stale deadline and broad-input denial.
 Run full Docker-enabled CI, dependency audit, independent review, and preserve
 exact Abhishek author/committer identities. Open a separate PR; do not auto-merge.
 
+### Bounded public fixture preparation and failure diagnostics
+
+The first corrected-head guest reached `image_smoke` but retained zero worker
+bytes, because detailed controller stderr was redirected to a file destroyed
+with the VM. Preserve one bounded failure-only stdout record in the existing
+digest-bound worker log; never scrape or publish `controller.log`.
+
+Exact-source Debian x86_64 reproduction also shows the inherited 8 MiB
+controller file cap rejecting npm's @types/node metadata during public fixture
+preparation. The same preparation succeeds under 64 MiB. Raise only this public
+image_smoke controller's per-file limit to 64 MiB. Keep image_build at 8 MiB,
+worker-log encoding at 4 MiB, child output/diagnostic bounds, deadlines, process
+limits and every isolation/activation gate unchanged. This establishes a local
+setup defect consistent with the guest failure, not its exclusive live cause.
+Future metadata growth beyond the finite limit must still fail closed.
+
+Use `API_MIGRATOR_BATCH_IMAGE_FAILURE` with exactly `schemaVersion`, `stage`,
+`reason`, `exitCode` and `signal`; the complete line is at most 1,024 bytes.
+Stage is the last entered checkpoint, not a claim about underlying root cause.
+Stages are controller_entry, admission, public_setup, registry_resolution,
+fixture_plan, fixture_ownership, root_metadata, container_metadata, prepare,
+install, migrate, verify, cleanup and summary_validation. Reasons are
+invalid_input, admission_denied, deadline_exhausted, output_limit,
+diagnostic_limit, subprocess_failed, cleanup_unverified, invalid_output,
+unexpected and controller_unavailable. Use `unexpected` without narrower typed
+evidence. Exit is an integer 0–255 or null; signal is an allowlisted actual
+signal or null. Never infer a signal from a shell exit number.
+
+Never retain messages, stacks, causes, arbitrary codes, commands, URLs, HTTP
+responses or raw subprocess output. Preserve actual preparation-child close
+code/signal and existing timeout/output/cleanup precedence. Replace raw CLI
+error stderr with a fixed safe message. If a nonzero image_smoke exit leaves
+an empty worker log, the trusted emitter supplies controller_entry /
+controller_unavailable using the observed shell exit and unknown signal.
+
+Success remains byte-for-byte the existing single-summary protocol. Failure
+diagnostics, mixed output and malformed records can never satisfy it; the
+success predicate and activation gates stay unchanged. External cleanup proof
+remains mandatory. No other cap or runtime-policy change is authorized.
+
 The live supervised trial may run only after local gates are clean and source is
 available at an immutable public revision. Retain accepted job, fetched terminal
 job, complete digest-bound logs, and separately fetched full-project empty

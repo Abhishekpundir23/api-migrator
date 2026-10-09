@@ -79,7 +79,7 @@ test('controller sequences exact phases, actual-image metadata probe and owned c
         report: { verification: { ok: true, skipped: false }, summary: { review: 0 }, manifest: { deployment: { kind: 'long-running' } }, entries: [] }, blockers: [] };
       const text = canonicalJson(evidence), digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
       let clock = 1000, cleaned = false;
-      const calls = [];
+      const calls = [], checkpoints = [];
       const executor = { execute(request) {
         calls.push(request);
         assert(request.timeoutMs > 0 && request.timeoutMs <= 40_000);
@@ -99,7 +99,7 @@ test('controller sequences exact phases, actual-image metadata probe and owned c
         return outputs[request.phase];
       }, assertCleanupComplete() { if (scenario === 'cleanup-failure') throw Error('cleanup unverified'); cleaned = true; } };
       const run = () => runBatchImagePhases({ root, paths, plan, image: D('a'), uid: 12003, gid: 12003,
-        addresses: ['104.16.1.35'], deadline: 101_000, executor, now: () => clock,
+        addresses: ['104.16.1.35'], deadline: 101_000, executor, now: () => clock, checkpoint: stage => checkpoints.push(stage),
         rootMetadataControl: () => scenario === 'root-metadata-failure' ? '503' : '200' });
       if (scenario === 'success') {
         const result = await run();
@@ -107,7 +107,12 @@ test('controller sequences exact phases, actual-image metadata probe and owned c
         assert.deepEqual(calls.map(r => r.network), ['host', 'none', 'host', 'none', 'none']);
         assert.deepEqual(result.phases.map(r => r.phase), ['prepare', 'install', 'migrate', 'verify']);
         assert.equal(result.evidenceDigest, digest);
+        assert.deepEqual(checkpoints, ['root_metadata', 'container_metadata', 'prepare', 'install', 'migrate', 'verify', 'cleanup', 'summary_validation']);
       } else await assert.rejects(run());
+      if (scenario !== 'success') assert.equal(checkpoints.at(-1), {
+        'root-metadata-failure': 'root_metadata', 'metadata-access': 'container_metadata', 'phase-failure': 'prepare',
+        'bad-digest': 'install', timeout: 'install', 'cleanup-failure': 'cleanup', 'missing-report': 'verify',
+      }[scenario]);
       assert.equal(existsSync(root), scenario === 'cleanup-failure');
       assert.equal(cleaned, scenario !== 'cleanup-failure');
     });

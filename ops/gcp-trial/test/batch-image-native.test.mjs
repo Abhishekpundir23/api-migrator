@@ -39,7 +39,7 @@ test('generated image bootstrap enforces privilege, sealing, runtime and failure
     dnsEvidence: 'synthetic_lifetime_scaffolding', securityDrill: false, selfAttested: true, releaseEvidenceEligible: false,
     activationBlocked: true, externalSigningEligible: false, productionReady: false };
   for (const scenario of ['success', 'provision-failure', 'rootless', 'build-failure', 'build-timeout', 'image-build-failure',
-    'phase-failure', 'phase-timeout', 'escaping-link', 'root-metadata-failure', 'worker-metadata-access']) {
+    'phase-failure', 'phase-diagnostic', 'phase-timeout', 'escaping-link', 'root-metadata-failure', 'worker-metadata-access']) {
     await t.test(scenario, { timeout: 50_000 }, st => {
       const dir = join(fixtures, scenario), repo = join(dir, 'repo');
       mkdirSync(join(repo, 'ops/gcp-trial'), { recursive: true });
@@ -64,7 +64,7 @@ const root=process.cwd();for(const p of [root,root+'/build-uid',root+'/ops/gcp-t
 const buildUid=Number(fs.readFileSync('build-uid','utf8'));if(!fs.existsSync('/tmp/native-boundary/nft-'+buildUid))process.exit(95);
 const uid=Number(process.argv[process.argv.indexOf('--uid')+1]);if(!fs.existsSync('/tmp/native-boundary/nft-'+uid))process.exit(96);
 if(Number(process.argv[process.argv.indexOf('--deadline')+1])-Date.now()>1200000)process.exit(42);
-${scenario === 'phase-failure' ? 'process.exit(38);' : scenario === 'phase-timeout' ? 'setInterval(()=>{},1000);' : `console.log(${JSON.stringify('API_MIGRATOR_BATCH_IMAGE_SUMMARY ' + canonical(summary))});`}`;
+${scenario === 'phase-failure' ? "console.error('SECRET controller stderr');process.exit(38);" : scenario === 'phase-diagnostic' ? `console.log('API_MIGRATOR_BATCH_IMAGE_FAILURE '+JSON.stringify({schemaVersion:1,stage:'public_setup',reason:'subprocess_failed',exitCode:1,signal:null}));console.error('SECRET controller stderr');process.exit(1);` : scenario === 'phase-timeout' ? 'setInterval(()=>{},1000);' : `console.log(${JSON.stringify('API_MIGRATOR_BATCH_IMAGE_SUMMARY ' + canonical(summary))});`}`;
       writeFileSync(join(repo, 'ops/gcp-trial/run-batch-image-smoke.mjs'), controller);
       const tar = spawnSync('tar', ['-czf', '-', '-C', dir, 'repo'], { maxBuffer: 1_048_576 }); assert.equal(tar.status, 0);
       writeFileSync(join(dir, 'source.tar.gz'), tar.stdout); chmodSync(dir, 0o755);
@@ -96,7 +96,7 @@ ${scenario === 'phase-failure' ? 'process.exit(38);' : scenario === 'phase-timeo
         '--security-opt=no-new-privileges', '--user=0:0', '-i', image, 'bash', '-se'],
       { input: setup, encoding: 'utf8', timeout: 45_000, maxBuffer: 2 * 1024 * 1024 });
       const expected = { success: 0, 'provision-failure': 39, rootless: 86, 'build-failure': 37, 'build-timeout': 124,
-        'image-build-failure': 40, 'phase-failure': 38, 'phase-timeout': 124, 'escaping-link': 1,
+        'image-build-failure': 40, 'phase-failure': 38, 'phase-diagnostic': 1, 'phase-timeout': 124, 'escaping-link': 1,
         'root-metadata-failure': 83, 'worker-metadata-access': 84 }[scenario];
       assert.equal(result.status, expected, result.stderr + result.stdout);
       const records = result.stdout.split('\n').filter(line => line.startsWith('API_MIGRATOR_BATCH_'));
@@ -104,6 +104,18 @@ ${scenario === 'phase-failure' ? 'process.exit(38);' : scenario === 'phase-timeo
       const markers = records.filter(line => line.startsWith('API_MIGRATOR_BATCH_RESULT ')); assert.equal(markers.length, 1);
       const marker = JSON.parse(markers[0].slice('API_MIGRATOR_BATCH_RESULT '.length));
       assert.equal(marker.status, expected === 0 ? 'passed' : 'failed'); assert.equal(marker.exitCode, expected);
+      const chunks = records.filter(line => line.startsWith('API_MIGRATOR_BATCH_LOG ')).map(line => JSON.parse(line.slice('API_MIGRATOR_BATCH_LOG '.length)));
+      const bytes = Buffer.concat(chunks.map(chunk => Buffer.from(chunk.data, 'base64')));
+      assert.equal(sha(bytes), marker.logSha256); assert.equal(bytes.length, marker.logBytes);
+      assert.equal(bytes.includes('SECRET'), false);
+      if (scenario === 'success') assert.equal(bytes.toString(), `API_MIGRATOR_BATCH_IMAGE_SUMMARY ${canonical(summary)}\n`);
+      else if (scenario.startsWith('phase-')) {
+        assert(bytes.length <= 1024);
+        const diagnostic = JSON.parse(bytes.toString().slice('API_MIGRATOR_BATCH_IMAGE_FAILURE '.length));
+        assert.deepEqual(diagnostic, scenario === 'phase-diagnostic'
+          ? { schemaVersion: 1, stage: 'public_setup', reason: 'subprocess_failed', exitCode: 1, signal: null }
+          : { schemaVersion: 1, stage: 'controller_entry', reason: 'controller_unavailable', exitCode: expected, signal: null });
+      } else assert.equal(bytes.length, 0, 'no fallback outside image_smoke');
       const accepted = { name: `projects/${prepared.projectId}/locations/us-central1/jobs/${prepared.jobId}`, uid: 'native-fixture', createTime: new Date(now + 1).toISOString() };
       const classified = classifyBatchResult({ prepared, accepted, job: { ...structuredClone(prepared.job), ...accepted,
         updateTime: new Date(Date.now()).toISOString(), status: { state: expected === 0 ? 'SUCCEEDED' : 'FAILED' } },

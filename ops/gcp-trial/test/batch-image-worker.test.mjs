@@ -9,6 +9,44 @@ import { prepareBatchImage } from '../batch-image.mjs';
 
 const image = 'node:22.23.2-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436';
 
+test('rendered controller wrapper permits metadata above 8 MiB but refuses files above 64 MiB', {
+  skip: process.env.API_MIGRATOR_DOCKER_TEST !== '1', timeout: 90_000,
+}, t => {
+  const nowMs = Date.now();
+  const prepared = prepareBatchImage({ projectId: 'project-32bf49a2-bd30-4956-850', runId: 'a'.repeat(32),
+    sourceRevision: 'b'.repeat(40), sourceArchiveSha256: 'c'.repeat(64), bootImage: 'batch-debian-12-official-20261008-00',
+    network: 'api-migrator-trial-net', subnetwork: 'api-migrator-trial-sub', deleteAt: nowMs + 1_800_000 }, { nowMs });
+  const wrapper = prepared.job.taskGroups[0].taskSpec.runnables[0].script.text.split('\n').find(line => line.startsWith('(ulimit') && line.includes('run-batch-image-smoke.mjs'));
+  assert(wrapper);
+  // Controller body is a controlled write fixture; the generated wrapper, env,
+  // inherited cap and real Linux kernel write refusal remain actual behavior.
+  const script = `set -euo pipefail
+ulimit -c 0
+root=/tmp/controller-fixture
+mkdir -p "$root/node/bin" "$root/ops/gcp-trial"
+ln -s /usr/local/bin/node "$root/node/bin/node"
+cd "$root"
+image=synthetic fixture_uid=1000 fixture_gid=1000 controller_stop_at=1 DOCKER_CONFIG=/nonexistent DOCKER_HOST=unix:///nonexistent
+run_phase() { shift; "$@"; }
+trap 'cat "$root/controller.log" >&2' ERR
+printf '%s' 'const fs=require("node:fs"),assert=require("node:assert/strict"),{spawnSync}=require("node:child_process");fs.writeFileSync("metadata",Buffer.alloc(9*1024*1024));assert.equal(fs.statSync("metadata").size,9437184);const child=spawnSync(process.execPath,["-e","require(\\"node:fs\\").writeFileSync(\\"over\\",Buffer.alloc(65*1024*1024))"]);assert(child.signal==="SIGXFSZ"||(child.status===1&&/EFBIG/.test(child.stderr.toString())));assert.equal(fs.statSync("over").size,67108864);console.log("controller_file_cap=passed");' > ops/gcp-trial/run-batch-image-smoke.mjs
+# The synthetic .mjs fixture uses CommonJS explicitly without changing wrapper argv.
+sed -i '1s/^/import {createRequire} from "node:module";const require=createRequire(import.meta.url);/' ops/gcp-trial/run-batch-image-smoke.mjs
+${wrapper}
+cat "$root/worker.log"
+`;
+  const id = execFileSync('docker', ['create', '--platform', 'linux/amd64', '--network', 'none', '--user', '1000:1000',
+    '--cap-drop=all', '--security-opt=no-new-privileges', '--pids-limit=64', '--memory=256m', '--entrypoint', '/bin/bash', image, '-c', script], { encoding: 'utf8', timeout: 60000 }).trim();
+  assert.match(id, /^[a-f0-9]{64}$/);
+  t.after(() => {
+    assert.equal(spawnSync('docker', ['rm', '--force', id], { timeout: 10000 }).status, 0);
+    const left = spawnSync('docker', ['container', 'ls', '--all', '--no-trunc', '--filter', `id=${id}`, '--format', '{{.ID}}'], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(left.status, 0); assert.equal(left.stdout.trim(), ''); t.diagnostic(`exact controller wrapper container ${id} verified absent`);
+  });
+  const result = spawnSync('docker', ['start', '--attach', id], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr); assert.match(result.stdout, /controller_file_cap=passed/);
+});
+
 // Controlled download/npm boundaries only: execute the generated worker's real
 // UID checks, archive checksum/extraction and inherited Linux file/process caps.
 // A separate retained real-public-graph run validates actual npm installation.
