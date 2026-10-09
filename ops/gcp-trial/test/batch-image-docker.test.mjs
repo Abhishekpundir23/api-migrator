@@ -12,10 +12,11 @@ import { hasBatchImageSummary, encodeBatchImageLog } from '../batch-image-summar
 import { canonicalJson } from '../../publication-runner/deployment/lib.mjs';
 import { prepareBatchImage } from '../batch-image.mjs';
 import { classifyBatchResult } from '../batch-result.mjs';
+import { installMetadataPolicy, cleanupMetadataPolicy } from './batch-image-metadata-policy.mjs';
 
 // Real pinned public image, phase commands, reports, binding and exact cleanup.
-// Only GCE root metadata reachability is substituted; a local denial is NOT
-// evidence that nft enforces the GCE policy. Host admission is tested separately.
+// GCE root metadata reachability is substituted. Linux CI installs a test-owned
+// UID policy; Mac denial is NOT evidence that nft enforces the GCE policy.
 test('real Docker image four-phase protocol and failed/timeout cleanup remain non-authorizing', {
   skip: process.env.API_MIGRATOR_DOCKER_TEST !== '1', timeout: 1_000_000,
 }, async t => {
@@ -38,6 +39,8 @@ test('real Docker image four-phase protocol and failed/timeout cleanup remain no
     if (args[0] === 'create') ids.push(output.trim());
     return output;
   } });
+  t.after(() => { executor.assertCleanupComplete(); t.diagnostic(`metadata policy cleanup ${JSON.stringify(cleanupMetadataPolicy())}`); });
+  t.diagnostic(`metadata policy ${JSON.stringify(installMetadataPolicy(plan.plan.job.id))}`);
   const result = await runBatchImagePhases({ root, paths: prepared.paths, plan, image,
     uid: process.getuid() || 1000, gid: process.getgid() || 1000, addresses, deadline, executor, rootMetadataControl: () => '200' });
   assert.equal(existsSync(root), false); executor.assertCleanupComplete(); assert.equal(ids.length, 5);

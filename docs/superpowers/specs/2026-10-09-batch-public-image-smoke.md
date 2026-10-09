@@ -84,7 +84,16 @@ provisioning, downloads and Docker build commands to cover control-flow failures
 label these substitutions and do not count them as live provisioning evidence.
 Separately build the real image and execute real local containers where the host
 supports them, substituting only the unavailable cloud metadata positive control
-for those image tests. GCE metadata isolation still requires the supervised live
+for those image tests. On explicitly opted-in GitHub-hosted Linux only, the test
+must admit a local rootful/cgroup-v2 daemon and install an exact fixture-owned
+inet table denying the current nonzero test UID's TCP/80 traffic to both metadata
+addresses. Bounded cleanup may delete only that unchanged owned table, after
+independently observing owned-container absence, then must observe table absence;
+an always-run workflow step independently retries/audits the receipt. Other Linux
+hosts fail without policy mutation. Mac explicitly reports local non-GCE evidence
+and does not install nft rules. Probe failures report bounded exit/signal and fixed
+reason enums, never response bodies, headers or tokens. GCE metadata isolation
+still requires the supervised live
 guest run. Include failed phase, timeout, wrong image/UID, missing cleanup,
 cross-profile evidence, malformed report, stale deadline and broad-input denial.
 Run full Docker-enabled CI, dependency audit, independent review, and preserve

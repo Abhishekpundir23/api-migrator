@@ -96,17 +96,27 @@ process.stdout.write(JSON.stringify({...p,bundle:{...p.bundle,bytes:p.bundle.byt
 export function probeBatchImageMetadata({ image, uid, gid, plan, executor, deadline, now = Date.now }) {
   const job = plan.plan.job.id, name = fixtureContainerNames(plan).prepare;
   const code = `const http=require('node:http');
-if(process.getuid()!==${uid}||process.getgid()!==${gid})process.exit(90);
-async function denied(host){return new Promise((resolve,reject)=>{
- const req=http.get({hostname:host,path:'/computeMetadata/v1/instance/id',headers:{'Metadata-Flavor':'Google'},timeout:4000},res=>{res.destroy();reject(Error('metadata reachable'));});
- req.on('socket',s=>s.on('connect',()=>{req.destroy();reject(Error('metadata connection reachable'));}));
+if(process.getuid()!==${uid}||process.getgid()!==${gid}){console.error('metadata_probe_failed family=none reason=identity_mismatch');process.exit(90);}
+async function denied(host,family){return new Promise((resolve,reject)=>{
+ const fail=reason=>reject({family,reason});
+ const req=http.get({hostname:host,path:'/computeMetadata/v1/instance/id',headers:{'Metadata-Flavor':'Google'},timeout:4000},res=>{res.destroy();fail('http_response');});
+ req.on('socket',s=>s.on('connect',()=>{req.destroy();fail('connected');}));
  req.on('timeout',()=>req.destroy(Error('timeout')));req.on('error',()=>resolve());
 });}
-(async()=>{await denied('169.254.169.254');await denied('fd20:ce::254');console.log('metadata_denied');})().catch(()=>process.exitCode=91);`;
-  const result = executor.execute({ phase: 'prepare', network: 'host', image, timeoutMs: remaining(deadline, now, 15_000), maxBuffer: 16_384,
+(async()=>{await denied('169.254.169.254','ipv4');await denied('fd20:ce::254','ipv6');console.log('metadata_denied');})().catch(e=>{console.error('metadata_probe_failed family='+(['ipv4','ipv6'].includes(e.family)?e.family:'none')+' reason='+(['connected','http_response'].includes(e.reason)?e.reason:'unexpected'));process.exitCode=91;});`;
+  let result;
+  try { result = executor.execute({ phase: 'prepare', network: 'host', image, timeoutMs: remaining(deadline, now, 15_000), maxBuffer: 16_384,
     dockerArgs: ['run', '--rm', '--pull=never', '--read-only', '--cap-drop=all', '--security-opt=no-new-privileges',
       '--pids-limit=32', '--memory=128m', '--cpus=1', '--name', name, '--label', `api-migrator.fixture-job=${job}`,
       '--network', 'host', '--user', `${uid}:${gid}`, '--entrypoint', '/usr/local/bin/node', image, '-e', code] });
+  } catch (error) {
+    const failure = error instanceof AggregateError ? error.errors[0] : error;
+    const exit = Number.isInteger(failure?.status) && failure.status >= 0 && failure.status <= 255 ? failure.status : 'unavailable';
+    const signal = ['SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGSEGV'].includes(failure?.signal) ? failure.signal : 'none';
+    const reason = String(failure?.stderr ?? '').slice(0, 1024).match(/^metadata_probe_failed (family=(?:ipv4|ipv6|none) reason=(?:connected|http_response|identity_mismatch|unexpected))$/m)?.[1] ?? 'family=none reason=unavailable';
+    // Never retain raw HTTP/process output or its cause in TAP/cloud diagnostics.
+    throw Error(`actual container metadata probe failed exit=${exit} signal=${signal} ${reason}`);
+  }
   if (result !== 'metadata_denied\n') throw Error('actual container metadata denial unverified');
 }
 
