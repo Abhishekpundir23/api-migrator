@@ -53,7 +53,7 @@ for (const name of ["engine", "app", "runner"]) {
   }
 }
 
-const selected = dependencyClosure(["jscodeshift", "recast", "zod"]);
+const selected = dependencyClosure(["jscodeshift", "jsonc-parser", "recast", "yaml", "zod"]);
 for (const location of [...selected].sort()) {
   const source = join(workspace, location);
   if (!existsSync(source)) throw new Error(`locked runtime dependency is not installed: ${location}`);

@@ -39,6 +39,8 @@ test("runtime closure keeps the dependency version resolved from the requiring p
       "node_modules/make-dir/node_modules/semver": { name: "semver", version: "5.7.2" },
       "node_modules/semver": { name: "semver", version: "6.3.1" },
       "node_modules/recast": { name: "recast", version: "1.0.0" },
+      "node_modules/jsonc-parser": { name: "jsonc-parser", version: "3.3.1" },
+      "node_modules/yaml": { name: "yaml", version: "2.9.1" },
       "node_modules/zod": { name: "zod", version: "1.0.0" },
     })) {
       writeJson(join(workspace, location, "package.json"), value);
@@ -53,6 +55,8 @@ test("runtime closure keeps the dependency version resolved from the requiring p
         "node_modules/make-dir/node_modules/semver": { version: "5.7.2" },
         "node_modules/semver": { version: "6.3.1" },
         "node_modules/recast": { version: "1.0.0" },
+        "node_modules/jsonc-parser": { version: "3.3.1" },
+        "node_modules/yaml": { version: "2.9.1" },
         "node_modules/zod": { version: "1.0.0" },
       },
     });
