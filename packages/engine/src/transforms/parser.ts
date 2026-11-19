@@ -8,6 +8,7 @@
  */
 
 import * as jscodeshift from "jscodeshift";
+import { parse } from "@babel/parser";
 
 const jsc: any = (jscodeshift as any).default ?? (jscodeshift as any);
 
@@ -22,13 +23,25 @@ const PARSER_BY_EXT: Record<string, string> = {
   ".jsx": "babel",
 };
 
+// Declaration files are ambient modules, where e.g. an exported const can
+// declare a type without an initializer. Ordinary TypeScript mode rejects it.
+const declarationParser = {
+  parse(source: string) {
+    return parse(source, {
+      sourceType: "module",
+      tokens: true,
+      plugins: [["typescript", { dts: true }], "decorators-legacy", "importAttributes"],
+    });
+  },
+};
+
 /**
  * Get a jscodeshift bound to the right parser for `filePath`, then parse
  * `source`. Throws if the source is invalid for that parser.
  */
 export function parseWithParser(filePath: string, source: string): any {
   const ext = filePath.slice(filePath.lastIndexOf("."));
-  const parser = PARSER_BY_EXT[ext] ?? "ts"; // default to ts (superset-ish)
+  const parser = /\.d\.(?:ts|mts|cts)$/.test(filePath) ? declarationParser : PARSER_BY_EXT[ext] ?? "ts";
   const j = jsc.withParser(parser);
   return j(source);
 }

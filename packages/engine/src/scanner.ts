@@ -43,6 +43,8 @@ const USAGE_PATTERNS: Record<string, RegExp[]> = {
 export interface ScanOptions {
   /** Directory names to skip. Defaults to node_modules/.git/etc. */
   skip?: Set<string>;
+  /** Optional hard limit for callers that keep a source inventory in memory. */
+  maxFiles?: number;
 }
 
 export interface ScannedFile {
@@ -76,6 +78,8 @@ export function findSourceFiles(root: string, opts: ScanOptions = {}): ScannedFi
       if (entry.isDirectory()) {
         stack.push(full);
       } else if (entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name))) {
+        if (opts.maxFiles !== undefined && out.length >= opts.maxFiles)
+          throw new SourceScanError(`Source inventory exceeds ${opts.maxFiles} files`);
         out.push({ absolute: full, relative: relative(root, full) });
       } else if (entry.isSymbolicLink() && SOURCE_EXTENSIONS.has(extname(entry.name))) {
         throw new SourceScanError(
@@ -90,7 +94,6 @@ export function findSourceFiles(root: string, opts: ScanOptions = {}): ScannedFi
 
 /** Select provider-relevant files from an already enumerated source inventory. */
 export function selectSdkFiles(files: readonly ScannedFile[], transformSet: string): ScannedFile[] {
-  const patterns = USAGE_PATTERNS[transformSet] ?? [];
   const out: ScannedFile[] = [];
   for (const file of files) {
     let text: string;
@@ -99,9 +102,13 @@ export function selectSdkFiles(files: readonly ScannedFile[], transformSet: stri
     } catch (error) {
       throw new SourceScanError(`Unable to read source file ${file.relative}: ${errorMessage(error)}`);
     }
-    if (patterns.some((pattern) => pattern.test(text))) out.push(file);
+    if (matchesSdkSource(text, transformSet)) out.push(file);
   }
   return out;
+}
+
+export function matchesSdkSource(text: string, transformSet: string): boolean {
+  return (USAGE_PATTERNS[transformSet] ?? []).some((pattern) => pattern.test(text));
 }
 
 /**

@@ -1,6 +1,34 @@
 # API Migrator
 
-API Migrator is an operator-reviewed pilot for upgrading application code when an API provider ships a breaking TypeScript SDK release.
+API Migrator helps an SDK team plan a breaking TypeScript upgrade across customer applications. Each repository owner runs the assessment locally. The SDK team receives a small JSON file with rule counts, uses it to prepare a reviewer brief, and can see which issues recur across the rollout.
+
+For example, the Inngest recipe can move an event trigger into the function configuration:
+
+```diff
+-jobs.createFunction({ id: "recount" }, { event: "stock/recount" }, handler);
++jobs.createFunction({ id: "recount", triggers: { event: "stock/recount" } }, handler);
+```
+
+A handler that reads `event.user` also gets a manual-review finding. The owner can see the file and line locally. The shared summary records the rule and its count. Available recipes cover **Inngest TypeScript v3 → v4** and **Knock Node v0 → v1**.
+
+### Try a local assessment
+
+From this checkout, use Node 22 and run:
+
+```bash
+npm ci --ignore-scripts --no-audit --no-fund
+npm run build --workspace @api-migrator/engine
+demo_dir=$(mktemp -d)
+npm run service -- assess --recipe inngest-v3-to-v4 --repo examples/service/inngest --out "$demo_dir/summary.json"
+npm run service -- brief --summary "$demo_dir/summary.json" --out "$demo_dir/brief.md"
+cat "$demo_dir/brief.md"
+```
+
+The example runs without application credentials or an OpenAI key. Add `--ai` to the brief command to get reviewer questions using GPT-6.2 Sol. The [assessment service guide](docs/service/README.md) covers a real handoff, campaign reports, data boundaries, model selection, budget limits and interpreting results. The [example brief](docs/service/example-brief.md) shows the output for the included synthetic Inngest application.
+
+### Hosted migration pilot
+
+The separate hosted pilot is intended to turn SDK upgrades into tested patches and owner-approved pull requests. Its current release status follows.
 
 **Current status:** sandbox-validated internal pilot. The owner-challenge, offline-signing, exact-authorization, and durable replay primitives exist, but the console cannot currently generate an owner challenge or publish: both paths require an opaque verified-runner capability, and no trusted control-plane provider is wired yet. A minimal Node 22 runner image now exercises offline preparation, lifecycle-disabled dependency installation, offline migration, and offline verification, while the host and L7 gateway directories define non-authorizing deployment contracts and an observer-first native-configuration preflight. A separate Ubuntu 24.04 workflow exercises 15 independent, secret-free native Envoy/nftables smoke scenarios, including forced routing, negative probes, gateway-stop closure, and table-last cleanup. Its same-host reports are explicitly self-attested and cannot become release, signing, capability, or publication evidence.
 
