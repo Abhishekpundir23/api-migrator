@@ -908,7 +908,8 @@ client.createFunction({ id: "x", triggers: { event: "x" } }, run);`,
     for (const code of ["F11", "F14"]) {
       const reviews = result.entries.filter((entry) => entry.code === code);
       assert.equal(reviews.length, 1, `${code} must fail closed for an unresolved handler`);
-      assert.match(reviews[0]?.message ?? "", /could not be resolved statically/);
+      const explanation = code === "F14" ? /unresolved handler.*outside step callbacks/ : /could not be resolved statically/;
+      assert.match(reviews[0]?.message ?? "", explanation);
     }
   }
 

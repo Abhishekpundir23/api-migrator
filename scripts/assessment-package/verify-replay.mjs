@@ -6,6 +6,25 @@ import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 const checks = {
+  knock(before, after) {
+    assert.equal(before.summary.sourceFiles, 294);
+    assert.equal(after.summary.sourceFiles, 294);
+    const touchedFiles = [
+      "examples/nextjs-example/pages/api/auth.ts",
+      "examples/nextjs-example/pages/api/identify.ts",
+      "examples/nextjs-example/pages/api/notify.ts",
+      "examples/slack-kit-example/app/actions/fetch-user-id.ts",
+      "examples/slack-kit-example/app/examine-channel-data/page.tsx",
+      "examples/slack-kit-example/app/layout.tsx",
+      "examples/slack-kit-example/app/lib/knock.ts",
+    ];
+    assert.deepEqual([...new Set(before.details.map(f => f.file))].sort(), touchedFiles);
+    assert.equal(before.details.filter(f => f.kind === "applied").length, 16);
+    assert.equal(before.details.filter(f => f.kind === "review").length, 3);
+    assert.equal(before.summary.wouldChangeFiles, 6);
+    assert.equal(after.summary.wouldChangeFiles, 0);
+    assert.deepEqual(after.details, []);
+  },
   kira(before, after) {
     const workflow = "api/_lib/studio-workflow.js";
     assert.deepEqual(before.details.filter(f => f.file === workflow && f.code === "T1").map(f => f.line), [65]);
@@ -62,7 +81,7 @@ const checks = {
 
 const [name, cliArg, beforeArg, afterArg, outputArg, ...extra] = process.argv.slice(2);
 if (!Object.hasOwn(checks, name) || !cliArg || !beforeArg || !afterArg || !outputArg || extra.length) {
-  console.error("Usage: node verify-replay.mjs <kira|mako|plinth|rxj> <extracted-cli> <before-tree> <after-tree> <new-report-dir>");
+  console.error("Usage: node verify-replay.mjs <kira|knock|mako|plinth|rxj> <extracted-cli> <before-tree> <after-tree> <new-report-dir>");
   process.exit(2);
 }
 const cli = realpathSync(cliArg);
@@ -73,10 +92,11 @@ for (const tree of trees) {
   assert.ok(pathFromTree === ".." || pathFromTree.startsWith(".." + sep), "Choose a report directory outside both source trees");
 }
 mkdirSync(output, { mode: 0o700 });
+const recipe = name === "knock" ? "knock-v0-to-v1" : "inngest-v3-to-v4";
 const reports = trees.map((repo, index) => {
   const label = index === 0 ? "before" : "after";
   const details = join(output, label + "-findings.json");
-  execFileSync(process.execPath, [cli, "assess", "--recipe", "inngest-v3-to-v4", "--repo", repo,
+  execFileSync(process.execPath, [cli, "assess", "--recipe", recipe, "--repo", repo,
     "--out", join(output, label + "-summary.json"), "--local-report", details], { stdio: "inherit" });
   return JSON.parse(readFileSync(details, "utf8"));
 });

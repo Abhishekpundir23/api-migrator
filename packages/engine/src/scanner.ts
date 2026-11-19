@@ -8,7 +8,7 @@
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, extname } from "node:path";
+import { basename, join, relative, extname } from "node:path";
 
 const DEFAULT_SKIP = new Set([
   "node_modules",
@@ -45,6 +45,8 @@ export interface ScanOptions {
   skip?: Set<string>;
   /** Optional hard limit for callers that keep a source inventory in memory. */
   maxFiles?: number;
+  /** Exclude the package manager binaries checked into .yarn/releases. */
+  skipYarnReleases?: boolean;
 }
 
 export interface ScannedFile {
@@ -76,6 +78,7 @@ export function findSourceFiles(root: string, opts: ScanOptions = {}): ScannedFi
       if (skip.has(entry.name)) continue;
       const full = join(cur, entry.name);
       if (entry.isDirectory()) {
+        if (opts.skipYarnReleases && entry.name === "releases" && basename(cur) === ".yarn") continue;
         stack.push(full);
       } else if (entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name))) {
         if (opts.maxFiles !== undefined && out.length >= opts.maxFiles)

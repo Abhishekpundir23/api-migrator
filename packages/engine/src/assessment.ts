@@ -41,7 +41,7 @@ export function assessRepository(
 ): RepositoryAssessment {
   if (!Object.hasOwn(TRANSFORM_ALLOWLIST, recipe)) throw new Error("Unsupported assessment recipe");
   const enabled = new Set<string>(TRANSFORM_ALLOWLIST[recipe]);
-  const files = findSourceFiles(root, { maxFiles: ASSESSMENT_MAX_SOURCE_FILES });
+  const files = findSourceFiles(root, { maxFiles: ASSESSMENT_MAX_SOURCE_FILES, skipYarnReleases: true });
   const sources = new Map<string, string>();
   const candidates = new Map<string, string>();
   let bytesRead = 0;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { linkSync, mkdtempSync, readFileSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -148,6 +148,24 @@ test("an export alias inside an ambient module does not stop the repository scan
     { code: "T1", kind: "applied", count: 1 });
   writeFileSync(join(root, "worker.d.ts"), 'declare module "worker:mail" { let message: ; }');
   assert.throws(() => assessRepository(root, "inngest-v3-to-v4"), /worker\.d\.ts/);
+});
+
+test("assessment skips bundled Yarn releases and scans project plugins and release sources", (t) => {
+  const root = fixture(t, {});
+  const releases = join(root, ".yarn", "releases");
+  mkdirSync(releases, { recursive: true });
+  const yarn = join(releases, "yarn-4.cjs");
+  writeFileSync(yarn, "");
+  truncateSync(yarn, 1024 * 1024 + 1);
+
+  const source = 'import Knock from "@knocklabs/node"; const k = new Knock({ apiKey: "demo" }); k.notify("welcome", { recipients: ["user"] });';
+  for (const directory of [join(root, ".yarn", "plugins"), join(root, "releases")]) {
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "notify.ts"), source);
+  }
+  const result = assessRepository(root, "knock-v0-to-v1");
+  assert.equal(result.sourceFiles, 2);
+  assert.equal(result.wouldChangeFiles, 2);
 });
 
 test("an oversized source or inventory fails without partial results", (t) => {
