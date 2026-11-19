@@ -2,6 +2,8 @@
 
 API Migrator helps an SDK team plan a breaking TypeScript upgrade across customer applications. Each repository owner runs the assessment locally. The SDK team receives a small JSON file with rule counts, uses it to prepare a reviewer brief, and can see which issues recur across the rollout.
 
+[Explore the migration replays and download the offline scanner](https://api-migrator.loyalhobby2.chatgpt.site/).
+
 For example, the Inngest recipe can move an event trigger into the function configuration:
 
 ```diff
