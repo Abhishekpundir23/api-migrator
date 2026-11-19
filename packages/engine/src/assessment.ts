@@ -1,3 +1,4 @@
+import { InngestDeclarationAssessment } from "./inngest-declaration-assessment.js";
 import { InngestGuides } from "./assessment-guides.js";
 import { sep } from "node:path";
 import { ASSESSMENT_RULES } from "./assessment-rules.js";
@@ -65,10 +66,12 @@ export function assessRepository(
     if (matchesSdkSource(source, recipe)) candidates.set(file.relative, source);
   }
   const matched = new Set(candidates.keys());
+  const declarations = enabled.has("F19") ? new InngestDeclarationAssessment() : undefined;
   const provenance = {
     scannedSources: candidates,
     sourcePaths: new Set(sources.keys()),
     ownerAssessment: true,
+    onInferredRegistrationExport: declarations && ((path: string, line: number) => declarations.observe(path, line)),
     resolveRealtimeAlias: createRealtimeAliasResolver(root),
   };
 
@@ -99,6 +102,9 @@ export function assessRepository(
       throw new Error(`Unable to assess ${path}: ${error instanceof Error ? error.message : "source analysis failed"}`, { cause: error });
     }
     if (proposed !== null && proposed !== source) wouldChangeFiles++;
+  }
+  if (declarations) {
+    for (const entry of declarations.entries(root)) { matched.add(entry.file); sink.push(entry); }
   }
   if (recipe === "inngest-v3-to-v4" && matched.size > 0) {
     guides?.review(root, sink);

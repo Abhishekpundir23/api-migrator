@@ -48,6 +48,8 @@ try {
     entryPoints: ["scripts/assessment-package/owner-cli.mjs"],
     outfile: join(stage, "sdk-assessment.cjs"),
     platform: "node", target: "node22", format: "cjs",
+    // The parser's UMD factory forwards require dynamically. Its ESM entry bundles offline.
+    alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
     bundle: true, metafile: true, legalComments: "eof",
     define: { ASSESSMENT_TOOL_VERSION: JSON.stringify(version) },
   });

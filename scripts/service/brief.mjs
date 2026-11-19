@@ -30,6 +30,7 @@ const GUIDANCE = {
   F16: "Check the deployment readiness request. An unsigned GET to a cloud Inngest route can return 401 after upgrading. Probe an application health endpoint or authenticate the GET, then verify that registration actually runs.",
   F17: "Check the indicated authoring guides for legacy positional triggers. Update examples intended for v4 and label historical v3 examples clearly.",
   F18: "Update the registration test double to receive the v4 options and handler. Read triggers from options.triggers, then run the affected registration and handler tests.",
+  F19: "Run the affected package’s declaration-emitting TypeScript build against the target SDK. If TS2742 identifies an inferred export, use a public SDK type for its declaration, then recheck the inferred values returned by step.run.",
   K1: "Trace the Knock client and compare the legacy notify call to workflows.trigger.",
   K2: "Confirm the recipient update after mapping users.identify to users.update.",
   K3: "Check v1 pagination or cancellation parameters and the data body on channel updates, as applicable.",

@@ -5,6 +5,7 @@ import * as jscodeshift from "jscodeshift";
 import { isLocalModule, resolveOwnerEmittedTypeScriptModule, resolveScannedLocalModule, type LocalModuleSources } from "./local-modules.js";
 import { TRANSFORM_ALLOWLIST } from "../manifest.js";
 import type { ReportEntry, ReportSink } from "../types.js";
+import { inferredRegistrationLine } from "../inngest-declaration-assessment.js";
 import { reviewRegistrationDoubles } from "./inngest-registration-doubles.js";
 import { parseWithParser } from "./parser.js";
 import { reviewLegacyRealtime, reviewNativeRealtimeSubscribers } from "./inngest-realtime.js";
@@ -32,6 +33,7 @@ interface LocalImportBinding {
 export interface InngestProvenanceContext extends LocalModuleSources {
   /** The source assessment reports migration work, independently of publication gates. */
   ownerAssessment?: boolean;
+  onInferredRegistrationExport?: (file: string, line: number) => void;
 }
 
 export type InngestRuntimeContainer = "serverless" | "long-running" | "unknown";
@@ -48,6 +50,7 @@ interface Bindings {
   clients: ScopedBindings;
   serve: ScopedBindings;
   connect: ScopedBindings;
+  legacyTokenHelpers: ScopedBindings;
   middleware: ScopedBindings;
   eventSchemas: ScopedBindings;
   internalFunction: ScopedBindings;
@@ -108,6 +111,12 @@ export function applyInngestV3ToV4(
       (message, loc) => report("F18", "review", message, loc));
   }
 
+  if (owner && enabled.has("F19") && provenance?.onInferredRegistrationExport && source.includes("createFunction")
+    && /\.(?:[cm]?ts|tsx)$/.test(filePath) && !/\.d\.[cm]?ts$/.test(filePath)) {
+    const line = inferredRegistrationLine(root, path => isClientMethod(path.node.callee, bindings, "createFunction", path));
+    if (line !== undefined) provenance.onInferredRegistrationExport(filePath, line);
+  }
+
   let applied = 0;
   if (enabled.has("T1")) applied += migrateCreateFunctionTrigger(root, bindings, owner, report);
   if (enabled.has("T2")) applied += migrateServeHost(root, bindings, report);
@@ -151,7 +160,7 @@ export function inngestBehavioralReviewEntries(
 
 function collectBindings(root: any, filePath: string, provenance?: InngestProvenanceContext): Bindings {
   const bindings: Bindings = {
-    constructors: new Map(), namespaces: new Map(), clients: new Map(), serve: new Map(),
+    constructors: new Map(), namespaces: new Map(), clients: new Map(), serve: new Map(), legacyTokenHelpers: new Map(),
     connect: new Map(), middleware: new Map(), eventSchemas: new Map(), internalFunction: new Map(),
     localImports: new Map(),
     unsafeClients: [],
@@ -189,6 +198,9 @@ function collectBindings(root: any, filePath: string, provenance?: InngestProven
       const imported = specifier.imported?.name;
       const local = specifier.local?.name ?? imported;
       if (!local) continue;
+      if (provenance?.ownerAssessment && source === "@inngest/realtime" && imported === "getSubscriptionToken") {
+        addScopedBinding(bindings.legacyTokenHelpers, local, path, specifier.local);
+      }
       if (imported === "Inngest") addScopedBinding(bindings.constructors, local, path, specifier.local ?? specifier.imported);
       if (imported === "serve") addScopedBinding(bindings.serve, local, path, specifier.local ?? specifier.imported);
       if (imported === "connect") addScopedBinding(bindings.connect, local, path, specifier.local ?? specifier.imported);
@@ -211,7 +223,7 @@ function collectBindings(root: any, filePath: string, provenance?: InngestProven
     }
   });
   proveDirectServeAliases(root, bindings);
-  filterUnsafeConstructorBindings(root, bindings);
+  filterUnsafeConstructorBindings(root, bindings, provenance?.ownerAssessment === true);
   proveDirectLocalClients(root, bindings, filePath, provenance);
   root.find(j.VariableDeclarator).forEach((path: any) => {
     const { id, init } = path.node;
@@ -295,6 +307,10 @@ function flagUnsupportedModuleLoading(root: any, bindings: Bindings, owner: bool
     }
     if (!isInngestModule(source)) {
       if (isLikelyConfiguredModuleSource(source)) {
+        // A bare npm package may also end in /client. Only treat it as a local
+        // wrapper when the source or use actually points to Inngest registration.
+        if (owner && !isPotentialConfiguredClientModule(source) && !isStrongInngestModuleSource(source)
+          && !loaderCouldRegister(path, root)) return;
         const declaration = loaderVariable(path);
         if (owner && declaration && patternIdentifiers(declaration.id).every((id) =>
           bindings.localImports.get(id.name)?.some((item) => item.declarationNode === id && item.ownerNonRegistrationUse)
@@ -331,7 +347,8 @@ function dynamicTargetNamesSdk(node: any, path: any): boolean {
   }
   const text = staticStringValue(node) ?? (node?.type === "TemplateLiteral"
     ? node.quasis.map((part: any) => part.value.cooked ?? part.value.raw).join(" ") : "");
-  return /\binngest\b|\bcreateFunction\b/i.test(text) || isLikelyConfiguredModuleSource(text);
+  return /\binngest\b|\bcreateFunction\b/i.test(text)
+    || (isPotentialConfiguredClientModule(text) && isLikelyConfiguredModuleSource(text));
 }
 
 function loaderVariable(path: any): any {
@@ -378,8 +395,29 @@ function literalRegistrationTrigger(node: any): boolean {
 function loaderCouldRegister(path: any, root: any): boolean {
   const names = patternIdentifiers(loaderVariable(path)?.id);
   if (names.some((id) => looksLikePotentialClientExportName(id.name) || id.name === "createFunction")) return true;
+  // A wrapper can also replace createFunction through an unknown property or
+  // through a reflection API, without ever invoking its registration method.
+  const writesRegistration = root.find(j.AssignmentExpression).paths().some((assignment: any) => {
+    const member = assignment.node.left;
+    if (member.type !== "MemberExpression") return false;
+    const property = staticMemberPropertyName(member);
+    return (property === "createFunction" || (member.computed && property === null))
+      && reachesLoader(member.object, assignment, path.node);
+  });
+  if (writesRegistration) return true;
   return root.find(j.CallExpression).paths().some((call: any) => {
     const { callee, arguments: args } = call.node;
+    if (callee?.type === "MemberExpression" && ["Object", "Reflect"].includes(callee.object?.name)) {
+      const method = staticMemberPropertyName(callee);
+      const targetKey = staticStringValue(args[1]);
+      const canReplaceRegistration = method === "setPrototypeOf"
+        || (["defineProperty", "set", "deleteProperty"].includes(method ?? "") && (!targetKey || targetKey === "createFunction"))
+        || (["assign", "defineProperties"].includes(method ?? "") && args.slice(1).some((value: any) =>
+          value.type !== "ObjectExpression" || objectDefinesCreateFunction(value)
+          || value.properties.some((property: any) => !property.key || (property.computed && !staticStringValue(property.key)))
+        ));
+      if (canReplaceRegistration && reachesLoader(args[0], call, path.node)) return true;
+    }
     return args.length === 3 && (callee?.computed || literalRegistrationTrigger(args[1]))
       && reachesLoader(callee, call, path.node);
   });
@@ -1494,18 +1532,20 @@ function addLocalImport(
   imports.set(name, values);
 }
 
-function filterUnsafeConstructorBindings(root: any, bindings: Bindings): void {
+function filterUnsafeConstructorBindings(root: any, bindings: Bindings, owner: boolean): void {
   bindings.constructors = retainSafeConstructorBindings(
     root,
     bindings.constructors,
     false,
-    bindings.unsafeClients
+    bindings.unsafeClients,
+    owner
   );
   bindings.namespaces = retainSafeConstructorBindings(
     root,
     bindings.namespaces,
     true,
-    bindings.unsafeClients
+    bindings.unsafeClients,
+    owner
   );
 }
 
@@ -1513,12 +1553,13 @@ function retainSafeConstructorBindings(
   root: any,
   source: ScopedBindings,
   namespace: boolean,
-  unsafe: Bindings["unsafeClients"]
+  unsafe: Bindings["unsafeClients"],
+  owner: boolean
 ): ScopedBindings {
   const retained: ScopedBindings = new Map();
   for (const [name, candidates] of source) {
     for (const candidate of candidates) {
-      if (constructorReferencesAreSafe(root, name, candidate, namespace)) {
+      if (constructorReferencesAreSafe(root, name, candidate, namespace, owner)) {
         const values = retained.get(name) ?? [];
         values.push(candidate);
         retained.set(name, values);
@@ -1538,7 +1579,8 @@ function constructorReferencesAreSafe(
   root: any,
   name: string,
   binding: ScopedBinding,
-  namespace: boolean
+  namespace: boolean,
+  owner = false
 ): boolean {
   let safe = true;
   let sawDeclaration = false;
@@ -1552,7 +1594,7 @@ function constructorReferencesAreSafe(
       sawDeclaration = true;
       return;
     }
-    if (isMatchingImportBindingIdentifier(path, binding.declarationNode)
+    if ((owner && isErasedTypeName(path)) || isMatchingImportBindingIdentifier(path, binding.declarationNode)
       || isClearlyNonReferenceIdentifier(path)) {
       return;
     }
@@ -1568,12 +1610,19 @@ function constructorReferencesAreSafe(
       return;
     }
     const memberName = propertyName(member.property);
-    const owner = parentPath.parentPath?.node;
-    if (memberName === "Inngest" && owner?.type === "NewExpression" && owner.callee === member) return;
+    const enclosing = parentPath.parentPath?.node;
+    if (memberName === "Inngest" && enclosing?.type === "NewExpression" && enclosing.callee === member) return;
     if (["serve", "connect"].includes(memberName ?? "") && isDirectMemberCall(parentPath)) return;
     safe = false;
   });
   return safe && sawDeclaration;
+}
+
+/** The name in a TypeScript type reference is erased, including qualified names like Inngest.Any. */
+function isErasedTypeName(path: any): boolean {
+  let cursor = path;
+  while (cursor.parentPath?.node.type === "TSQualifiedName") cursor = cursor.parentPath;
+  return cursor.parentPath?.node.type === "TSTypeReference" && cursor.parentPath.node.typeName === cursor.node;
 }
 
 function directClientReferencesAreSafe(
@@ -1636,7 +1685,12 @@ function clientReferencesAreSafe(
 function isNonRegistrationImportUse(path: any, name: string, candidate: LocalImportBinding, bindings: Bindings): boolean {
   const parent = path.parentPath?.node;
   if (!parent) return false;
-  if (parent.type === "MemberExpression" && parent.object === path.node && staticMemberPropertyName(parent) === "send") return true;
+  let receiver = path;
+  while (isTransparentExpressionWrapper(receiver.parentPath?.node, receiver.node)) receiver = receiver.parentPath;
+  const member = receiver.parentPath?.node;
+  if (member?.type === "MemberExpression" && member.object === receiver.node && staticMemberPropertyName(member) === "send") return true;
+  if (parent.type === "CallExpression" && parent.arguments[0] === path.node && parent.callee.type === "Identifier"
+    && hasScopedBinding(bindings.legacyTokenHelpers, parent.callee.name, path)) return true;
   if (isObjectProperty(parent) && path.parentPath.parentPath?.node?.type === "ObjectPattern"
     && parent.key === path.node && parent.value === candidate.declarationNode) return true;
   if (isLocalValueExportIdentifier(path, name) && identifierName(parent.exported) === name) return true;

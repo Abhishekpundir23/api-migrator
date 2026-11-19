@@ -73,6 +73,11 @@ const checks = {
       "cms-publish.spec.ts#59", "contract-workflow.spec.ts#49",
     ].map(site => functions + site));
     assert.ok(!after.details.some(f => f.code === "F18"));
+    const declarationReviews = before.details.filter(f => f.code === "F19");
+    assert.equal(declarationReviews.length, 1);
+    assert.deepEqual([declarationReviews[0].file, declarationReviews[0].line, declarationReviews[0].kind],
+      [functions + "cms-publish.ts", 22, "review"]);
+    assert.ok(!after.details.some(f => f.code === "F19"));
     assert.equal(after.summary.wouldChangeFiles, 0);
   },
   plinth(before, after) {
@@ -105,8 +110,12 @@ const checks = {
           `Missed ${name}:${line}`);
       }
     }
+    const unresolvedRegistrations = before.details.filter(f => f.code === "T1" && f.kind === "review");
+    assert.deepEqual(unresolvedRegistrations.map(f => [f.file, f.line]), [["src/inngest/__test__/testCodeNodeWorkflow.ts", 4]]);
+    assert.equal(before.details.filter(f => f.code === "T1" && f.kind === "applied").length, 7);
     assert.ok(before.details.some(f => f.file === "src/inngest/client.ts" && f.code === "F3" && f.line === 7));
     const realtime = before.details.filter(f => f.code === "F15");
+    assert.equal(realtime.length, 40);
     assert.ok(realtime.every(f => f.kind === "review"));
     assert.equal(new Set(realtime.filter(f => f.file.startsWith("src/inngest/channels/")).map(f => f.file)).size, 26);
     const expected = {

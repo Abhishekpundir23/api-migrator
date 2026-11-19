@@ -38,7 +38,7 @@ test("the extracted offline owner package runs both recipes and its reports work
   const cli = join(kit, "sdk-assessment.cjs");
   assert.doesNotMatch(readFileSync(cli, "utf8"), /OPENAI_API_KEY|GITHUB_TOKEN|api\.openai\.com/);
   const notices = readFileSync(join(kit, "THIRD-PARTY-NOTICES.txt"), "utf8");
-  for (const name of ["@babel/parser", "jscodeshift", "flow-parser", "flow-estree", "ast-types"]) assert.ok(notices.includes(name));
+  for (const name of ["@babel/parser", "jscodeshift", "flow-parser", "flow-estree", "ast-types", "jsonc-parser", "yaml"]) assert.ok(notices.includes(name));
   assert.match(notices, /Permission is hereby granted/);
 
   // Deny outbound calls, subprocesses, source writes and reads outside this clean owner directory.

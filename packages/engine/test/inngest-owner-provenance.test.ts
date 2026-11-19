@@ -180,3 +180,59 @@ test("owner leaves uncertain positional lists, receiver, handler and option coll
     assert.ok(result.reviews.length, source);
   }
 });
+
+test("owner distinguishes npm packages named client from local or SDK-like modules", () => {
+  for (const source of [
+    'const {NodeType, PrismaClient} = await import("@prisma/client"); new PrismaClient(); NodeType.A;',
+    'const external = require("@vendor/client"); external.ping();',
+    'const source = "@prisma/client"; const {NodeType} = await import(source); NodeType.A;',
+  ]) {
+    assert.deepEqual(assess(source), {output: null, reviews: []}, source);
+    assert.ok(assess(source, false).reviews.length, source);
+  }
+  for (const source of [
+    'const {ctx} = await import("@/client"); use(ctx);',
+    'const {ctx} = await import("@team/inngest/client"); use(ctx);',
+    'const {register} = await import("@company/client"); register({}, {event:"x"}, handler);',
+    'const {service} = await import("@company/client"); service[method] = replacement;',
+    'const {service} = await import("@company/client"); Object.assign(service, replacement);',
+  ]) assert.ok(assess(source).reviews.length, source);
+});
+
+test("owner skips an SDK binding used as an erased type name and catches runtime constructor escapes", () => {
+  const prefix = 'import { GetStepTools, Inngest } from "inngest"; ';
+  const source = prefix + 'export type StepTools = GetStepTools<Inngest.Any>;';
+  assert.deepEqual(assess(source), {output: null, reviews: []});
+  assert.ok(assess(source, false).reviews.length);
+  for (const use of ['const C = Inngest;', 'Inngest.prototype.createFunction = replacement;', 'use(Inngest.Any);']) {
+    assert.ok(assess(source + use).reviews.length, use);
+  }
+});
+
+test("a .send spy through erased casts leaves no T1 review, but other client mutations remain visible", () => {
+  const prefix = 'const {inngest} = await import("./inngest/client"); ';
+  const cast = '(inngest as unknown as {send: unknown})';
+  const source = prefix + cast + '.send = async (payload) => payload;';
+  assert.deepEqual(assess(source), {output: null, reviews: []});
+  assert.ok(assess(source, false).reviews.length);
+  for (const use of [
+    cast + '[key] = spy;', cast + '.createFunction = spy;', 'Object.assign(' + cast + ', replacement);',
+    cast + '.send = spy; expose(' + cast + ');',
+  ]) assert.ok(assess(prefix + use).reviews.length, use);
+});
+
+test("only the first client argument to a proven legacy realtime token helper clears the T1 import review", () => {
+  const prefix = 'import {inngest} from "@/inngest/client"; ';
+  const official = 'import {getSubscriptionToken as mint} from "@inngest/realtime"; ';
+  const source = prefix + official + 'mint(inngest, {channel:"status",topics:["new"]});';
+  assert.deepEqual(assess(source), {output: null, reviews: []});
+  assert.ok(assess(source, false).reviews.length);
+  for (const use of [
+    'getSubscriptionToken(inngest, {});',
+    'import {getSubscriptionToken as mint} from "other"; mint(inngest,{});',
+    'import type {getSubscriptionToken as mint} from "@inngest/realtime"; mint(inngest, {});',
+    official+'function inner(mint) { mint(inngest, {}); }',
+    official+'mint(opts, inngest);',
+    official+'mint(inngest, {}); inngest[method] = replacement;',
+  ]) assert.ok(assess(prefix + use).reviews.length, use);
+});
