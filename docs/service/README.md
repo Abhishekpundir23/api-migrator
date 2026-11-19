@@ -5,17 +5,19 @@ An SDK maintainer can use this service to find common review work before a break
 ## Owner handoff
 
 1. Confirm which SDK and version the application currently uses. Choose `inngest-v3-to-v4` or `knock-v0-to-v1`. The owner selects the recipe. The scanner does not establish the installed version.
-2. The operator runs `npm ci --ignore-scripts --no-audit --no-fund` and `npm run package:assessment` in API Migrator using Node 22. Give participating owners the resulting `dist/sdk-assessment-0.1.4.tgz` archive and its expected SHA-256 via an agreed channel.
-3. On the owner's machine, put the archive in a directory outside the application. Check its SHA-256 against the value supplied by the operator, then extract it there. On macOS use `shasum -a 256 sdk-assessment-0.1.4.tgz`. On Linux use `sha256sum sdk-assessment-0.1.4.tgz`. Run the scanner with Node 22 against a stable, authorized working tree.
+2. The operator runs `npm ci --ignore-scripts --no-audit --no-fund` and `npm run package:assessment` in API Migrator using Node 22. Give participating owners the resulting `dist/sdk-assessment-0.1.5.tgz` archive and its expected SHA-256 via an agreed channel.
+3. On the owner's machine, put the archive in a directory outside the application. Check its SHA-256 against the value supplied by the operator, then extract it there. On macOS use `shasum -a 256 sdk-assessment-0.1.5.tgz`. On Linux use `sha256sum sdk-assessment-0.1.5.tgz`. Run the scanner with Node 22 against a stable, authorized working tree.
 
 ```bash
 handoff=$(mktemp -d)
-tar -xzf sdk-assessment-0.1.4.tgz -C "$handoff"
+tar -xzf sdk-assessment-0.1.5.tgz -C "$handoff"
 node "$handoff/package/sdk-assessment.cjs" assess --recipe inngest-v3-to-v4 --repo /path/to/application \
   --out "$handoff/summary.json" --local-report "$handoff/private-findings.json"
 ```
 
 The scanner parses supported JS and TS files and simulates source rewrites in memory. It does not execute the application, install its dependencies or apply patches. Source inventories are limited to 10,000 files, 1 MiB per file and 32 MiB total. An unreadable or unsupported source file can stop the assessment. Inspect the local diagnostic before rerunning. A clean scan applies only to the selected recipe and files it recognizes.
+
+For Inngest, the owner report can flag legacy realtime dependencies and publishers, three-argument registration mocks, unsigned readiness checks in literal GitHub Actions shell steps, and positional-trigger examples in fenced JS/TS. Guides include root README.md and AGENTS.md, docs, and Cursor rules and skills. It reads up to 2,000 guides, 1 MiB each and 16 MiB total. The private report identifies a guide skipped because of a read limit. The shared source and match totals count JS/TS files only. Workflow and guide findings add rule counts. Compile with the target SDK and exercise the actual deployment and event-delivery paths.
 
 Open both outputs locally. **Share only `summary.json`** with the SDK team's designated operator by an agreed channel. It contains a schema version, recipe ID, file counts, and per-rule IDs, kinds and counts. The counts still describe application characteristics. Keep the optional private findings file with the owner: it contains paths, line numbers and review details. No data is sent by the scan.
 

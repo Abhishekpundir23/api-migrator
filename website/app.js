@@ -3,8 +3,8 @@ const $ = (selector) => document.querySelector(selector);
 let recipe = 'inngest';
 let phase = 'before';
 const labels = {
-  inngest: {title: 'Inngest v3 to v4', caseName: 'PLINTH / API SOURCE', url: 'https://github.com/farulivan/plinth/pull/90/files', id: 'inngest-v3-to-v4'},
-  knock: {title: 'Knock v0 to v1', caseName: 'KNOCK / EXAMPLE APPS', url: 'https://github.com/knocklabs/javascript/pull/558/files', id: 'knock-v0-to-v1'}
+  inngest: {title: 'Inngest v3 to v4', caseName: 'PLINTH / FULL REPOSITORY', url: 'https://github.com/farulivan/plinth/pull/90/files', id: 'inngest-v3-to-v4'},
+  knock: {title: 'Knock v0 to v1', caseName: 'KNOCK / FULL REPOSITORY', url: 'https://github.com/knocklabs/javascript/pull/558/files', id: 'knock-v0-to-v1'}
 };
 function selectGroup(attr, val) {
   document.querySelectorAll('[data-'+attr+']').forEach(b => b.setAttribute('aria-pressed', String(b.dataset[attr] === val)));
@@ -23,13 +23,16 @@ function renderReport() {
   $('#finding-list').replaceChildren(...result.highlights.map(([code,summary])=>{
     const row=document.createElement('div'),badge=document.createElement('b'),body=document.createElement('span');row.className='finding';badge.textContent=code;body.textContent=summary;row.append(badge,body);return row;
   }));
+  const archive = new URL($('#scanner-download').href).pathname.split('/').pop();
   $('#command').textContent=[
     'work=$(mktemp -d)',
-    'tar -xzf sdk-assessment-0.1.1.tgz -C "$work"',
+    'shasum -a 256 -c ' + archive + '.sha256 &&',
+    'tar -xzf ' + archive + ' -C "$work" &&',
     'node "$work/package/sdk-assessment.cjs" assess '+String.fromCharCode(92),
     '  --recipe '+info.id+' '+String.fromCharCode(92),
     '  --repo /path/to/application '+String.fromCharCode(92),
-    '  --out "$work/summary.json"'
+    '  --out "$work/summary.json" '+String.fromCharCode(92),
+    '  --local-report "$work/private-findings.json"'
   ].join('\n');
 }
 document.querySelectorAll('[data-recipe]').forEach(b=>b.addEventListener('click',()=>{recipe=b.dataset.recipe;renderReport()}));

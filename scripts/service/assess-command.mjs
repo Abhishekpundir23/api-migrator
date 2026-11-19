@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { assessRepository, TRANSFORM_ALLOWLIST } from "@api-migrator/engine";
+import { assessRepository, ASSESSMENT_RULES } from "@api-migrator/engine";
 import { validateSummary } from "./brief.mjs";
 import { required, outputPath, writeNewFiles } from "./cli-io.mjs";
 
@@ -13,7 +13,7 @@ export async function runAssessment(args) {
     },
   });
   const recipe = required(values, "recipe");
-  if (!Object.hasOwn(TRANSFORM_ALLOWLIST, recipe)) throw new Error("Unsupported recipe. See --help.");
+  if (!Object.hasOwn(ASSESSMENT_RULES, recipe)) throw new Error("Unsupported recipe. See --help.");
   const root = realpathSync(required(values, "repo"));
   const paths = [outputPath(required(values, "out"), root)];
   if (values["local-report"] !== undefined) paths.push(outputPath(required(values, "local-report"), root));

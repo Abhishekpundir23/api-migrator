@@ -5,6 +5,8 @@ export interface LocalModuleSources {
   scannedSources: ReadonlyMap<string, string>;
   /** Every supported regular source path, including files that did not match the SDK scan. */
   sourcePaths: ReadonlySet<string>;
+  /** Optional tsconfig path mapping for review-only realtime channel and client imports. */
+  resolveRealtimeAlias?: (importer: string, source: string) => string | null;
 }
 
 export function isLocalModule(source: string): boolean {
@@ -47,4 +49,21 @@ function normalizeScannedPath(value: string): string | null {
   const normalized = posix.normalize(value).replace(/^\.\//, "");
   if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) return null;
   return normalized;
+}
+
+/**
+ * A relative .js import in TypeScript commonly names the output of a .ts
+ * implementation. Only the source assessment follows this substitution.
+ * The normal resolver rejects competing siblings, including .d.ts, .js and
+ * module-suffixed sources. A declaration file alone cannot provide a client.
+ */
+export function resolveOwnerEmittedTypeScriptModule(
+  provenance: LocalModuleSources,
+  importer: string,
+  source: string,
+): { path: string; source: string } | null {
+  if (!/\.[cm]?tsx?$/.test(importer) || /\.d\.[cm]?ts$/.test(importer)
+    || !isLocalModule(source) || !/(?:^|\/)[^/.][^/]*\.js$/.test(source)) return null;
+  const target = resolveScannedLocalModule(provenance, importer, source.slice(0, -3));
+  return target?.path.endsWith(".ts") && !target.path.endsWith(".d.ts") ? target : null;
 }

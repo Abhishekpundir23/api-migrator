@@ -34,6 +34,7 @@ import {
   inngestBehavioralReviewEntries,
 } from "./transforms/inngest-v3-to-v4.js";
 import type { LocalModuleSources } from "./transforms/local-modules.js";
+import { createRealtimeAliasResolver } from "./transforms/realtime-aliases.js";
 import { applyKnockV0ToV1 } from "./transforms/knock-v0-to-v1.js";
 import { runTsc, verify, verifyNodeRuntime, type VerifyOptions, type VerifyResult } from "./verifier.js";
 import { applyNodeRuntimeMigration, planNodeRuntimeMigration } from "./runtime.js";
@@ -108,7 +109,10 @@ export async function runMigration(
     // file so unresolved provider usage becomes a review blocker.
     const scanned = sourceFiles;
     const scannedSources = new Map(sdkMatchedFiles.map((file) => [file.relative, readFileSync(file.absolute, "utf8")] as const));
-    const provenance = { scannedSources, sourcePaths: new Set(sourceFiles.map((file) => file.relative)) };
+    const provenance = {
+      scannedSources, sourcePaths: new Set(sourceFiles.map((file) => file.relative)),
+      resolveRealtimeAlias: createRealtimeAliasResolver(workPath),
+    };
     const sourceEntries: ReportEntry[] = [];
     const sourceSink: ReportSink = { push: (entry) => sourceEntries.push(entry) };
     const sourceEdits: Array<{ absolute: string; relative: string; before: string; after: string }> = [];

@@ -30,6 +30,7 @@ const USAGE_PATTERNS: Record<string, RegExp[]> = {
   "inngest-v3-to-v4": [
     /(?:from\s+|require\(\s*|import\(\s*)["'](?:inngest(?:\/[^"']*)?|@inngest\/[^"']+)["']/,
     /\b[A-Za-z_$][\w$]*\.createFunction\s*\(/,
+    /\bnew\s+(?:(?:window|globalThis)\s*\.\s*)?EventSource\s*\(\s*["'`]https:\/\/inn\.gs\/e\//,
   ],
   "knock-v0-to-v1": [
     /(?:from\s+|require\(\s*|import\(\s*)["']@knocklabs\/node(?:\/[^"']*)?["']/,
@@ -47,6 +48,8 @@ export interface ScanOptions {
   maxFiles?: number;
   /** Exclude the package manager binaries checked into .yarn/releases. */
   skipYarnReleases?: boolean;
+  /** Inspect names of regular Markdown files during the same walk. No file contents are read here. */
+  onGuidePath?: (path: string) => void;
 }
 
 export interface ScannedFile {
@@ -84,6 +87,8 @@ export function findSourceFiles(root: string, opts: ScanOptions = {}): ScannedFi
         if (opts.maxFiles !== undefined && out.length >= opts.maxFiles)
           throw new SourceScanError(`Source inventory exceeds ${opts.maxFiles} files`);
         out.push({ absolute: full, relative: relative(root, full) });
+      } else if (opts.onGuidePath && entry.isFile() && /\.mdc?$/i.test(entry.name)) {
+        opts.onGuidePath(relative(root, full));
       } else if (entry.isSymbolicLink() && SOURCE_EXTENSIONS.has(extname(entry.name))) {
         throw new SourceScanError(
           `Source-like symbolic link is unsupported: ${relative(root, full)}`

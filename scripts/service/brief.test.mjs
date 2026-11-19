@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TRANSFORM_ALLOWLIST } from "@api-migrator/engine";
+import { ASSESSMENT_RULES } from "@api-migrator/engine";
 import { renderBrief, ruleGuidance, validateSummary } from "./brief.mjs";
 
 const summary = {
@@ -27,7 +27,7 @@ test("shared summary rejects private text, unknown fields and cross-recipe rule 
     { ...summary, findings: [{ kind: "sensitive-customer.ts", code: "KF1", count: 1 }] },
   ]) assert.throws(() => validateSummary(input), err => !err.message.includes("sensitive-customer.ts"));
 
-  for (const [recipe, codes] of Object.entries(TRANSFORM_ALLOWLIST)) {
+  for (const [recipe, codes] of Object.entries(ASSESSMENT_RULES)) {
     for (const code of codes) assert.ok(ruleGuidance(recipe, code).length > 10);
   }
   assert.throws(() => ruleGuidance("knock-v0-to-v1", "toString"));

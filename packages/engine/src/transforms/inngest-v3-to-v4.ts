@@ -2,10 +2,12 @@
 
 import { type API, type FileInfo } from "jscodeshift";
 import * as jscodeshift from "jscodeshift";
-import { isLocalModule, resolveScannedLocalModule, type LocalModuleSources } from "./local-modules.js";
+import { isLocalModule, resolveOwnerEmittedTypeScriptModule, resolveScannedLocalModule, type LocalModuleSources } from "./local-modules.js";
 import { TRANSFORM_ALLOWLIST } from "../manifest.js";
 import type { ReportEntry, ReportSink } from "../types.js";
+import { reviewRegistrationDoubles } from "./inngest-registration-doubles.js";
 import { parseWithParser } from "./parser.js";
+import { reviewLegacyRealtime, reviewNativeRealtimeSubscribers } from "./inngest-realtime.js";
 
 const j: any = (jscodeshift as any).default ?? (jscodeshift as any);
 const ALL = new Set<string>(TRANSFORM_ALLOWLIST["inngest-v3-to-v4"]);
@@ -22,17 +24,22 @@ interface LocalImportBinding {
   eligibleNamedImport: boolean;
   namespaceLike: boolean;
   hasOnlyDirectClientReferences: boolean;
+  ownerNonRegistrationUse?: boolean;
   scopeNode: object;
   declarationNode: object;
 }
 
-export type InngestProvenanceContext = LocalModuleSources;
+export interface InngestProvenanceContext extends LocalModuleSources {
+  /** The source assessment reports migration work, independently of publication gates. */
+  ownerAssessment?: boolean;
+}
 
 export type InngestRuntimeContainer = "serverless" | "long-running" | "unknown";
 
 export interface InngestBehavioralReviewContext {
   /** Deployment container for checkpointing/maxRuntime review. Omit when it cannot be proven. */
   runtimeContainer?: InngestRuntimeContainer;
+  ownerAssessment?: boolean;
 }
 
 interface Bindings {
@@ -74,17 +81,35 @@ export function applyInngestV3ToV4(
     sink.push({ file: filePath, kind: "review", code, message, line: loc?.start?.line ?? null });
   };
 
-  flagUnsupportedModuleLoading(root, blockingReview);
+  const owner = provenance?.ownerAssessment === true;
+  flagUnsupportedModuleLoading(root, bindings, owner, blockingReview);
   flagUntraceableReexports(root, blockingReview);
-  flagDynamicCodeEvaluation(root, blockingReview);
+  flagDynamicCodeEvaluation(root, bindings, owner, blockingReview);
   flagUnsafeClientReferences(bindings, blockingReview);
   flagCreateFunctionMutationApis(root, bindings, blockingReview);
   flagDynamicComputedImportedCalls(root, bindings, blockingReview);
   flagUnprovenCreateFunctionUsage(root, bindings, blockingReview);
   flagUnsupportedCreateFunctionReferences(root, blockingReview);
 
+  if (enabled.has("F15") && (source.includes("@inngest/realtime") || source.includes("publish"))) {
+    reviewLegacyRealtime(root, filePath, provenance, (message, loc) => report("F15", "review", message, loc),
+      (path, id) => {
+        const nearest = nearestBlockDeclaration(id.name, path);
+        return bindingScopeNode(id.name, path) === nearestProgramNode(path) && (!nearest || nearest === id);
+      });
+  }
+  if (enabled.has("F15") && source.includes("EventSource") && source.includes("https://inn.gs/e/")) {
+    reviewNativeRealtimeSubscribers(root, (message, loc) => report("F15", "review", message, loc),
+      (name, path) => !nearestBlockDeclaration(name, path));
+  }
+
+  if (enabled.has("F18") && source.includes("createFunction")) {
+    reviewRegistrationDoubles(root, filePath, provenance, directlyExportsInngestClient,
+      (message, loc) => report("F18", "review", message, loc));
+  }
+
   let applied = 0;
-  if (enabled.has("T1")) applied += migrateCreateFunctionTrigger(root, bindings, report);
+  if (enabled.has("T1")) applied += migrateCreateFunctionTrigger(root, bindings, owner, report);
   if (enabled.has("T2")) applied += migrateServeHost(root, bindings, report);
   if (enabled.has("T3")) applied += migrateStreaming(root, bindings, report);
   if (enabled.has("T4")) applied += migrateGateway(root, bindings, report);
@@ -118,7 +143,9 @@ export function inngestBehavioralReviewEntries(
   if (!enabled.has("F12") || context.runtimeContainer === "long-running") return [];
   const message = context.runtimeContainer === "serverless"
     ? "Inngest v4 enables checkpointing by default; for this serverless deployment, review retries/timeouts and set maxRuntime below the platform limit."
-    : "The runtime container is unknown; declare deployment.kind as long-running or serverless in a new campaign, then generate a fresh preview. A Node image does not establish hosting type.";
+    : context.ownerAssessment
+      ? "The runtime container is unknown. Check how functions are hosted. For serverless deployments, review v4 checkpointing and set maxRuntime below the platform request limit, or disable checkpointing to preserve v3 request boundaries."
+      : "The runtime container is unknown; declare deployment.kind as long-running or serverless in a new campaign, then generate a fresh preview. A Node image does not establish hosting type.";
   return [{ file: "(migration)", kind: "review", code: "F12", message, line: null }];
 }
 
@@ -235,7 +262,7 @@ function proveDirectServeAliases(root: any, bindings: Bindings): void {
 }
 
 /** Unsupported module-loading forms are never rewritten, but must block publication. */
-function flagUnsupportedModuleLoading(root: any, report: ReportFn): void {
+function flagUnsupportedModuleLoading(root: any, bindings: Bindings, owner: boolean, report: ReportFn): void {
   root.find(j.Node).forEach((path: any) => {
     const node = path.node as any;
     let source: string | null = null;
@@ -256,6 +283,8 @@ function flagUnsupportedModuleLoading(root: any, report: ReportFn): void {
     }
     if (!loader) return;
     if (!source) {
+      const target = node.arguments?.[0] ?? node.source ?? node.moduleReference?.expression;
+      if (owner && !dynamicTargetNamesSdk(target, path) && !loaderCouldRegister(path, root)) return;
       report(
         "T1",
         "review",
@@ -266,6 +295,10 @@ function flagUnsupportedModuleLoading(root: any, report: ReportFn): void {
     }
     if (!isInngestModule(source)) {
       if (isLikelyConfiguredModuleSource(source)) {
+        const declaration = loaderVariable(path);
+        if (owner && declaration && patternIdentifiers(declaration.id).every((id) =>
+          bindings.localImports.get(id.name)?.some((item) => item.declarationNode === id && item.ownerNonRegistrationUse)
+        )) return;
         report(
           "T1",
           "review",
@@ -281,6 +314,74 @@ function flagUnsupportedModuleLoading(root: any, report: ReportFn): void {
       `Unsupported ${node.type} loading of ${source}; convert it to a static SDK import before migration.`,
       node.loc
     );
+  });
+}
+
+/** Check explicit module/code evidence, including a simple local constant. */
+function dynamicTargetNamesSdk(node: any, path: any): boolean {
+  if (!node) return false;
+  if (node.type === "Identifier") {
+    if (looksLikeInngestClientBindingName(node.name) || node.name === "createFunction") return true;
+    const scope = path.scope?.lookup?.(node.name);
+    const declarations = scope?.getBindings?.()[node.name];
+    if (declarations?.length !== 1) return false;
+    const variable = declarations[0].parentPath?.node;
+    if (variable?.type !== "VariableDeclarator" || variable.id !== declarations[0].node) return false;
+    node = variable.init;
+  }
+  const text = staticStringValue(node) ?? (node?.type === "TemplateLiteral"
+    ? node.quasis.map((part: any) => part.value.cooked ?? part.value.raw).join(" ") : "");
+  return /\binngest\b|\bcreateFunction\b/i.test(text) || isLikelyConfiguredModuleSource(text);
+}
+
+function loaderVariable(path: any): any {
+  let cursor = path;
+  while (["AwaitExpression", "TSAsExpression", "TSTypeAssertion", "TypeCastExpression"].includes(cursor.parentPath?.node?.type)) {
+    cursor = cursor.parentPath;
+  }
+  const parent = cursor.parentPath?.node;
+  return parent?.type === "VariableDeclarator" && parent.init === cursor.node ? parent : null;
+}
+
+/** Only trace values through data members and lexical variable aliases, never arbitrary call results. */
+function reachesLoader(node: any, path: any, loader: object, seen = new Set<object>()): boolean {
+  if (!node || seen.has(node)) return false;
+  if (node === loader) return true;
+  seen.add(node);
+  if (["AwaitExpression", "TSAsExpression", "TSTypeAssertion", "TypeCastExpression", "ChainExpression"].includes(node.type)) {
+    return reachesLoader(node.argument ?? node.expression, path, loader, seen);
+  }
+  if (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") {
+    return reachesLoader(node.object, path, loader, seen);
+  }
+  if (node.type !== "Identifier") return false;
+  const scope = path.scope.lookup(node.name);
+  const declarations = scope?.getBindings()[node.name];
+  if (declarations?.length !== 1) return false;
+  let declaration = declarations[0];
+  const nearest = nearestBlockDeclaration(node.name, path);
+  if (nearest && nearest !== declaration.node) return false;
+  while (["ObjectProperty", "Property", "ObjectPattern", "ArrayPattern", "RestElement", "AssignmentPattern"]
+    .includes(declaration.parent?.node.type)) declaration = declaration.parent;
+  const variable = declaration.parent;
+  return variable?.node.type === "VariableDeclarator" && variable.node.id === declaration.node
+    && reachesLoader(variable.node.init, variable, loader, seen);
+}
+
+function literalRegistrationTrigger(node: any): boolean {
+  const list = node?.type === "ArrayExpression" ? node.elements : [node];
+  return list.length > 0 && list.every((item: any) =>
+    item?.type === "ObjectExpression" && unambiguousOptionValue(item, ["event", "cron"]) != null);
+}
+
+/** Preserve ambiguous calls through computed members and v3-shaped calls through aliases. */
+function loaderCouldRegister(path: any, root: any): boolean {
+  const names = patternIdentifiers(loaderVariable(path)?.id);
+  if (names.some((id) => looksLikePotentialClientExportName(id.name) || id.name === "createFunction")) return true;
+  return root.find(j.CallExpression).paths().some((call: any) => {
+    const { callee, arguments: args } = call.node;
+    return args.length === 3 && (callee?.computed || literalRegistrationTrigger(args[1]))
+      && reachesLoader(callee, call, path.node);
   });
 }
 
@@ -306,7 +407,7 @@ function flagUntraceableReexports(root: any, report: ReportFn): void {
   });
 }
 
-function flagDynamicCodeEvaluation(root: any, report: ReportFn): void {
+function flagDynamicCodeEvaluation(root: any, bindings: Bindings, owner: boolean, report: ReportFn): void {
   root.find(j.Node).forEach((path: any) => {
     const node = path.node as any;
     const directEval = node?.type === "CallExpression" && (
@@ -316,6 +417,14 @@ function flagDynamicCodeEvaluation(root: any, report: ReportFn): void {
     const functionConstructor = (node?.type === "CallExpression" || node?.type === "NewExpression")
       && node.callee?.type === "Identifier" && node.callee.name === "Function";
     if (!directEval && !functionConstructor) return;
+    if (owner) {
+      const codeMentionsSdk = node.arguments.some((arg: any) => dynamicTargetNamesSdk(arg, path));
+      const globalEval = node.callee.type === "Identifier"
+        || ["globalThis", "global", "window", "self"].includes(node.callee.object?.name);
+      const hasSdkBinding = bindings.constructors.size || bindings.clients.size || bindings.namespaces.size
+        || [...bindings.localImports.values()].some((imports) => imports.some((item) => isStrongInngestModuleSource(item.source)));
+      if (!codeMentionsSdk && !(globalEval && hasSdkBinding)) return;
+    }
     report(
       "T1",
       "review",
@@ -503,7 +612,28 @@ function flagUnsupportedCreateFunctionReferences(root: any, report: ReportFn): v
   });
 }
 
-function migrateCreateFunctionTrigger(root: any, bindings: Bindings, report: ReportFn): number {
+/** Only move arrays whose event/cron objects can be fully interpreted without evaluating code. */
+function supportedLiteralTriggerList(list: any): boolean {
+  if (list?.type !== "ArrayExpression" || !list.elements.length) return false;
+  let triggerKind: "event" | "cron" | undefined;
+  for (const trigger of list.elements) {
+    if (!unambiguousOptionValue(trigger, ["event", "cron"])) return false;
+    const kind = directProperty(trigger, "event") ? "event" : "cron";
+    if (triggerKind && triggerKind !== kind) return false;
+    triggerKind = kind;
+    const seen = new Set<string>();
+    for (const property of trigger.properties) {
+      const key = propertyName(property.key);
+      if (!key || seen.has(key) || (key !== kind && !(kind === "event" && key === "if"))
+        || !isObjectProperty(property) || property.method || (property.kind && property.kind !== "init")
+        || literalString(property.value) === null) return false;
+      seen.add(key);
+    }
+  }
+  return true;
+}
+
+function migrateCreateFunctionTrigger(root: any, bindings: Bindings, owner: boolean, report: ReportFn): number {
   let applied = 0;
   root.find(j.CallExpression).forEach((path: any) => {
     if (!isClientMethod(path.node.callee, bindings, "createFunction", path)) return;
@@ -515,7 +645,11 @@ function migrateCreateFunctionTrigger(root: any, bindings: Bindings, report: Rep
     const looksLikeTrigger = triggerIsObject && trigger.properties.some((property: any) =>
       isObjectProperty(property) && ["event", "cron"].includes(propertyName(property.key) ?? "")
     );
-    if (options?.type !== "ObjectExpression" || !looksLikeTrigger || !handlerIsFunction) {
+    const triggerList = owner && supportedLiteralTriggerList(trigger);
+    const uncertainOptions = triggerList && options?.type === "ObjectExpression" && options.properties.some((prop: any) =>
+      prop.computed || !prop.key || (propertyName(prop.key) === "triggers" && !isObjectProperty(prop))
+    );
+    if (options?.type !== "ObjectExpression" || (!looksLikeTrigger && !triggerList) || uncertainOptions || !handlerIsFunction) {
       report("T1", "review", "Three-argument createFunction call could not be migrated safely; move its trigger into options.triggers manually.", path.node.loc);
       return;
     }
@@ -523,7 +657,7 @@ function migrateCreateFunctionTrigger(root: any, bindings: Bindings, report: Rep
       report("T1", "review", "createFunction already has options.triggers as well as a legacy trigger argument; merge them manually.", path.node.loc);
       return;
     }
-    options.properties.push(j.objectProperty(j.identifier("triggers"), j.objectExpression(trigger.properties)));
+    options.properties.push(j.objectProperty(j.identifier("triggers"), triggerList ? trigger : j.objectExpression(trigger.properties)));
     path.node.arguments = [options, handler];
     report("T1", "applied", "createFunction trigger moved into options.triggers", path.node.loc);
     applied++;
@@ -1465,7 +1599,8 @@ function clientReferencesAreSafe(
   scopeNode: object,
   declarationNode: object,
   bindings: Bindings,
-  allowDirectValueExport = false
+  allowDirectValueExport = false,
+  ownerImport?: LocalImportBinding
 ): boolean {
   let safe = true;
   let sawDeclaration = false;
@@ -1488,12 +1623,27 @@ function clientReferencesAreSafe(
       || isClearlyNonReferenceIdentifier(path)) {
       return;
     }
-    if (isDirectClientMethodCallReference(path) || isServeClientReference(path, bindings)) {
+    if (ownerImport && isNonRegistrationImportUse(path, name, ownerImport, bindings)) return;
+    if (isDirectClientMethodCallReference(path) || isServeOptionReference(path, bindings, "client")) {
       return;
     }
     safe = false;
   });
   return safe && sawDeclaration;
+}
+
+/** Owner-only exceptions for uses that do not observe the registration method. */
+function isNonRegistrationImportUse(path: any, name: string, candidate: LocalImportBinding, bindings: Bindings): boolean {
+  const parent = path.parentPath?.node;
+  if (!parent) return false;
+  if (parent.type === "MemberExpression" && parent.object === path.node && staticMemberPropertyName(parent) === "send") return true;
+  if (isObjectProperty(parent) && path.parentPath.parentPath?.node?.type === "ObjectPattern"
+    && parent.key === path.node && parent.value === candidate.declarationNode) return true;
+  if (isLocalValueExportIdentifier(path, name) && identifierName(parent.exported) === name) return true;
+  if (candidate.eligibleNamedImport && candidate.importedName === "functions" && !parent.computed
+    && isServeOptionReference(path, bindings, "functions")) return true;
+  return candidate.eligibleNamedImport && !looksLikePotentialClientExportName(candidate.importedName ?? "")
+    && parent.type === "CallExpression" && parent.callee === path.node;
 }
 
 function isMatchingImportBindingIdentifier(path: any, declarationNode: object): boolean {
@@ -1538,10 +1688,10 @@ function isDirectClientMethodCallReference(path: any): boolean {
     && SAFE_DIRECT_CLIENT_METHODS.has(propertyName(member.property) ?? "") && isDirectMemberCall(memberPath);
 }
 
-function isServeClientReference(path: any, bindings: Bindings): boolean {
+function isServeOptionReference(path: any, bindings: Bindings, option: "client" | "functions"): boolean {
   const propertyPath = path.parentPath;
   const property = propertyPath?.node;
-  return isObjectProperty(property) && propertyName(property.key) === "client"
+  return isObjectProperty(property) && propertyName(property.key) === option
     && (property.value === path.node || (property.shorthand && property.key === path.node))
     && belongsToConfig(propertyPath, bindings, ["serve"]);
 }
@@ -1578,9 +1728,15 @@ function proveDirectLocalClients(
         candidate.declarationNode
       );
       const unsafeCandidate = specificallyInngestCandidate || hasSpecificReference;
+      if (provenance?.ownerAssessment && suspiciousCandidate && unsafeCandidate) {
+        // This is only a reporting decision. It must never promote a receiver to
+        // a proved client or let a computed/aliased registration be rewritten.
+        candidate.ownerNonRegistrationUse = !hasSpecificReference && (referencesAreSafe ||
+          clientReferencesAreSafe(root, localName, candidate.scopeNode, candidate.declarationNode, bindings, false, candidate));
+      }
       if (!isLocalModule(candidate.source)) {
         if (isLikelyPathAlias(candidate.source) && suspiciousCandidate
-          && unsafeCandidate && !referencesAreSafe) {
+          && unsafeCandidate && !referencesAreSafe && !candidate.ownerNonRegistrationUse) {
           bindings.unsafeClients.push({
             name: localName,
             loc: (candidate.declarationNode as any).loc,
@@ -1590,9 +1746,11 @@ function proveDirectLocalClients(
         continue;
       }
       if (!provenance) continue;
-      const target = resolveScannedLocalModule(provenance, importerPath, candidate.source);
+      const target = resolveScannedLocalModule(provenance, importerPath, candidate.source)
+        ?? (provenance.ownerAssessment && (suspiciousCandidate || hasSpecificReference)
+          ? resolveOwnerEmittedTypeScriptModule(provenance, importerPath, candidate.source) : null);
       if (!target) {
-        if (suspiciousCandidate && unsafeCandidate && !referencesAreSafe) {
+        if (suspiciousCandidate && unsafeCandidate && !referencesAreSafe && !candidate.ownerNonRegistrationUse) {
           bindings.unsafeClients.push({
             name: localName,
             loc: (candidate.declarationNode as any).loc,
@@ -1601,7 +1759,7 @@ function proveDirectLocalClients(
         }
         continue;
       }
-      if (candidate.namespaceLike && directlyExportsAnyInngestClient(target.source, target.path)) {
+      if (candidate.namespaceLike && !candidate.ownerNonRegistrationUse && directlyExportsAnyInngestClient(target.source, target.path)) {
         bindings.unsafeClients.push({
           name: localName,
           loc: (candidate.declarationNode as any).loc,
@@ -1610,7 +1768,7 @@ function proveDirectLocalClients(
         continue;
       }
       if (suspiciousCandidate && unsafeCandidate
-        && !referencesAreSafe && !candidate.eligibleNamedImport) {
+        && !referencesAreSafe && !candidate.eligibleNamedImport && !candidate.ownerNonRegistrationUse) {
         bindings.unsafeClients.push({
           name: localName,
           loc: (candidate.declarationNode as any).loc,
@@ -1623,6 +1781,7 @@ function proveDirectLocalClients(
         continue;
       }
       if (!referencesAreSafe) {
+        if (candidate.ownerNonRegistrationUse) continue;
         bindings.unsafeClients.push({
           name: localName,
           loc: (candidate.declarationNode as any).loc,

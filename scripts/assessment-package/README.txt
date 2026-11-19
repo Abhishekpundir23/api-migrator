@@ -13,6 +13,6 @@ Run the scanner against an authorized local checkout. Replace the example paths 
 
 Open private-findings.json locally for the file paths, lines and actions. Omit --local-report if you only need counts. Keep private-findings.json on your machine. Inspect summary.json before sharing it with your agency or SDK maintainer.
 
-The scanner runs offline. It reads supported JavaScript and TypeScript source, estimates edits in memory and writes the requested reports. Your application code and dependencies stay on your machine. A maintainer can use the aggregate counts to prepare a review brief. Build, runtime and upgrade compatibility require separate verification.
+The scanner runs offline. It reads supported JavaScript and TypeScript source, estimates edits in memory and writes the requested reports. With Inngest matches it also checks supported GitHub Actions readiness probes and fenced SDK examples in project guides. Their paths and lines appear only in the private report. Your application code and dependencies stay on your machine. A maintainer can use the aggregate counts to prepare a review brief. Build, runtime and upgrade compatibility require separate verification.
 
 The archive checksum covers all files. Verify the .tgz against its supplied .sha256 file before extracting. On macOS run shasum -a 256 -c sdk-assessment-VERSION.tgz.sha256. On Linux use sha256sum -c sdk-assessment-VERSION.tgz.sha256. Substitute the supplied version number and run the command where both files are stored.

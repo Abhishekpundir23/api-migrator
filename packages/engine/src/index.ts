@@ -21,6 +21,7 @@ export {
   type LoadedManifest, type TransformSet,
 } from "./manifest.js";
 export { runMigration, type RunMigrationOptions, type RunMigrationResult } from "./pipeline.js";
+export { ASSESSMENT_RULES } from "./assessment-rules.js";
 export { ASSESSMENT_MAX_SOURCE_FILES, assessRepository, type RepositoryAssessment, type AssessmentFinding } from "./assessment.js";
 export { updateManifestDependencies, detectPackageManager, findLockfiles, DependencyUpdateError, type DependencyUpdateResult, type PackageManager } from "./dependencies.js";
 export {

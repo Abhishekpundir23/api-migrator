@@ -91,3 +91,12 @@ test("the extracted offline owner package runs both recipes and its reports work
     assert.ok(readFileSync(brief, "utf8").includes(rule));
   }
 });
+
+test("the site offers the current scanner with its matching checksum", () => {
+  const html = readFileSync(join(root, "website/index.html"), "utf8");
+  const hrefs = [...html.matchAll(/href="(downloads\/[^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(hrefs, ["downloads/" + archiveName, "downloads/" + archiveName + ".sha256"]);
+  const published = join(root, "website", hrefs[0]);
+  const hash = createHash("sha256").update(readFileSync(published)).digest("hex");
+  assert.equal(readFileSync(published + ".sha256", "utf8"), hash + "  " + archiveName + "\n");
+});

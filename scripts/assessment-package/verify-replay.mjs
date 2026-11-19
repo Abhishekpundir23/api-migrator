@@ -5,6 +5,26 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
+function assertMako(before, after, blind) {
+  const edits = before.details.filter(f => f.kind === "applied" && f.code === "T1");
+  assert.equal(before.summary.sourceFiles, 1172);
+  assert.equal(after.summary.sourceFiles, blind ? 1173 : 1172);
+  assert.equal(edits.length, 29);
+  assert.equal(new Set(edits.map(f => f.file + "#" + f.line)).size, 29);
+  assert.ok(edits.every(f => f.file.startsWith("api/src/inngest/functions/")));
+  assert.equal(new Set(edits.map(f => f.file)).size, 13);
+  for (const report of [before, after]) {
+    assert.ok(!report.details.some(f => f.code === "T1" && f.kind === "review"));
+    assert.deepEqual(report.details.filter(f => f.code === "F17").map(f => f.file + "#" + f.line).sort(), [
+      ".cursor/rules/45-inngest.mdc#24", ".cursor/skills/add-inngest-function/SKILL.md#34", "docs/connector-builder-prd.md#314",
+    ]);
+  }
+  for (const [report, expected] of [[before, [676]], [after, blind ? [] : [676]]]) {
+    assert.deepEqual(report.details.filter(f => f.code === "F16" && f.file === ".github/workflows/deploy-app.yml").map(f => f.line), expected);
+  }
+  assert.equal(after.summary.wouldChangeFiles, 0);
+}
+
 const checks = {
   knock(before, after) {
     assert.equal(before.summary.sourceFiles, 294);
@@ -35,14 +55,24 @@ const checks = {
       assert.ok(report.details.some(f => f.file === "api/_lib/inngest-client.js" && f.kind === "review"));
     }
   },
-  mako(before, after) {
-    const edits = before.details.filter(f => f.kind === "applied" && f.code === "T1");
-    assert.equal(before.summary.sourceFiles, 1172);
-    assert.equal(after.summary.sourceFiles, 1172);
-    assert.equal(edits.length, 29);
-    assert.equal(new Set(edits.map(f => f.file + "#" + f.line)).size, 29);
-    assert.ok(edits.every(f => f.file.startsWith("api/src/inngest/functions/")));
-    assert.equal(new Set(edits.map(f => f.file)).size, 13);
+  mako(before, after) { assertMako(before, after, false); },
+  "mako-pilot"(before, after) { assertMako(before, after, true); },
+  colophony(before, after) {
+    assert.equal(before.summary.sourceFiles, 981);
+    assert.equal(after.summary.sourceFiles, 981);
+    const functions = "apps/api/src/inngest/functions/";
+    const registrations = before.details.filter(f => f.file.startsWith(functions) && f.code === "T1");
+    assert.equal(new Set(registrations.map(f => f.file + "#" + f.line)).size, 15);
+    assert.equal(new Set(registrations.map(f => f.file)).size, 10);
+    assert.ok(registrations.every(f => f.kind === "applied"));
+    assert.ok(!after.details.some(f => f.code === "T1"));
+    const mockSites = before.details.filter(f => f.code === "F18" && f.kind === "review").map(f => f.file + "#" + f.line).sort();
+    assert.deepEqual(mockSites, [
+      "__tests__/embed-submission-confirmation.spec.ts#48", "__tests__/submission-notifications.spec.ts#71",
+      "__tests__/submission-response-reminder.spec.ts#63", "__tests__/webhook-delivery.spec.ts#42",
+      "cms-publish.spec.ts#59", "contract-workflow.spec.ts#49",
+    ].map(site => functions + site));
+    assert.ok(!after.details.some(f => f.code === "F18"));
     assert.equal(after.summary.wouldChangeFiles, 0);
   },
   plinth(before, after) {
@@ -76,12 +106,26 @@ const checks = {
       }
     }
     assert.ok(before.details.some(f => f.file === "src/inngest/client.ts" && f.code === "F3" && f.line === 7));
+    const realtime = before.details.filter(f => f.code === "F15");
+    assert.ok(realtime.every(f => f.kind === "review"));
+    assert.equal(new Set(realtime.filter(f => f.file.startsWith("src/inngest/channels/")).map(f => f.file)).size, 26);
+    const expected = {
+      "src/features/executions/components/code/executor.ts": [34, 55, 98, 99, 117, 126],
+      "src/features/editor/components/memory/executor.ts": [18, 29, 44, 59],
+      "src/features/executions/hooks/use-execution-subscription.ts": [21],
+      "src/app/api/realtime-token/[channel]/route.ts": [2],
+      "src/inngest/client.ts": [2],
+      "src/inngest/__test__/testCodeNodeWorkflow.ts": [7],
+    };
+    for (const [file, lines] of Object.entries(expected)) {
+      assert.deepEqual(realtime.filter(f => f.file === file).map(f => f.line).sort((a, b) => a - b), lines);
+    }
   },
 };
 
 const [name, cliArg, beforeArg, afterArg, outputArg, ...extra] = process.argv.slice(2);
 if (!Object.hasOwn(checks, name) || !cliArg || !beforeArg || !afterArg || !outputArg || extra.length) {
-  console.error("Usage: node verify-replay.mjs <kira|knock|mako|plinth|rxj> <extracted-cli> <before-tree> <after-tree> <new-report-dir>");
+  console.error("Usage: node verify-replay.mjs <colophony|kira|knock|mako|mako-pilot|plinth|rxj> <extracted-cli> <before-tree> <after-tree> <new-report-dir>");
   process.exit(2);
 }
 const cli = realpathSync(cliArg);

@@ -6,7 +6,7 @@ export const TRANSFORM_ALLOWLIST = {
   "inngest-v3-to-v4": [
     "T1", "T2", "T3", "T4", "T5",
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10",
-    "F11", "F12", "F13", "F14",
+    "F11", "F12", "F13", "F14", "F15",
   ],
   "knock-v0-to-v1": [
     "K1", "K2", "K3", "K4", "K5",

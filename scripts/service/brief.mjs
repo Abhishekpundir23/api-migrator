@@ -1,4 +1,4 @@
-import { ASSESSMENT_MAX_SOURCE_FILES, TRANSFORM_ALLOWLIST } from "@api-migrator/engine";
+import { ASSESSMENT_MAX_SOURCE_FILES, ASSESSMENT_RULES } from "@api-migrator/engine";
 
 const RECIPES = {
   "inngest-v3-to-v4": "Inngest TypeScript SDK v3 → v4",
@@ -26,6 +26,10 @@ const GUIDANCE = {
   F12: "Confirm how the application is hosted. For serverless deployments, review checkpointing, retries and maxRuntime against the platform timeout.",
   F13: "Exercise the Inngest route in the deployed edge runtime and verify its fetch and client configuration.",
   F14: "Use step.sendEvent at handler level. For sends inside step.run, review retries and idempotency before separating the operations. Outside handlers, await or return the send.",
+  F15: "Trace the legacy realtime channel, publisher, subscription token or React consumer in the private report. Confirm matching channels and topics on both sides, use the target SDK API appropriate to the delivery context, and test a subscriber receiving an event.",
+  F16: "Check the deployment readiness request. An unsigned GET to a cloud Inngest route can return 401 after upgrading. Probe an application health endpoint or authenticate the GET, then verify that registration actually runs.",
+  F17: "Check the indicated authoring guides for legacy positional triggers. Update examples intended for v4 and label historical v3 examples clearly.",
+  F18: "Update the registration test double to receive the v4 options and handler. Read triggers from options.triggers, then run the affected registration and handler tests.",
   K1: "Trace the Knock client and compare the legacy notify call to workflows.trigger.",
   K2: "Confirm the recipient update after mapping users.identify to users.update.",
   K3: "Check v1 pagination or cancellation parameters and the data body on channel updates, as applicable.",
@@ -53,10 +57,10 @@ function isCount(value, minimum = 0) {
 }
 
 function ruleIds(recipe) {
-  if (typeof recipe !== "string" || !Object.hasOwn(TRANSFORM_ALLOWLIST, recipe)) {
+  if (typeof recipe !== "string" || !Object.hasOwn(ASSESSMENT_RULES, recipe)) {
     throw new Error("Unsupported migration recipe.");
   }
-  return TRANSFORM_ALLOWLIST[recipe];
+  return ASSESSMENT_RULES[recipe];
 }
 
 export function ruleGuidance(recipe, code) {
@@ -131,7 +135,7 @@ export function renderBrief(value, reviewOrder = []) {
     "| Local scan | Files |",
     "| --- | ---: |",
     `| Source files inspected | ${sourceFiles} |`,
-    `| Files matching a recipe pattern or reporting a finding | ${matchedFiles} |`,
+    `| JS/TS files matching a recipe pattern or reporting a finding | ${matchedFiles} |`,
     `| Files with proposed edits | ${wouldChangeFiles} |`,
     "",
   ];

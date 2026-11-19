@@ -1,7 +1,11 @@
+import { InngestGuides } from "./assessment-guides.js";
 import { sep } from "node:path";
-import { TRANSFORM_ALLOWLIST, type TransformSet } from "./manifest.js";
+import { ASSESSMENT_RULES } from "./assessment-rules.js";
+import { inngestWorkflowReviewEntries } from "./inngest-workflow-assessment.js";
+import type { TransformSet } from "./manifest.js";
 import { readRepositoryFile } from "./repository-files.js";
 import { findSourceFiles, matchesSdkSource } from "./scanner.js";
+import { createRealtimeAliasResolver } from "./transforms/realtime-aliases.js";
 import {
   applyInngestV3ToV4,
   inngestBehavioralReviewEntries,
@@ -39,9 +43,13 @@ export function assessRepository(
   recipe: TransformSet,
   onLocalFinding?: (entry: ReportEntry) => void,
 ): RepositoryAssessment {
-  if (!Object.hasOwn(TRANSFORM_ALLOWLIST, recipe)) throw new Error("Unsupported assessment recipe");
-  const enabled = new Set<string>(TRANSFORM_ALLOWLIST[recipe]);
-  const files = findSourceFiles(root, { maxFiles: ASSESSMENT_MAX_SOURCE_FILES, skipYarnReleases: true });
+  if (!Object.hasOwn(ASSESSMENT_RULES, recipe)) throw new Error("Unsupported assessment recipe");
+  const enabled = new Set<string>(ASSESSMENT_RULES[recipe]);
+  const guides = recipe === "inngest-v3-to-v4" ? new InngestGuides() : undefined;
+  const files = findSourceFiles(root, {
+    maxFiles: ASSESSMENT_MAX_SOURCE_FILES, skipYarnReleases: true,
+    onGuidePath: guides && (path => guides.collect(path)),
+  });
   const sources = new Map<string, string>();
   const candidates = new Map<string, string>();
   let bytesRead = 0;
@@ -60,6 +68,8 @@ export function assessRepository(
   const provenance = {
     scannedSources: candidates,
     sourcePaths: new Set(sources.keys()),
+    ownerAssessment: true,
+    resolveRealtimeAlias: createRealtimeAliasResolver(root),
   };
 
   const counts = new Map<string, AssessmentFinding>();
@@ -91,7 +101,9 @@ export function assessRepository(
     if (proposed !== null && proposed !== source) wouldChangeFiles++;
   }
   if (recipe === "inngest-v3-to-v4" && matched.size > 0) {
-    for (const entry of inngestBehavioralReviewEntries(enabled)) sink.push(entry);
+    guides?.review(root, sink);
+    for (const entry of inngestBehavioralReviewEntries(enabled, { ownerAssessment: true })) sink.push(entry);
+    for (const entry of inngestWorkflowReviewEntries(root)) sink.push(entry);
   }
   // A parse failure late in the scan must not leave a partial private report.
   if (localFindings && onLocalFinding) {

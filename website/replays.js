@@ -1,18 +1,13 @@
 export default {
   "inngest": {
     "before": {
-      "sourceFiles": 55,
+      "sourceFiles": 301,
       "wouldChangeFiles": 7,
       "findings": [
         {
           "code": "T1",
           "kind": "applied",
           "count": 7
-        },
-        {
-          "code": "T1",
-          "kind": "review",
-          "count": 2
         },
         {
           "code": "F4",
@@ -25,7 +20,7 @@ export default {
           "count": 1
         }
       ],
-      "note": "The scanner proposed edits in the same seven function files the maintainer changed.",
+      "note": "The scanner proposed trigger changes in all seven function files that the maintainer migrated.",
       "highlights": [
         [
           "T1",
@@ -38,36 +33,27 @@ export default {
       ]
     },
     "after": {
-      "sourceFiles": 55,
+      "sourceFiles": 301,
       "wouldChangeFiles": 0,
       "findings": [
-        {
-          "code": "T1",
-          "kind": "review",
-          "count": 2
-        },
         {
           "code": "F12",
           "kind": "review",
           "count": 1
         }
       ],
-      "note": "Proposed edits fell to zero after the migration. Three conservative review findings remained.",
+      "note": "The trigger edits and schema warning cleared in the merged checkout.",
       "highlights": [
         [
-          "T1",
-          "Two client references still warranted manual checks."
-        ],
-        [
           "F12",
-          "The scanner requested a deployment review."
+          "Verify checkpointing settings and timeouts for the deployment."
         ]
       ]
     }
   },
   "knock": {
     "before": {
-      "sourceFiles": 7,
+      "sourceFiles": 294,
       "wouldChangeFiles": 6,
       "findings": [
         {
@@ -101,7 +87,7 @@ export default {
           "count": 2
         }
       ],
-      "note": "Across the seven changed example files, the scanner proposed 16 edits and identified three type decisions for a reviewer.",
+      "note": "Across the full repository, 16 proposed edits and three manual reviews cover all seven files involved in the Knock migration.",
       "highlights": [
         [
           "K2",
@@ -118,10 +104,10 @@ export default {
       ]
     },
     "after": {
-      "sourceFiles": 7,
+      "sourceFiles": 294,
       "wouldChangeFiles": 0,
       "findings": [],
-      "note": "On the maintainer’s merged revisions of these seven files, the scanner proposed zero edits and raised zero manual findings.",
+      "note": "The scanner found zero proposed edits and zero manual findings in the merged repository.",
       "highlights": []
     }
   }
