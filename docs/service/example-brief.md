@@ -10,6 +10,7 @@
 
 | Rule | Occurrences | Reviewer action |
 | --- | ---: | --- |
+| T5 | 1 | Keep the SDK’s native mode selection. Use INNGEST_DEV=1, true, or a Dev Server URL for development. Verify INNGEST_SIGNING_KEY when serving functions in cloud mode. |
 | F2 | 1 | Find consumers of event.user and update both producers and handlers to carry that information in event.data. |
 | F12 | 1 | Confirm how the application is hosted. For serverless deployments, review checkpointing, retries and maxRuntime against the platform timeout. |
 
@@ -18,7 +19,6 @@
 | Rule | Occurrences | Reviewer action |
 | --- | ---: | --- |
 | T1 | 1 | Trace the createFunction receiver to its SDK client and check that the legacy trigger belongs in options.triggers. |
-| T5 | 1 | Confirm that INNGEST_DEV selects local development and that the production environment supplies the intended signing configuration. |
 
 ## Scope
 

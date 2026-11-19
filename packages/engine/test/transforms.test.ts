@@ -102,46 +102,46 @@ app.createFunction({ id: "caller" }, { event: "demo/run" }, async ({ step }) => 
   }
 });
 
-test("Inngest T5 adds an explicit environment-controlled development mode", () => {
+test("Inngest leaves mode selection to the SDK and reports one deployment check", () => {
   const source = `import { Inngest } from "inngest";
-export const inngest = new Inngest({ id: "demo" });
+export const client = new Inngest({ id: "demo", eventKey: process.env.INNGEST_EVENT_KEY });
 `;
-  const first = collect((entries) => applyInngestV3ToV4(
-    source,
-    "src/inngest/client.ts",
-    { push: (entry) => entries.push(entry) },
-    new Set(["T5", "F1"])
-  ));
-  assert.ok(first.value);
-  assert.match(first.value, /isDev: process\.env\.INNGEST_DEV === "1"/);
-  assert.equal(first.entries.filter((entry) => entry.code === "T5" && entry.kind === "applied").length, 1);
-  assert.equal(first.entries.some((entry) => entry.code === "F1"), false);
-
-  const second = collect((entries) => applyInngestV3ToV4(
-    first.value!,
-    "src/inngest/client.ts",
-    { push: (entry) => entries.push(entry) },
-    new Set(["T5", "F1"])
-  ));
-  assert.equal(second.value, null);
-  assert.equal(second.entries.length, 0);
-
-  for (const unsafe of [
-    `import { Inngest } from "inngest";\nconst options = { id: "demo" };\nnew Inngest(options);`,
-    `import { Inngest } from "inngest";\nconst defaults = {};\nnew Inngest({ id: "demo", ...defaults });`,
-    `import { Inngest } from "inngest";\nconst process = fakeProcess;\nnew Inngest({ id: "demo" });`,
-    `import { Inngest } from "inngest";\nnew Inngest({ id: "demo", isDev() { return false; } });`,
-    `import { Inngest } from "inngest";\nnew Inngest({ id: "demo", get isDev() { return false; } });`,
-    `import { Inngest } from "inngest";\nnew Inngest({ id: "demo", set signingKey(value: string) { void value; } });`,
-  ]) {
-    const result = collect((entries) => applyInngestV3ToV4(
-      unsafe,
-      "src/inngest/unsafe-client.ts",
-      { push: (entry) => entries.push(entry) },
-      new Set(["T5", "F1"])
+  for (const rules of [["T5", "F1"], ["T5"], ["F1"], []]) {
+    const { value, entries } = collect(out => applyInngestV3ToV4(
+      source, "src/client.ts", { push: entry => out.push(entry) }, new Set(rules)
     ));
-    assert.equal(result.entries.some((entry) => entry.code === "T5"), false);
-    assert.equal(result.entries.some((entry) => entry.code === "F1" && entry.kind === "review"), true);
+    assert.equal(value, null, "the constructor remains byte-for-byte untouched");
+    assert.deepEqual(entries.map(entry => [entry.code, entry.kind, entry.line]),
+      rules.length ? [[rules[0], "review", 2]] : []);
+    if (entries.length) {
+      assert.match(entries[0]!.message, /INNGEST_DEV.*1.*true.*Dev Server URL/);
+      assert.match(entries[0]!.message, /unset or false.*cloud mode/);
+      assert.match(entries[0]!.message, /INNGEST_SIGNING_KEY/);
+    }
+  }
+
+  for (const config of [
+    "isDev: true", "isDev: false", "isDev: localMode", 'isDev: process.env.INNGEST_DEV === "1"',
+    '["isDev"]: false', "signingKey: process.env.SIGNING_KEY", "...defaults, isDev: false",
+  ]) {
+    const explicit = `import { Inngest } from "inngest"; new Inngest({ id: "demo", ${config} });`;
+    const result = collect(out => applyInngestV3ToV4(explicit, "src/client.ts", { push: e => out.push(e) }));
+    assert.equal(result.value, null);
+    assert.deepEqual(result.entries, []);
+  }
+});
+
+test("Inngest asks the owner to inspect dynamic client options without changing them", () => {
+  for (const options of [
+    "options", '{ id: "demo", ...defaults }', '{ id: "demo", [key]: true }',
+    '{ id: "demo", isDev: true, ...defaults }',
+    '{ id: "demo", isDev() { return false; } }', '{ id: "demo", get isDev() { return false; } }',
+    '{ id: "demo", set signingKey(value: string) { void value; } }',
+  ]) {
+    const source = `import { Inngest } from "inngest"; new Inngest(${options});`;
+    const result = collect(out => applyInngestV3ToV4(source, "src/client.ts", { push: e => out.push(e) }));
+    assert.equal(result.value, null);
+    assert.deepEqual(result.entries.map(e => [e.code, e.kind]), [["F1", "review"]]);
   }
 });
 
@@ -1179,6 +1179,74 @@ export const inngest = new Inngest({ id: "demo" });`,
   assert.ok(result.value);
   assert.match(result.value, /triggers:/);
   assert.equal(result.entries.some((entry) => entry.kind === "review" && /local module/.test(entry.message)), false);
+});
+
+test("T1 clears after the trigger moves into options on a locally imported client", () => {
+  const sources = {
+    "src/client.js": 'import { Inngest } from "inngest"; export const inngest = new Inngest({ id: "app" });',
+  };
+  const scan = (call: string, setup = "") => localInngestTransform(
+    `import { inngest as client } from "./client.js";\n${setup}\nclient.createFunction(${call});`,
+    "src/workflow.js",
+    sources
+  );
+  const legacy = scan('{ id: "report" }, { event: "job.created" }, async () => {}');
+  assert.equal(legacy.value, null);
+  assert.deepEqual(legacy.entries.map(entry => [entry.code, entry.kind]), [["T1", "review"]]);
+
+  for (const [args, setup] of [
+    ['{ id: "report", triggers: { event: "job.created" } }, async () => {}', ""],
+    ['{ id: "report", triggers: [{ event: "job.created" }, { cron: "0 0 * * *" }] }, run', "async function run() {}"],
+    ['{ id: "report", triggers: { cron: "0 0 * * *" } }, handler', "const run = async () => {}; const handler = run;"],
+  ] as const) {
+    const result = scan(args, setup);
+    assert.equal(result.value, null);
+    assert.deepEqual(result.entries, [], args);
+  }
+});
+
+test("T1 keeps ambiguous local createFunction calls in review", () => {
+  const options = '{ id: "report", triggers: { event: "job.created" } }';
+  for (const usage of [
+    `client.createFunction(${options});`,
+    `client.createFunction(${options}, {}, async () => {}, extra);`,
+    `client.createFunction(${options}, ...handlers);`,
+    `client.createFunction({ id: "report" }, { event: "job.created" });`,
+    `client.createFunction({ id: "report" }, async () => {});`,
+    `client.createFunction({ ...options }, async () => {});`,
+    `client.createFunction({ triggers: { event: "x" }, ...overrides }, async () => {});`,
+    `client.createFunction({ triggers: { event: "x" }, [key]: value }, async () => {});`,
+    `client.createFunction({ triggers: [{ event: "x" }, ...more] }, async () => {});`,
+    `client.createFunction({ triggers: { event: "x", ...more } }, async () => {});`,
+    `client.createFunction({ triggers: { event: "x" }, triggers: null }, async () => {});`,
+    `client.createFunction({ get triggers() { return { event: "x" }; } }, async () => {});`,
+    `client.createFunction({ triggers: dynamicTriggers }, async () => {});`,
+    `client.createFunction(${options}, makeHandler());`,
+    `const alias = client; alias.createFunction(${options}, async () => {});`,
+    `mutate(client); client.createFunction(${options}, async () => {});`,
+    `client["createFunction"](${options}, async () => {});`,
+    `client?.createFunction(${options}, async () => {});`,
+    `function shadow(client) { client.createFunction(${options}, async () => {}); }`,
+  ]) {
+    const result = localInngestTransform(
+      `import { client } from "./client.js";\n${usage}`,
+      "src/workflow.js", {}
+    );
+    assert.equal(result.value, null);
+    assert.ok(result.entries.some(entry => entry.code === "T1" && entry.kind === "review"), usage);
+  }
+  for (const declaration of [
+    'import client from "./client.js";',
+    'import { client } from "@/client";',
+    'import type { client } from "./client.js";',
+  ]) {
+    const result = localInngestTransform(
+      `${declaration}\nclient.createFunction(${options}, async () => {});`,
+      "src/workflow.ts", {}
+    );
+    assert.equal(result.value, null);
+    assert.ok(result.entries.some(entry => entry.code === "T1" && entry.kind === "review"), declaration);
+  }
 });
 
 test("one-hop provenance supports named constructor, export, and consumer aliases", () => {

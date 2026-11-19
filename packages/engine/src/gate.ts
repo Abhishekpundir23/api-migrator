@@ -50,8 +50,8 @@ async function main() {
     assert(report.summary.applied >= 2, "dependency and source transforms applied");
     assert(report.summary.review >= 1, "manual review inventory is present");
     assert(report.entries.some((e) => e.code === "T1"), "T1 present in report");
-    assert(report.entries.some((e) => e.code === "T5" && e.kind === "applied"), "T5 explicit client mode applied");
-    assert(!report.entries.some((e) => e.code === "F1"), "resolved client mode does not leave F1 behind");
+    assert(report.entries.some((e) => e.code === "T5" && e.kind === "review"), "T5 identifies the v4 deployment setting for review");
+    assert(!report.entries.some((e) => e.code === "T5" && e.kind === "applied"), "native client mode is preserved");
     assert(
       report.entries.some((e) => e.code === "F12" && /runtime container is unknown/i.test(e.message)),
       "F12 remains review-required without a validated deployment kind"

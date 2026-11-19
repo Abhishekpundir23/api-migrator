@@ -21,7 +21,7 @@ interface LocalImportBinding {
   importedName: string | null;
   eligibleNamedImport: boolean;
   namespaceLike: boolean;
-  provenClient: boolean;
+  hasOnlyDirectClientReferences: boolean;
   scopeNode: object;
   declarationNode: object;
 }
@@ -88,9 +88,8 @@ export function applyInngestV3ToV4(
   if (enabled.has("T2")) applied += migrateServeHost(root, bindings, report);
   if (enabled.has("T3")) applied += migrateStreaming(root, bindings, report);
   if (enabled.has("T4")) applied += migrateGateway(root, bindings, report);
-  if (enabled.has("T5")) applied += migrateClientMode(root, bindings, report);
 
-  flagClientMode(root, bindings, report);
+  if (enabled.has("T5") || enabled.has("F1")) flagClientMode(root, bindings, report, enabled);
   flagHandlerChanges(root, bindings, report);
   flagOptimizedParallelism(root, bindings, report);
   flagUnhandledClientSend(root, bindings, report);
@@ -409,7 +408,7 @@ function flagDynamicComputedImportedCalls(root: any, bindings: Bindings, report:
   });
 }
 
-/** Every createFunction call not tied to an immutable proven client blocks publication. */
+/** Unknown receivers require T1 review unless a directly imported wrapper already uses the v4 trigger shape. */
 function flagUnprovenCreateFunctionUsage(root: any, bindings: Bindings, report: ReportFn): void {
   root.find(j.Node).forEach((path: any) => {
     const member = createFunctionMember(path.node);
@@ -447,6 +446,8 @@ function flagUnprovenCreateFunctionUsage(root: any, bindings: Bindings, report: 
     }
     const local = localImportAt(bindings.localImports, receiver.name, path);
     if (local) {
+      if (local.eligibleNamedImport && isLocalModule(local.source) && local.hasOnlyDirectClientReferences
+        && member.object.type === "Identifier" && hasExplicitV4TriggerCall(root, path)) return;
       report(
         "T1",
         "review",
@@ -462,6 +463,29 @@ function flagUnprovenCreateFunctionUsage(root: any, bindings: Bindings, report: 
       path.node.loc
     );
   });
+}
+
+function hasExplicitV4TriggerCall(root: any, path: any): boolean {
+  const args = path.node.arguments;
+  if (args.length !== 2) return false;
+  const [options, handler] = args;
+  const value = unambiguousOptionValue(options, ["triggers"]);
+  if (!value) return false;
+  const triggers = value.type === "ArrayExpression" ? value.elements : [value];
+  return triggers.length > 0 && triggers.every((trigger: any) =>
+    literalString(unambiguousOptionValue(trigger, ["event", "cron"])) !== null
+  ) && resolveStaticHandler(root, handler, path, new Set([handler])) !== null;
+}
+
+/** A spread, computed key or duplicate may replace the named data property at runtime. */
+function unambiguousOptionValue(object: any, names: readonly string[]): any | null {
+  if (object?.type !== "ObjectExpression" || object.properties.some((property: any) =>
+    property.computed || property.type === "SpreadElement" || property.type === "SpreadProperty"
+  )) return null;
+  const matches = object.properties.filter((property: any) => names.includes(propertyName(property.key) ?? ""));
+  const [property] = matches;
+  return matches.length === 1 && isObjectProperty(property) && !property.method
+    && (!property.kind || property.kind === "init") ? property.value : null;
 }
 
 /** A createFunction member that is not the direct callee can be rebound or invoked indirectly. */
@@ -560,63 +584,49 @@ function migrateGateway(root: any, bindings: Bindings, report: ReportFn): number
   return applied;
 }
 
-function flagClientMode(root: any, bindings: Bindings, report: ReportFn): void {
+function flagClientMode(root: any, bindings: Bindings, report: ReportFn, enabled: ReadonlySet<string>): void {
+  // T5 was previously a source rewrite. Preserve rule selections while emitting
+  // one review per client and letting the runtime SDK interpret INNGEST_DEV.
+  const implicitModeCode = enabled.has("T5") ? "T5" : "F1";
+  const dynamicModeCode = enabled.has("F1") ? "F1" : "T5";
   root.find(j.NewExpression).forEach((path: any) => {
     if (!isConstructor(path.node.callee, bindings, path)) return;
     const options = path.node.arguments[0];
-    if (options?.type !== "ObjectExpression") {
-      report("F1", "review", "Inngest client configuration is dynamic; confirm v4 cloud mode, isDev, and signingKey behavior.", path.node.loc);
-      return;
+    if (options?.type === "ObjectExpression") {
+      if (hasClientModeMemberCollision(options)) {
+        report(
+          dynamicModeCode, "review",
+          "Check the runtime values of the client mode or signing-key accessors or methods. The SDK expects a boolean for isDev and a string for signingKey.",
+          path.node.loc
+        );
+        return;
+      }
+      let config: "implicit" | "explicit" | "dynamic" = "implicit";
+      for (const property of options.properties) {
+        const name = staticMemberKeyName(property);
+        if (property.type === "SpreadElement" || property.type === "SpreadProperty" || (property.computed && name == null)) {
+          // A later spread or computed property may overwrite an earlier option.
+          config = "dynamic";
+        } else if (isObjectProperty(property) && (name === "isDev" || name === "signingKey")) {
+          config = "explicit";
+        }
+      }
+      if (config === "explicit") return;
+      if (config === "implicit") {
+        report(
+          implicitModeCode, "review",
+          "Keep the client configuration. For local development set INNGEST_DEV to 1, true, or the Dev Server URL. With INNGEST_DEV unset or false, v4 uses cloud mode. Verify INNGEST_SIGNING_KEY when serving functions in cloud mode.",
+          path.node.loc
+        );
+        return;
+      }
     }
-    if (hasClientModeMemberCollision(options)) {
-      report(
-        "F1",
-        "review",
-        "Inngest client configuration defines isDev or signingKey as a method/accessor; replace it with an explicit data property before migration.",
-        path.node.loc
-      );
-      return;
-    }
-    if (!["isDev", "signingKey"].some((name) => directProperty(options, name))) {
-      report("F1", "review", "v4 defaults to cloud mode; explicitly choose isDev for development or provide a signingKey.", path.node.loc);
-    }
-  });
-}
-
-function migrateClientMode(root: any, bindings: Bindings, report: ReportFn): number {
-  let count = 0;
-  root.find(j.NewExpression).forEach((path: any) => {
-    if (!isConstructor(path.node.callee, bindings, path)) return;
-    const options = path.node.arguments[0];
-    if (options?.type !== "ObjectExpression"
-      || hasClientModeMemberCollision(options)
-      || ["isDev", "signingKey"].some((name) => directProperty(options, name))
-      || options.properties.some((property: any) => property.type === "SpreadElement"
-        || property.type === "SpreadProperty" || property.computed)
-      || bindingScopeNode("process", path) != null) {
-      return;
-    }
-    options.properties.push(j.property(
-      "init",
-      j.identifier("isDev"),
-      j.binaryExpression(
-        "===",
-        j.memberExpression(
-          j.memberExpression(j.identifier("process"), j.identifier("env")),
-          j.identifier("INNGEST_DEV")
-        ),
-        j.literal("1")
-      )
-    ));
-    count += 1;
     report(
-      "T5",
-      "applied",
-      "Added explicit INNGEST_DEV=1 local-mode selection; production remains cloud mode and reads INNGEST_SIGNING_KEY from the environment.",
+      dynamicModeCode, "review",
+      "Trace the effective client options. Check whether isDev overrides INNGEST_DEV and how cloud deployments supply their signing key.",
       path.node.loc
     );
   });
-  return count;
 }
 
 function flagHandlerChanges(root: any, bindings: Bindings, report: ReportFn): void {
@@ -1343,7 +1353,7 @@ function addLocalImport(
     importedName,
     eligibleNamedImport,
     namespaceLike,
-    provenClient: false,
+    hasOnlyDirectClientReferences: false,
     scopeNode,
     declarationNode,
   });
@@ -1556,6 +1566,7 @@ function proveDirectLocalClients(
             bindings
           )
         : false;
+      candidate.hasOnlyDirectClientReferences = referencesAreSafe;
       const suspiciousCandidate = looksLikeConfiguredClientCandidate(candidate, localName);
       const specificallyInngestCandidate = looksLikeInngestClientBindingName(localName)
         || looksLikeInngestClientBindingName(candidate.importedName ?? "")
@@ -1619,7 +1630,6 @@ function proveDirectLocalClients(
         });
         continue;
       }
-      candidate.provenClient = true;
       const scoped = bindings.clients.get(localName) ?? [];
       scoped.push({ scopeNode: candidate.scopeNode, declarationNode: candidate.declarationNode });
       bindings.clients.set(localName, scoped);

@@ -9,9 +9,9 @@ Choose the recipe for the upgrade you plan. Check which SDK version the applicat
 
 Run the scanner against an authorized local checkout. Replace the example paths below. Choose a new output file in an existing, private directory outside the checkout.
 
-  node sdk-assessment.cjs assess --recipe inngest-v3-to-v4 --repo "/path/to/application" --out "/path/to/handoff/summary.json"
+  node sdk-assessment.cjs assess --recipe inngest-v3-to-v4 --repo "/path/to/application" --out "/path/to/handoff/summary.json" --local-report "/path/to/handoff/private-findings.json"
 
-To see file paths and detailed findings, add --local-report "/path/to/handoff/private-findings.json" to the same command. Keep private-findings.json on your machine. Inspect summary.json before sharing it with your agency or SDK maintainer.
+Open private-findings.json locally for the file paths, lines and actions. Omit --local-report if you only need counts. Keep private-findings.json on your machine. Inspect summary.json before sharing it with your agency or SDK maintainer.
 
 The scanner runs offline. It reads supported JavaScript and TypeScript source, estimates edits in memory and writes the requested reports. Your application code and dependencies stay on your machine. A maintainer can use the aggregate counts to prepare a review brief. Build, runtime and upgrade compatibility require separate verification.
 

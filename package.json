@@ -1,6 +1,6 @@
 {
   "name": "api-migrator",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "API Migration Campaigns as a Service — find affected customer code, deliver tested, reviewable migration pull requests.",
   "type": "module",

@@ -27,7 +27,8 @@ export const fn = app.createFunction({ id: "private-worker" }, { event: "private
   const result = assessRepository(root, "inngest-v3-to-v4", (entry) => local.push(entry));
   assert.equal(result.sourceFiles, 4);
   assert.equal(result.matchedFiles, 3);
-  assert.equal(result.wouldChangeFiles, 2);
+  assert.equal(result.wouldChangeFiles, 1);
+  assert.deepEqual(result.findings.filter(f => f.code === "T5"), [{ code: "T5", kind: "review", count: 1 }]);
   assert.ok(result.findings.some((f) => f.code === "T1" && f.kind === "applied" && f.count === 1));
   assert.ok(result.findings.some((f) => f.code === "T1" && f.kind === "review"));
   assert.ok(result.findings.some((f) => f.code === "F12" && f.kind === "review"));

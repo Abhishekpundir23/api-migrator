@@ -60,8 +60,8 @@ async function main() {
     assert(report.summary.introducedErrors === 0, "transform introduced 0 new type errors");
     assert(report.verification.checks.runtime?.status === "passed", "Node runtime attestation passed");
     assert(
-      report.entries.some((entry) => entry.code === "T5" && entry.kind === "applied"),
-      "T5 explicit client mode applied"
+      report.entries.some((entry) => entry.code === "T5" && entry.kind === "review"),
+      "T5 identifies the v4 deployment setting for review"
     );
     assert(
       report.entries.some((entry) => entry.code === "F12" && /runtime container is unknown/i.test(entry.message)),

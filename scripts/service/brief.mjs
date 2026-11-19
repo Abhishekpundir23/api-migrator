@@ -11,7 +11,7 @@ const GUIDANCE = {
   T2: "Check the serveHost to serveOrigin rename against the URL the application serves.",
   T3: "Check the boolean streaming option against the original streaming behavior.",
   T4: "Check the Connect gateway setting after renaming rewriteGatewayEndpoint to gatewayUrl.",
-  T5: "Confirm that INNGEST_DEV selects local development and that the production environment supplies the intended signing configuration.",
+  T5: "Keep the SDK’s native mode selection. Use INNGEST_DEV=1, true, or a Dev Server URL for development. Verify INNGEST_SIGNING_KEY when serving functions in cloud mode.",
   F1: "Trace the client configuration and confirm the intended development mode and production signing key.",
   F2: "Find consumers of event.user and update both producers and handlers to carry that information in event.data.",
   F3: "Review configured middleware and map its hooks to the v4 lifecycle.",
