@@ -5,7 +5,7 @@ import * as jscodeshift from "jscodeshift";
 import { posix } from "node:path";
 import { TRANSFORM_ALLOWLIST } from "../manifest.js";
 import type { ReportEntry, ReportSink } from "../types.js";
-import { parseWithParser, toSource } from "./parser.js";
+import { parseWithParser } from "./parser.js";
 
 const j: any = (jscodeshift as any).default ?? (jscodeshift as any);
 const ALL = new Set<string>(TRANSFORM_ALLOWLIST["inngest-v3-to-v4"]);
@@ -62,7 +62,7 @@ export function applyInngestV3ToV4(
   enabled: ReadonlySet<string> = ALL,
   provenance?: InngestProvenanceContext
 ): string | null {
-  const root = parseWithParser(filePath, source);
+  const { root, print } = parseWithParser(filePath, source);
   const bindings = collectBindings(root, filePath, provenance);
   const emitted = new Set<string>();
   const report: ReportFn = (code, kind, message, loc) => {
@@ -108,7 +108,7 @@ export function applyInngestV3ToV4(
   flagCheckpointRuntime(root, bindings, report);
   flagEdgeRuntime(root, bindings, report);
 
-  return applied > 0 ? toSource(root) : null;
+  return applied > 0 ? print() : null;
 }
 
 export default function transform(file: FileInfo, _api: API): string | null | undefined {
@@ -1720,7 +1720,7 @@ function normalizeScannedPath(value: string): string | null {
 function directlyExportsAnyInngestClient(source: string, filePath: string): boolean {
   let root: any;
   try {
-    root = parseWithParser(filePath, source);
+    root = parseWithParser(filePath, source).root;
   } catch {
     return false;
   }
@@ -1747,7 +1747,7 @@ function directlyExportsAnyInngestClient(source: string, filePath: string): bool
 function directlyExportsInngestClient(source: string, filePath: string, exportedName: string): boolean {
   let root: any;
   try {
-    root = parseWithParser(filePath, source);
+    root = parseWithParser(filePath, source).root;
   } catch {
     return false;
   }

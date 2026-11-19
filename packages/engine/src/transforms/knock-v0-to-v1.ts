@@ -4,7 +4,7 @@ import { type API, type FileInfo } from "jscodeshift";
 import * as jscodeshift from "jscodeshift";
 import { TRANSFORM_ALLOWLIST } from "../manifest.js";
 import type { ReportSink } from "../types.js";
-import { parseWithParser, toSource } from "./parser.js";
+import { parseWithParser } from "./parser.js";
 
 const j: any = (jscodeshift as any).default ?? (jscodeshift as any);
 const ALL = new Set<string>(TRANSFORM_ALLOWLIST["knock-v0-to-v1"]);
@@ -52,7 +52,7 @@ export function applyKnockV0ToV1(
   sink: ReportSink,
   enabled: ReadonlySet<string> = ALL
 ): string | null {
-  const root = parseWithParser(filePath, source);
+  const { root, print } = parseWithParser(filePath, source);
   const bindings = collectBindings(root);
   const emitted = new Set<string>();
   const report: ReportFn = (code, kind, message, loc) => {
@@ -90,7 +90,7 @@ export function applyKnockV0ToV1(
   flagBulk(root, bindings, report);
   flagResponseUnwrap(root, bindings, report);
 
-  return applied > 0 ? toSource(root) : null;
+  return applied > 0 ? print() : null;
 }
 
 export default function transform(file: FileInfo, _api: API): string | null | undefined {

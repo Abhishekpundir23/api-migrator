@@ -80,6 +80,28 @@ app.createFunction({ id: "second", triggers: { event: "demo/run" } }, async (ctx
     [["review", 6], ["review", 12]]);
 });
 
+test("Inngest reviews bare catch blocks in original and rewritten function handlers", () => {
+  const source = `import { Inngest } from "inngest";
+const app = new Inngest({ id: "demo", isDev: true });
+app.createFunction({ id: "caller" }, { event: "demo/run" }, async ({ step }) => {
+  try { await performWork(); } catch {
+    await step.invoke("fallback", { function: "demo-retry" });
+    await Promise.race([first, second]);
+    await app.send({ name: "demo/failed" });
+  }
+});`;
+  const first = collect(out => applyInngestV3ToV4(source, "worker.ts", { push: e => out.push(e) }));
+  assert.ok(first.value);
+  assert.match(first.value, /catch\s*\{/);
+  assert.doesNotMatch(first.value, /omitted catch binding/);
+  const second = collect(out => applyInngestV3ToV4(first.value!, "worker.ts", { push: e => out.push(e) }));
+  assert.equal(second.value, null);
+  for (const result of [first, second]) {
+    assert.deepEqual(result.entries.filter(e => e.kind === "review").map(e => e.code).sort(),
+      ["F11", "F14", "F7"]);
+  }
+});
+
 test("Inngest T5 adds an explicit environment-controlled development mode", () => {
   const source = `import { Inngest } from "inngest";
 export const inngest = new Inngest({ id: "demo" });
