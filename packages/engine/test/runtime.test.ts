@@ -16,7 +16,7 @@ import {
   planNodeRuntimeMigration,
   runMigration,
   updateManifestDependencies,
-  type Manifest,
+  Manifest,
   type ReportEntry,
 } from "../src/index.js";
 
@@ -73,10 +73,9 @@ test("Inngest manifests require the audited Node runtime profile", () => {
     peerFloors: manifest.peerFloors,
   };
   assert.throws(() => parseManifest(base), /require the audited Node 20\/22 runtime policy/);
-  assert.throws(
-    () => parseManifest({ ...base, runtime: { node: { ...policy, minimumMajor: 18 } } }),
-    /Invalid literal value, expected 20/
-  );
+  const wrongVersion = Manifest.safeParse({ ...base, runtime: { node: { ...policy, minimumMajor: 18 } } });
+  assert.equal(wrongVersion.success, false);
+  assert.deepEqual(wrongVersion.error?.issues.map(issue => issue.path), [["runtime", "node", "minimumMajor"]]);
   assert.throws(
     () => parseManifest({ ...base, runtime: { node: { ...policy, profile: "node:latest" } } }),
     /node22-bookworm-slim-2026-07/
@@ -85,6 +84,22 @@ test("Inngest manifests require the audited Node runtime profile", () => {
     () => parseManifest({ ...base, runtime: { node: { ...policy, dockerfile: "deploy/Dockerfile" } } }),
     /Dockerfile/
   );
+});
+
+test("manifest defaults, strict nested fields and refinement locations survive parsing", () => {
+  const { peerFloors, ...base } = manifest;
+  assert.deepEqual(parseManifest(base).peerFloors, []);
+  assert.deepEqual(parseManifest({ ...base, name: "  Inngest v4  " }), { ...base, peerFloors: [] });
+  for (const [candidate, path] of [
+    [{ ...base, package: { ...base.package, extra: true } }, ["package"]],
+    [{ ...base, peerFloors: [...peerFloors, ...peerFloors] }, ["peerFloors"]],
+    [{ ...base, transforms: ["K1"] }, ["transforms", 0]],
+    [{ ...base, runtime: undefined }, ["runtime"]],
+  ] as const) {
+    const parsed = Manifest.safeParse(candidate);
+    assert.equal(parsed.success, false);
+    assert.deepEqual(parsed.error?.issues.map(issue => issue.path), [path]);
+  }
 });
 
 test("deployment declaration is optional for legacy manifests but strict when supplied", () => {

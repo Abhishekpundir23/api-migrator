@@ -20,47 +20,47 @@ export type TransformSet = keyof typeof TRANSFORM_ALLOWLIST;
 export const TransformId = z.string().trim().min(1);
 
 /** A package version floor that must be satisfied for the migration to verify. */
-export const PeerFloor = z.object({
+export const PeerFloor = z.strictObject({
   name: z.string().trim().min(1),
   range: z.string().trim().min(1),
-}).strict();
+});
 
 /**
  * A deliberately narrow, audited deployment profile. Provider manifests pick
  * a trusted profile name; they cannot supply an arbitrary image or path.
  */
-export const NodeRuntimePolicy = z.object({
+export const NodeRuntimePolicy = z.strictObject({
   minimumMajor: z.literal(20),
   profile: z.literal("node22-bookworm-slim-2026-07"),
   packageJson: z.literal("package.json"),
   dockerfile: z.literal("Dockerfile"),
-}).strict();
+});
 
-export const RuntimePolicy = z.object({
+export const RuntimePolicy = z.strictObject({
   node: NodeRuntimePolicy,
-}).strict();
+});
 
 /** Operator-declared hosting model; not inferred from the Node runtime image. */
-export const DeploymentPolicy = z.object({
+export const DeploymentPolicy = z.strictObject({
   kind: z.enum(["long-running", "serverless"]),
-}).strict();
+});
 
-const ManifestBase = z.object({
+const ManifestBase = z.strictObject({
   name: z.string().trim().min(1),
   provider: z.string().trim().min(1),
   transformSet: z.enum(["inngest-v3-to-v4", "knock-v0-to-v1"]),
-  package: z.object({
+  package: z.strictObject({
     name: z.string().trim().min(1),
     from: z.string().trim().min(1),
     to: z.string().trim().min(1),
-  }).strict(),
+  }),
   peerFloors: z.array(PeerFloor).default([]),
   runtime: RuntimePolicy.optional(),
   deployment: DeploymentPolicy.optional(),
   /** Omit for the complete set. Inngest F12 remains mandatory even with a subset. */
   transforms: z.array(TransformId).optional(),
   notes: z.string().optional(),
-}).strict();
+});
 
 /**
  * Provider-authored manifest schema. Unknown fields and unknown transform ids
@@ -71,7 +71,7 @@ export const Manifest = ManifestBase.superRefine((manifest, ctx) => {
   for (const [index, id] of (manifest.transforms ?? []).entries()) {
     if (!allowed.has(id)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["transforms", index],
         message: `Unknown transform id ${JSON.stringify(id)} for ${manifest.transformSet}`,
       });
@@ -82,14 +82,14 @@ export const Manifest = ManifestBase.superRefine((manifest, ctx) => {
     .filter((name, index, all) => all.indexOf(name) !== index);
   if (duplicatePeers.length > 0) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["peerFloors"],
       message: `Duplicate peer floor(s): ${[...new Set(duplicatePeers)].join(", ")}`,
     });
   }
   if (manifest.transformSet === "inngest-v3-to-v4" && !manifest.runtime) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["runtime"],
       message: "Inngest v4 migrations require the audited Node 20/22 runtime policy",
     });
