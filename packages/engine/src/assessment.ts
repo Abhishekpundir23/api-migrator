@@ -57,10 +57,10 @@ export function assessRepository(
     if (matchesSdkSource(source, recipe)) candidates.set(file.relative, source);
   }
   const matched = new Set(candidates.keys());
-  const provenance = recipe === "inngest-v3-to-v4" ? {
+  const provenance = {
     scannedSources: candidates,
     sourcePaths: new Set(sources.keys()),
-  } : undefined;
+  };
 
   const counts = new Map<string, AssessmentFinding>();
   const localFindings: ReportEntry[] | undefined = onLocalFinding ? [] : undefined;
@@ -84,7 +84,7 @@ export function assessRepository(
     try {
       proposed = recipe === "inngest-v3-to-v4"
         ? applyInngestV3ToV4(source, path, fileSink, enabled, provenance)
-        : applyKnockV0ToV1(source, path, fileSink, enabled);
+        : applyKnockV0ToV1(source, path, fileSink, enabled, provenance);
     } catch (error) {
       throw new Error(`Unable to assess ${path}: ${error instanceof Error ? error.message : "source analysis failed"}`, { cause: error });
     }

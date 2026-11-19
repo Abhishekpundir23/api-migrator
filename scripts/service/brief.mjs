@@ -28,15 +28,15 @@ const GUIDANCE = {
   F14: "Check event sends in and outside handlers. Review step.sendEvent in handlers and confirm the relevant promise is awaited or returned.",
   K1: "Trace the Knock client and compare the legacy notify call to workflows.trigger.",
   K2: "Confirm the recipient update after mapping users.identify to users.update.",
-  K3: "Check the v1 parameter names for list pagination and workflow cancellation on the relevant call.",
-  K4: "Check the default Knock import and consolidate conflicting named imports.",
-  K5: "Verify the client constructor receives a v1 options object with the intended apiKey.",
-  KF1: "Trace SDK imports, wrappers and dynamic receivers. Check the argument shape of affected calls against the v1 options-object signature.",
+  K3: "Check v1 pagination or cancellation parameters and the data body on channel updates, as applicable.",
+  K4: "Check migrated SDK imports, including the class and standalone token helpers, against the calls in the private report.",
+  K5: "Verify the v1 client options, including apiKey and any custom baseURL.",
+  KF1: "Check the private finding for the affected SDK import or call. Review legacy recipient types, uncertain receivers, and v1 argument shapes as indicated.",
   KF2: "Review error handling against the exported v1 error types and narrow the error before inspecting its fields.",
   KF3: "Verify the token signer import and check the claims in the resulting token.",
   KF4: "Move workflow scheduling calls to schedules.create, list, update or delete. Rename users.getSchedules to users.listSchedules. Check arguments and results.",
   KF5: "Verify the bulk operation's v1 namespace and batch payload.",
-  KF6: "Inspect how callers read v1 responses and check whether an extra .data access should be removed.",
+  KF6: "Check how callers read v1 responses. For channel data, narrow the data union to the provider-specific shape before using its fields.",
 };
 
 const SUMMARY_KEYS = ["version", "recipe", "sourceFiles", "matchedFiles", "wouldChangeFiles", "findings"];

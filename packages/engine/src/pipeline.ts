@@ -32,8 +32,8 @@ import { findSourceFiles, selectSdkFiles } from "./scanner.js";
 import {
   applyInngestV3ToV4,
   inngestBehavioralReviewEntries,
-  type InngestProvenanceContext,
 } from "./transforms/inngest-v3-to-v4.js";
+import type { LocalModuleSources } from "./transforms/local-modules.js";
 import { applyKnockV0ToV1 } from "./transforms/knock-v0-to-v1.js";
 import { runTsc, verify, verifyNodeRuntime, type VerifyOptions, type VerifyResult } from "./verifier.js";
 import { applyNodeRuntimeMigration, planNodeRuntimeMigration } from "./runtime.js";
@@ -108,9 +108,7 @@ export async function runMigration(
     // file so unresolved provider usage becomes a review blocker.
     const scanned = sourceFiles;
     const scannedSources = new Map(sdkMatchedFiles.map((file) => [file.relative, readFileSync(file.absolute, "utf8")] as const));
-    const provenance: InngestProvenanceContext | undefined = manifest.transformSet === "inngest-v3-to-v4"
-      ? { scannedSources, sourcePaths: new Set(sourceFiles.map((file) => file.relative)) }
-      : undefined;
+    const provenance = { scannedSources, sourcePaths: new Set(sourceFiles.map((file) => file.relative)) };
     const sourceEntries: ReportEntry[] = [];
     const sourceSink: ReportSink = { push: (entry) => sourceEntries.push(entry) };
     const sourceEdits: Array<{ absolute: string; relative: string; before: string; after: string }> = [];
@@ -214,11 +212,11 @@ function applyTransformSet(
   filePath: string,
   sink: ReportSink,
   enabled: ReadonlySet<string>,
-  provenance?: InngestProvenanceContext
+  provenance: LocalModuleSources
 ): string | null {
   switch (manifest.transformSet) {
     case "inngest-v3-to-v4": return applyInngestV3ToV4(source, filePath, sink, enabled, provenance);
-    case "knock-v0-to-v1": return applyKnockV0ToV1(source, filePath, sink, enabled);
+    case "knock-v0-to-v1": return applyKnockV0ToV1(source, filePath, sink, enabled, provenance);
   }
 }
 

@@ -5,12 +5,12 @@ An SDK maintainer can use this service to find common review work before a break
 ## Owner handoff
 
 1. Confirm which SDK and version the application currently uses. Choose `inngest-v3-to-v4` or `knock-v0-to-v1`. The owner selects the recipe. The scanner does not establish the installed version.
-2. The operator runs `npm ci --ignore-scripts --no-audit --no-fund` and `npm run package:assessment` in API Migrator using Node 22. Give participating owners the resulting `dist/sdk-assessment-0.1.0.tgz` archive and its expected SHA-256 via an agreed channel.
-3. On the owner's machine, put the archive in a directory outside the application. Check its SHA-256 against the value supplied by the operator, then extract it there. On macOS use `shasum -a 256 sdk-assessment-0.1.0.tgz`. On Linux use `sha256sum sdk-assessment-0.1.0.tgz`. Run the scanner with Node 22 against a stable, authorized working tree.
+2. The operator runs `npm ci --ignore-scripts --no-audit --no-fund` and `npm run package:assessment` in API Migrator using Node 22. Give participating owners the resulting `dist/sdk-assessment-0.1.1.tgz` archive and its expected SHA-256 via an agreed channel.
+3. On the owner's machine, put the archive in a directory outside the application. Check its SHA-256 against the value supplied by the operator, then extract it there. On macOS use `shasum -a 256 sdk-assessment-0.1.1.tgz`. On Linux use `sha256sum sdk-assessment-0.1.1.tgz`. Run the scanner with Node 22 against a stable, authorized working tree.
 
 ```bash
 handoff=$(mktemp -d)
-tar -xzf sdk-assessment-0.1.0.tgz -C "$handoff"
+tar -xzf sdk-assessment-0.1.1.tgz -C "$handoff"
 node "$handoff/package/sdk-assessment.cjs" assess --recipe inngest-v3-to-v4 --repo /path/to/application \
   --out "$handoff/summary.json" --local-report "$handoff/private-findings.json"
 ```
@@ -74,3 +74,5 @@ A local quota limits attempts to 100 per UTC month. Lower it via `API_MIGRATOR_A
 - The operator returns the complete rule counts and review actions. The owner checks at least one actionable finding against the private local report.
 - The SDK maintainer records whether the brief changed their plan, reviewer time, and whether they want a second assessment.
 - For hosted execution or publication, use the existing pilot release process. Local assessment results cannot authorize either action.
+
+Historical comparisons are available for the [Inngest example](validation.md) and the [Knock Node upgrade](knock-replay.md).
