@@ -696,7 +696,7 @@ function flagUnhandledClientSend(root: any, bindings: Bindings, report: ReportFn
     report(
       "F14",
       "review",
-      "This Inngest createFunction handler could not be resolved statically; review it manually for direct client.send calls that must use and await step.sendEvent(...).",
+      "Trace the unresolved handler and review direct client.send calls. Only use step.sendEvent at handler level, outside step callbacks.",
       argument.loc
     );
   }).map(({ handler }) => handler));
@@ -708,7 +708,7 @@ function flagUnhandledClientSend(root: any, bindings: Bindings, report: ReportFn
       "F14",
       "review",
       inHandler
-        ? "Direct Inngest client.send inside an Inngest handler bypasses step checkpointing; use and await step.sendEvent(...) instead."
+        ? "Review this event send and its retry boundary. Use step.sendEvent at handler level. If the send is in a step.run callback, verify idempotency before separating the operations. Never nest steps."
         : "Unhandled Inngest client.send may be dropped before delivery; await or return its promise.",
       path.node.loc
     );

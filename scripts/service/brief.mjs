@@ -25,7 +25,7 @@ const GUIDANCE = {
   F11: "Inspect the handler for Promise.race and confirm how its branches complete under v4 parallel execution.",
   F12: "Confirm how the application is hosted. For serverless deployments, review checkpointing, retries and maxRuntime against the platform timeout.",
   F13: "Exercise the Inngest route in the deployed edge runtime and verify its fetch and client configuration.",
-  F14: "Check event sends in and outside handlers. Review step.sendEvent in handlers and confirm the relevant promise is awaited or returned.",
+  F14: "Use step.sendEvent at handler level. For sends inside step.run, review retries and idempotency before separating the operations. Outside handlers, await or return the send.",
   K1: "Trace the Knock client and compare the legacy notify call to workflows.trigger.",
   K2: "Confirm the recipient update after mapping users.identify to users.update.",
   K3: "Check v1 pagination or cancellation parameters and the data body on channel updates, as applicable.",

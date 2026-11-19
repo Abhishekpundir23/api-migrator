@@ -1014,6 +1014,7 @@ client.createFunction({ id: "x" }, { event: "x" }, async ({ step }) => {
   client.send({ name: "demo/one", data: {} });
   await client.send({ name: "demo/two", data: {} });
   client.send({ name: "demo/three", data: {} }).catch(() => undefined);
+  await step.run("persist", async () => { await client.send({ name: "inside-step" }); });
   mailer.send();
   return client.send({ name: "demo/four", data: {} });
 });`,
@@ -1022,7 +1023,8 @@ client.createFunction({ id: "x" }, { event: "x" }, async ({ step }) => {
     new Set(["F14"])
   ));
   const handlerEntries = inHandler.entries.filter((entry) => entry.code === "F14");
-  assert.equal(handlerEntries.length, 4);
+  assert.equal(handlerEntries.length, 5);
+  assert.ok(handlerEntries.some(entry => entry.line === 8 && /Never nest steps/.test(entry.message)));
   assert.equal(handlerEntries.every((entry) => /step\.sendEvent/.test(entry.message)), true);
 
   const outsideHandler = collect((entries) => applyInngestV3ToV4(

@@ -30,6 +30,9 @@ const declarationParser = {
     return parse(source, {
       sourceType: "module",
       tokens: true,
+      // Babel checks export aliases against the outer program's runtime bindings.
+      // In declaration files the type checker resolves them inside each ambient module.
+      allowUndeclaredExports: true,
       plugins: [["typescript", { dts: true }], "decorators-legacy", "importAttributes"],
     });
   },

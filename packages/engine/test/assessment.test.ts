@@ -137,6 +137,19 @@ test("ambient TypeScript declarations parse alongside application files", (t) =>
   assert.equal(result.matchedFiles, 1);
 });
 
+test("an export alias inside an ambient module does not stop the repository scan", (t) => {
+  const root = fixture(t, {
+    "worker.d.ts": 'declare module "worker:mail" { let message: string; export { message as Message }; }',
+    "job.ts": 'import { Inngest } from "inngest"; const client = new Inngest({ id: "jobs" }); client.createFunction({ id: "go" }, { event: "jobs/go" }, async () => {});',
+  });
+  const result = assessRepository(root, "inngest-v3-to-v4");
+  assert.equal(result.sourceFiles, 2);
+  assert.deepEqual(result.findings.find(f => f.code === "T1" && f.kind === "applied"),
+    { code: "T1", kind: "applied", count: 1 });
+  writeFileSync(join(root, "worker.d.ts"), 'declare module "worker:mail" { let message: ; }');
+  assert.throws(() => assessRepository(root, "inngest-v3-to-v4"), /worker\.d\.ts/);
+});
+
 test("an oversized source or inventory fails without partial results", (t) => {
   const root = fixture(t, { "bundle.js": "" });
   const bundle = join(root, "bundle.js");
