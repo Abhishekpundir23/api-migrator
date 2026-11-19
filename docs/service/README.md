@@ -5,12 +5,13 @@ An SDK maintainer can use this service to find common review work before a break
 ## Owner handoff
 
 1. Confirm which SDK and version the application currently uses. Choose `inngest-v3-to-v4` or `knock-v0-to-v1`. The owner selects the recipe. The scanner does not establish the installed version.
-2. Use a separate checkout of API Migrator with Node 22. Run `npm ci --ignore-scripts --no-audit --no-fund` and `npm run build --workspace @api-migrator/engine` in that checkout. Only the tool needs dependencies.
-3. Point the scanner at an authorized local application. Pick new files in an existing directory outside the application. Run against a stable working tree.
+2. The operator runs `npm ci --ignore-scripts --no-audit --no-fund` and `npm run package:assessment` in API Migrator using Node 22. Give participating owners the resulting `dist/sdk-assessment-0.1.0.tgz` archive and its expected SHA-256 via an agreed channel.
+3. On the owner's machine, put the archive in a directory outside the application. Check its SHA-256 against the value supplied by the operator, then extract it there. On macOS use `shasum -a 256 sdk-assessment-0.1.0.tgz`. On Linux use `sha256sum sdk-assessment-0.1.0.tgz`. Run the scanner with Node 22 against a stable, authorized working tree.
 
 ```bash
 handoff=$(mktemp -d)
-npm run service -- assess --recipe inngest-v3-to-v4 --repo /path/to/application \
+tar -xzf sdk-assessment-0.1.0.tgz -C "$handoff"
+node "$handoff/package/sdk-assessment.cjs" assess --recipe inngest-v3-to-v4 --repo /path/to/application \
   --out "$handoff/summary.json" --local-report "$handoff/private-findings.json"
 ```
 
@@ -30,6 +31,26 @@ npm run service -- campaign --summaries /intake/this-release --out /delivery/cam
 Create the destination directories beforehand. The campaign command takes 1–100 regular `.json` files directly inside one directory. Put one current summary per different repository there, using the same recipe. Identical counts can come from different repositories. The operator maintains the roster and resolves duplicates. Malformed summaries, private files and mixed recipes cause an error. Use a new output name for each run.
 
 The individual brief lists candidate edits and manual review actions. The campaign brief shows how many assessments contain each issue and the total number of occurrences. The outputs are self-reported static estimates. They do not establish repository identity, build success, compatibility, acceptance of edits or time saved. Use separate authorized verification to answer those questions.
+
+### Track outstanding assessments
+
+When several teams are invited, keep an operator roster outside the intake directory. Choose one alias and one expected summary filename per repository. Use the alias with the owner and rename their incoming summary to the agreed filename. The alias is an operator label. It does not authenticate the sender.
+
+```json
+{
+  "recipe": "inngest-v3-to-v4",
+  "repositories": [
+    { "alias": "Pilot A", "summary": "pilot-a.json" },
+    { "alias": "Pilot B", "summary": "pilot-b.json" }
+  ]
+}
+```
+
+```bash
+npm run service -- campaign --summaries /intake/this-release --roster /operator/roster.json --out /delivery/internal-coverage.md
+```
+
+The table shows who has responded, which manual checks each respondent needs, and who still needs a follow-up. An empty intake is valid with a roster. Pending teams have unknown impact. An unrecognized filename or mixed release stops the report so submissions cannot silently drop out of the totals. Keep this version with the campaign team because it includes aliases. Omit `--roster` to produce a report containing only aggregate counts.
 
 ## Optional OpenAI review questions
 

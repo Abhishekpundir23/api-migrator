@@ -8,6 +8,13 @@ import { parseWithParser, toSource } from "./parser.js";
 
 const j: any = (jscodeshift as any).default ?? (jscodeshift as any);
 const ALL = new Set<string>(TRANSFORM_ALLOWLIST["knock-v0-to-v1"]);
+const SCHEDULE_REPLACEMENTS = new Map([
+  ["workflows.createSchedules", "schedules.create"],
+  ["workflows.listSchedules", "schedules.list"],
+  ["workflows.updateSchedules", "schedules.update"],
+  ["workflows.deleteSchedules", "schedules.delete"],
+  ["users.getSchedules", "users.listSchedules"],
+]);
 
 interface ScopedBinding {
   scopeNode: object;
@@ -591,12 +598,12 @@ function flagTokenSigner(root: any, bindings: Bindings, report: ReportFn): void 
 }
 
 function flagSchedules(root: any, bindings: Bindings, report: ReportFn): void {
-  const legacy = new Set(["createSchedules", "listSchedules", "updateSchedules", "deleteSchedules"]);
   root.find(j.CallExpression).forEach((path: any) => {
     if (!isClientCall(path.node.callee, bindings, path)) return;
-    const method = lastMember(path.node.callee);
-    if (method && legacy.has(method)) {
-      report("KF4", "review", `Legacy ${method} moved to the v1 schedules namespace; map its arguments and response manually.`, path.node.loc);
+    const method = memberChain(path.node.callee).join(".");
+    const replacement = SCHEDULE_REPLACEMENTS.get(method);
+    if (replacement) {
+      report("KF4", "review", `Replace ${method} with ${replacement} and review its arguments and response.`, path.node.loc);
     }
   });
 }
@@ -1051,21 +1058,22 @@ function looksLikeKnockMethod(callee: any): boolean {
   return Boolean(method && new Set([
     "notify", "identify", "update", "list", "trigger", "cancel",
     "setPreferences", "getPreferences", "addChannelData", "setChannelData",
-    "createSchedules", "listSchedules", "updateSchedules", "deleteSchedules",
+    "createSchedules", "listSchedules", "updateSchedules", "deleteSchedules", "getSchedules",
   ]).has(method));
 }
 
+const APPROVED_KNOCK_CALL_CHAINS = new Set([
+  "notify",
+  "users.identify", "users.update", "users.list",
+  "workflows.trigger", "workflows.cancel", "cancel",
+  "users.setPreferences", "users.getPreferences",
+  "users.addChannelData", "users.setChannelData",
+  "setPreferences", "getPreferences", "addChannelData", "setChannelData",
+  ...SCHEDULE_REPLACEMENTS.keys(), ...SCHEDULE_REPLACEMENTS.values(),
+]);
+
 function isApprovedKnockCallChain(chain: string[]): boolean {
-  return new Set([
-    "notify",
-    "users.identify", "users.update", "users.list",
-    "workflows.trigger", "workflows.cancel", "cancel",
-    "users.setPreferences", "users.getPreferences",
-    "users.addChannelData", "users.setChannelData",
-    "setPreferences", "getPreferences", "addChannelData", "setChannelData",
-    "createSchedules", "listSchedules", "updateSchedules", "deleteSchedules",
-    "schedules.create", "schedules.list", "schedules.update", "schedules.delete",
-  ]).has(chain.join("."));
+  return APPROVED_KNOCK_CALL_CHAINS.has(chain.join("."));
 }
 
 function isLocalModule(source: string): boolean {

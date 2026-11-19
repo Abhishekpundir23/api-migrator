@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderCampaign } from "./campaign.mjs";
+import { renderCampaign, renderTrackedCampaign } from "./campaign.mjs";
 
 const first = {
   version: 1, recipe: "knock-v0-to-v1", sourceFiles: 8, matchedFiles: 4, wouldChangeFiles: 3,
@@ -44,4 +44,35 @@ test("campaign rejects mixed recipes and unvalidated or excessive handoffs", () 
     [first, { ...first, customerName: "private-value" }],
     [first, { ...first, sourceFiles: -1 }],
   ]) assert.throws(() => renderCampaign(input), error => !error.message.includes("private-value"));
+});
+
+const roster = { recipe: first.recipe, repositories: [
+  { alias: "Pilot A", summary: "a.json" }, { alias: "Pilot B", summary: "b.json" },
+] };
+
+test("tracked campaign keeps pending repositories distinct from received assessments with zero findings", () => {
+  const empty = renderTrackedCampaign(new Map(), roster);
+  assert.match(empty, /0 of 2 invited repositories submitted/);
+  const result = renderTrackedCampaign(new Map([["b.json", noFindings]]), roster);
+  assert.match(result, /1 of 2 invited repositories submitted/);
+  assert.match(result, /Pilot A \| Awaiting assessment \| — \| —/);
+  assert.match(result, /Pilot B \| Received \| 0 \| None reported/);
+  const noSourceFiles = renderTrackedCampaign(new Map([["a.json", { ...noFindings, sourceFiles: 0 }]]), roster);
+  assert.match(noSourceFiles, /Pilot A \| Received, no supported files/);
+  assert.doesNotMatch(result, /a\.json|b\.json/);
+  const full = renderTrackedCampaign(new Map([["a.json", first], ["b.json", second]]), roster);
+  assert.match(full, /Pilot A \| Received \| 3 \| K1, KF2/);
+  assert.match(full, /Any match or recipe finding \| 2/);
+});
+
+test("roster rejects unmatched submissions, mixed releases, unsafe labels, paths and ambiguous assignments", () => {
+  const withEntry = entry => ({ ...roster, repositories: [roster.repositories[0], entry] });
+  for (const invalid of [
+    withEntry({ alias: "pilot a", summary: "new.json" }), withEntry({ alias: "New", summary: "A.json" }),
+    withEntry({ alias: "New | status", summary: "b.json" }), withEntry({ alias: "New", summary: "../b.json" }),
+    withEntry({ alias: "New", summary: "b.json", path: "private" }), { ...roster, recipe: "toString" },
+  ]) assert.throws(() => renderTrackedCampaign(new Map(), invalid));
+  assert.throws(() => renderTrackedCampaign(new Map([["A.json", first]]), roster), /does not match/);
+  assert.throws(() => renderTrackedCampaign(new Map([["a.json", { ...noFindings, recipe: "inngest-v3-to-v4" }]]), roster), /same SDK/);
+  assert.throws(() => renderTrackedCampaign(new Map([["a.json", { ...first, source: "private" }]]), roster));
 });

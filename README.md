@@ -26,6 +26,10 @@ cat "$demo_dir/brief.md"
 
 The example runs without application credentials or an OpenAI key. Add `--ai` to the brief command to get reviewer questions using GPT-6.2 Sol. The [assessment service guide](docs/service/README.md) covers a real handoff, campaign reports, data boundaries, model selection, budget limits and interpreting results. The [example brief](docs/service/example-brief.md) shows the output for the included synthetic Inngest application.
 
+For a pilot, run `npm run package:assessment` to build an offline scanner that each repository owner can run with Node 22. The archive includes its dependencies. The SDK release manager can track participating teams locally and see which assessments are still missing. [Pilot handoff instructions](docs/service/README.md)
+
+In a replay of a public Inngest upgrade, the scanner proposed edits in all seven function files that the maintainer changed. After the upgrade it proposed zero edits and still requested three manual checks. [Historical assessment and limits](docs/service/validation.md)
+
 ### Hosted migration pilot
 
 The separate hosted pilot is intended to turn SDK upgrades into tested patches and owner-approved pull requests. Its current release status follows.

@@ -44,13 +44,16 @@
     "runner:image:verify": "node ops/publication-runner/image/verify-image-config.mjs api-migrator-runner:local",
     "runner:image:integration": "node ops/publication-runner/image/run-phase-integration.mjs api-migrator-runner:local",
     "pilot:validate": "node scripts/validate-pilot-result.mjs",
-    "ci": "npm run build:packages && npm run typecheck:workspaces && npm run test:workspaces && npm run test:service && npm run test:pilot && npm run test:ops && npm run pilot:validate -- docs/pilot/pilot-result.example.json && npm run build:console && npm run test:console-packaging",
+    "ci": "npm run build:packages && npm run typecheck:workspaces && npm run test:workspaces && npm run test:service && npm run test:assessment-package && npm run test:pilot && npm run test:ops && npm run pilot:validate -- docs/pilot/pilot-result.example.json && npm run build:console && npm run test:console-packaging",
     "service": "node scripts/service/cli.mjs",
-    "test:service": "node --test scripts/service/*.test.mjs"
+    "test:service": "node --test scripts/service/*.test.mjs",
+    "package:assessment": "npm run build --workspace @api-migrator/engine && node scripts/assessment-package/build.mjs",
+    "test:assessment-package": "node --test scripts/assessment-package/package.test.mjs"
   },
   "devDependencies": {
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
+    "esbuild": "0.28.1",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0"
   },

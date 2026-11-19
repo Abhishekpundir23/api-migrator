@@ -630,15 +630,34 @@ function flagHandlerChanges(root: any, bindings: Bindings, report: ReportFn): vo
       if (propertyName(path.node.property) === "user" && isContextMember(path.node.object, eventNames, contextNames, "event")) {
         report("F2", "review", "event.user was removed in v4; move this data into event.data and update event producers.", path.node.loc);
       }
-      if (propertyName(path.node.property) === "invoke" && isContextMember(path.node.object, stepNames, contextNames, "step")) {
-        const call = path.parentPath?.node;
-        const first = call?.type === "CallExpression" ? call.arguments[0] : null;
-        if (first && (first.type === "StringLiteral" || first.type === "Literal") && typeof first.value === "string") {
-          report("F7", "review", "step.invoke no longer accepts a string function id; import/reference the target function and pass it directly.", call.loc);
-        }
+      if (!isDirectMemberCall(path) || staticMemberPropertyName(path.node) !== "invoke") return;
+      const receiver = path.node.object;
+      const base = rootReceiverIdentifier(receiver);
+      if (!base || bindingScopeNode(base.name, path) !== handler || nearestBlockDeclaration(base.name, path)) return;
+      const directStep = receiver === base && stepNames.has(base.name);
+      const contextStep = receiver.object === base && staticMemberPropertyName(receiver) === "step" && contextNames.has(base.name);
+      if (!directStep && !contextStep) return;
+
+      const call = path.parentPath.node;
+      if (hasLegacyInvokeTarget(call.arguments[1])) {
+        report("F7", "review", "Keep the invocation step ID. Replace the string in options.function with an imported function or a referenceFunction() reference.", call.loc);
       }
     });
   }
+}
+
+function hasLegacyInvokeTarget(options: any): boolean {
+  if (options?.type !== "ObjectExpression") return false;
+  // Later properties override earlier ones. A spread or unknown key can replace the target.
+  for (const property of [...options.properties].reverse()) {
+    const key = staticMemberKeyName(property);
+    if (key == null) return false;
+    if (key === "function") {
+      return isObjectProperty(property) && (staticLiteralThroughTypeWrappers(property.value) != null
+        || property.value?.type === "TemplateLiteral");
+    }
+  }
+  return false;
 }
 
 function flagOptimizedParallelism(root: any, bindings: Bindings, report: ReportFn): void {

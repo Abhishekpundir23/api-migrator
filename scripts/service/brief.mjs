@@ -18,7 +18,7 @@ const GUIDANCE = {
   F4: "Replace legacy EventSchemas declarations with the appropriate eventType and staticSchema definitions.",
   F5: "Review options that moved from serve to the Inngest client, including fetch and signing configuration.",
   F6: "Replace the removed logLevel option with the supported logger or middleware setup.",
-  F7: "Review step.invoke calls that use a string function ID and supply the intended function reference.",
+  F7: "Keep the step.invoke step ID. Replace the string in options.function with an imported function or a referenceFunction() reference.",
   F8: "Exercise Connect worker startup, signals and shutdown in the target deployment.",
   F9: "Replace internal InngestFunction types with public inferred function or reference types.",
   F10: "Check each maxRuntime setting against the platform limit and expected retry and checkpoint behavior.",
@@ -34,7 +34,7 @@ const GUIDANCE = {
   KF1: "Trace SDK imports, wrappers and dynamic receivers. Check the argument shape of affected calls against the v1 options-object signature.",
   KF2: "Review error handling against the exported v1 error types and narrow the error before inspecting its fields.",
   KF3: "Verify the token signer import and check the claims in the resulting token.",
-  KF4: "Map legacy scheduling methods to the v1 schedules namespace and review both arguments and results.",
+  KF4: "Move workflow scheduling calls to schedules.create, list, update or delete. Rename users.getSchedules to users.listSchedules. Check arguments and results.",
   KF5: "Verify the bulk operation's v1 namespace and batch payload.",
   KF6: "Inspect how callers read v1 responses and check whether an extra .data access should be removed.",
 };
@@ -135,6 +135,11 @@ export function renderBrief(value, reviewOrder = []) {
     `| Files with proposed edits | ${wouldChangeFiles} |`,
     "",
   ];
+  if (sourceFiles === 0) {
+    lines.push("No supported JavaScript or TypeScript files were inspected. Confirm the application directory before using this assessment to plan an upgrade.", "");
+  } else if (matchedFiles === 0) {
+    lines.push("The scan found no patterns for this recipe. Confirm that the application uses the selected SDK and version before concluding that the upgrade needs no work.", "");
+  }
   for (const [title, group, empty] of [
     ["Manual review", reviews, "The selected recipe reported zero manual-review findings."],
     ["Proposed edits", edits, "The selected recipe proposed zero source edits."],

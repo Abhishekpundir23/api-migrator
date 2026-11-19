@@ -65,7 +65,10 @@ test("brief retains preview and manual findings for the same rule while prioriti
 });
 
 test("empty scans produce an explicit assessment and keep the verification boundary", () => {
-  const report = renderBrief({ ...summary, sourceFiles: 0, matchedFiles: 0, wouldChangeFiles: 0, findings: [] });
+  const empty = { ...summary, sourceFiles: 0, matchedFiles: 0, wouldChangeFiles: 0, findings: [] };
+  const report = renderBrief(empty);
+  assert.match(report, /No supported JavaScript or TypeScript files were inspected/);
+  assert.match(renderBrief({ ...empty, sourceFiles: 1 }), /Confirm that the application uses the selected SDK and version/);
   assert.match(report, /zero manual-review findings/);
   assert.match(report, /zero source edits/);
   assert.match(report, /simulated/);

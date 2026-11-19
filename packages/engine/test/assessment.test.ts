@@ -57,6 +57,36 @@ test("assessing unrelated sources yields an empty recipe inventory", (t) => {
   });
 });
 
+test("Knock schedule reviews distinguish legacy workflows and user calls from their v1 replacements", (t) => {
+  const cases: Array<[string, string]> = [
+    ['workflows.createSchedules("welcome", request)', "schedules.create"],
+    ['workflows.listSchedules("welcome")', "schedules.list"],
+    ["workflows.updateSchedules(request)", "schedules.update"],
+    ["workflows.deleteSchedules(request)", "schedules.delete"],
+    ['users.getSchedules("user-1")', "users.listSchedules"],
+  ];
+  const calls = [
+    ...cases.map(([call]) => `await client.${call};`),
+    'await client.users.listSchedules("user-1");',
+    'await client.schedules.list({ workflow: "welcome" });',
+    'await client.schedules.create(request);',
+    'await client.schedules.update(request);',
+    'await client.schedules.delete(request);',
+    'await calendar.workflows.listSchedules("elsewhere");',
+  ];
+  const source = ['import Knock from "@knocklabs/node";', 'const client = new Knock({ apiKey: "demo" });', ...calls].join("\n");
+  const root = fixture(t, { "schedules.ts": source });
+  const local: ReportEntry[] = [];
+  const result = assessRepository(root, "knock-v0-to-v1", entry => local.push(entry));
+  assert.deepEqual(result.findings, [{ code: "KF4", kind: "review", count: 5 }]);
+  assert.equal(result.wouldChangeFiles, 0);
+  for (const [index, [call, replacement]] of cases.entries()) {
+    const finding = local.find(entry => entry.line === index + 3);
+    assert.ok(finding?.message.includes(call.split("(")[0]));
+    assert.ok(finding.message.includes(replacement));
+  }
+});
+
 test("a parse failure in an unmatched file aborts before any local findings are exported", (t) => {
   const root = fixture(t, {
     "a.ts": 'import Knock from "@knocklabs/node"; const knock = new Knock({ apiKey: "x" });',
@@ -65,6 +95,32 @@ test("a parse failure in an unmatched file aborts before any local findings are 
   const local: ReportEntry[] = [];
   assert.throws(() => assessRepository(root, "knock-v0-to-v1", (entry) => local.push(entry)), /Unable to assess z\.ts:/);
   assert.deepEqual(local, []);
+});
+
+test("catch without a parameter preserves client resolution across both recipes", (t) => {
+  const root = fixture(t, {
+    "handlers.ts": `import Knock from "@knocklabs/node";
+import { Inngest } from "inngest";
+const client = new Knock({ apiKey: "test" });
+const app = new Inngest({ id: "demo" });
+try {} catch {
+  client.notify("outer", { recipients: [] });
+  app.createFunction({ id: "outer" }, { event: "event" }, async () => 1);
+}
+function local(fallback: any) {
+  try {} catch { var client = fallback; }
+  client.notify("shadow", { recipients: [] });
+}
+try {} catch (app) {
+  try {} catch { app.createFunction({ id: "shadow" }, { event: "event" }, async () => 1); }
+}`,
+  });
+  for (const [recipe, code] of [["knock-v0-to-v1", "K1"], ["inngest-v3-to-v4", "T1"]] as const) {
+    const result = assessRepository(root, recipe);
+    assert.equal(result.wouldChangeFiles, 1);
+    assert.deepEqual(result.findings.find(f => f.code === code && f.kind === "applied"),
+      { code, kind: "applied", count: 1 });
+  }
 });
 
 test("ambient TypeScript declarations parse alongside application files", (t) => {

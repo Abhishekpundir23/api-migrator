@@ -50,4 +50,12 @@ test("owner and operator exchange only the aggregate artifact; existing files su
   success("brief", "--summary", summary, "--out", out);
   assert.match(readFileSync(out, "utf8"), /F12/);
   success("campaign", "--summaries", intake, "--out", join(dir, "campaign.md"));
+  const rosterPath = join(dir, "roster.json");
+  writeFileSync(rosterPath, JSON.stringify({ recipe: "inngest-v3-to-v4", repositories: [
+    { alias: "First team", summary: "account-one.json" }, { alias: "Second team", summary: "second.json" },
+  ] }));
+  const tracked = join(dir, "tracked.md");
+  success("campaign", "--summaries", intake, "--roster", rosterPath, "--out", tracked);
+  assert.match(readFileSync(tracked, "utf8"), /1 of 2 invited repositories submitted/);
+  assert.doesNotMatch(readFileSync(join(dir, "campaign.md"), "utf8"), /First team|Second team/);
 });

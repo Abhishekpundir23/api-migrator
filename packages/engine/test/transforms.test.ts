@@ -33,7 +33,7 @@ import { Inngest } from "inngest";
 import { serve } from "inngest/next";
 const client = new Inngest({ id: "demo" });
 client.createFunction({ id: "f" }, { event: "demo/run" }, ({ event, step }) => {
-  step.invoke("other/function", {});
+  step.invoke("invoke-other", { function: "demo-other-function" });
   return event.user;
 });
 serve({ client, functions: [], serveHost: "https://example.test", streaming: "force" });
@@ -56,6 +56,28 @@ const event = { user: "outside-handler" };
   const second = applyInngestV3ToV4(first, "src/inngest.ts", { push: (entry) => secondEntries.push(entry) });
   assert.equal(second, null, "transform is idempotent");
   assert.equal(secondEntries.some((entry) => entry.kind === "applied"), false);
+});
+
+test("F7 flags string invocation targets and preserves invocation step IDs", () => {
+  const source = `import { Inngest, referenceFunction } from "inngest";
+import { otherFunction } from "./other";
+const app = new Inngest({ id: "demo", isDev: true });
+const stepId = "invoke-other";
+app.createFunction({ id: "caller", triggers: { event: "demo/run" } }, async ({ step: tools }) => {
+  await tools.invoke(stepId, { function: "demo-other" });
+  await tools.invoke("step-2", { function: otherFunction });
+  await tools.invoke("step-3", { function: referenceFunction({ functionId: "other" }) });
+  const visit = (tools: any) => tools.invoke("local", { function: "local-target" });
+});
+app.createFunction({ id: "second", triggers: { event: "demo/run" } }, async (ctx) => {
+  await ctx.step.invoke("step-4", { function: "demo-second" });
+});`;
+  const { value, entries } = collect(out =>
+    applyInngestV3ToV4(source, "src/caller.ts", { push: entry => out.push(entry) }, new Set(["F7"]))
+  );
+  assert.equal(value, null, "invocation step IDs and targets stay in the owner's source");
+  assert.deepEqual(entries.filter(entry => entry.code === "F7").map(entry => [entry.kind, entry.line]),
+    [["review", 6], ["review", 12]]);
 });
 
 test("Inngest T5 adds an explicit environment-controlled development mode", () => {
